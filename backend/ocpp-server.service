@@ -1,0 +1,40 @@
+# Systemd сервис для OCPP сервера
+# Сохранить как /etc/systemd/system/ocpp-server.service
+
+[Unit]
+Description=OCPP WebSocket Server
+After=network.target postgresql.service redis.service
+Requires=postgresql.service redis.service
+
+[Service]
+Type=exec
+User=ocpp
+Group=ocpp
+WorkingDirectory=/home/ocpp/EvPower-Backend/backend
+Environment=PATH=/home/ocpp/EvPower-Backend/backend/env/bin
+EnvironmentFile=/home/ocpp/EvPower-Backend/backend/.env
+ExecStart=/home/ocpp/EvPower-Backend/backend/env/bin/uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 4
+ExecReload=/bin/kill -HUP $MAINPID
+KillMode=mixed
+TimeoutStopSec=5
+PrivateTmp=true
+Restart=always
+RestartSec=10
+
+# Безопасность
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/home/ocpp/EvPower-Backend/backend
+ReadWritePaths=/var/log/ocpp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Логирование
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ocpp-server
+
+[Install]
+WantedBy=multi-user.target 

@@ -1,0 +1,23 @@
+# requirements.txt
+# Зависимости для FastAPI, работы с PostgreSQL (например, Neon.tech), JWT и асинхронности
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+python-dotenv
+httpx
+email-validator
+passlib[bcrypt]
+pyjwt
+
+# --- Для OCPP WebSocket сервера ---
+ocpp
+websockets
+redis
+psycopg2-binary
+
+# --- Для Alembic (миграции БД) ---
+alembic
+
+# --- Для загрузки файлов через FastAPI ---
+python-multipart
