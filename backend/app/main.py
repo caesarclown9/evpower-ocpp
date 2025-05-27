@@ -5,6 +5,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.openapi.utils import get_openapi
 from app.api import ocpp
+from app.core.config import settings
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 import logging
@@ -27,13 +28,21 @@ from app.db.session import engine
 from app.db import models  # noqa: F401, чтобы зарегистрировать все модели
 
 # Конфигурация логирования
+log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
+log_handlers = [logging.StreamHandler()]
+
+# Добавляем файловый хендлер только если путь существует или может быть создан
+try:
+    os.makedirs(settings.LOG_PATH, exist_ok=True)
+    log_handlers.append(logging.FileHandler(f'{settings.LOG_PATH}/app.log'))
+except (OSError, PermissionError):
+    # Если не можем создать директорию логов, используем только консоль
+    pass
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=log_level,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler('/var/log/ocpp/app.log'),
-        logging.StreamHandler()
-    ]
+    handlers=log_handlers
 )
 logger = logging.getLogger(__name__)
 
@@ -47,11 +56,11 @@ app = FastAPI(
 )
 
 # Middleware для безопасности
-allowed_hosts = os.getenv("ALLOWED_HOSTS", "localhost").split(",")
+allowed_hosts = settings.ALLOWED_HOSTS.split(",") if settings.ALLOWED_HOSTS else ["*"]
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
 # CORS настройки для production
-cors_origins = os.getenv("CORS_ORIGINS", "").split(",")
+cors_origins = settings.CORS_ORIGINS.split(",") if settings.CORS_ORIGINS else []
 if cors_origins and cors_origins[0]:
     app.add_middleware(
         CORSMiddleware,
@@ -114,7 +123,10 @@ async def on_startup():
         logger.info("✅ База данных инициализирована")
         
         # Создание директории для логов
-        os.makedirs("/var/log/ocpp", exist_ok=True)
+        try:
+            os.makedirs(settings.LOG_PATH, exist_ok=True)
+        except (OSError, PermissionError):
+            logger.warning(f"Не удалось создать директорию логов: {settings.LOG_PATH}")
         
         logger.info("✅ OCPP сервер успешно запущен")
     except Exception as e:

@@ -1,8 +1,13 @@
 {
   "mcpServers": {
-    "Neon": {
+    "supabase": {
       "command": "npx",
-      "args": ["-y", "@neondatabase/mcp-server-neon", "start", "napi_pq3xob9h9x5wnbdillqojwxl5ya4wf62jufueu4jdk9n3fbg52dni42pk584r6m4"]
+      "args": [
+        "-y",
+        "@supabase/mcp-server-supabase@latest",
+        "--access-token",
+        "sbp_99fddc34489f0ccf67f89ac82cee8605e6c21e9b"
+      ]
     }
   }
 }
