@@ -138,6 +138,24 @@ async def on_shutdown():
 # --- Хранилище активных сессий и лимитов ---
 active_sessions: Dict[str, Dict[str, Any]] = {}
 
+class WebSocketAdapter:
+    """Адаптер для совместимости FastAPI WebSocket с библиотекой ocpp"""
+    
+    def __init__(self, websocket: WebSocket):
+        self.websocket = websocket
+    
+    async def recv(self):
+        """Метод recv для совместимости с ocpp библиотекой"""
+        return await self.websocket.receive_text()
+    
+    async def send(self, message):
+        """Метод send для совместимости с ocpp библиотекой"""
+        await self.websocket.send_text(message)
+    
+    async def close(self):
+        """Закрытие соединения"""
+        await self.websocket.close()
+
 class ChargePoint(CP):
     """Production OCPP ChargePoint с расширенным логированием"""
     
@@ -294,7 +312,8 @@ async def ocpp_ws(websocket: WebSocket, station_id: str):
     
     try:
         await websocket.accept(subprotocol="ocpp1.6")
-        charge_point = ChargePoint(station_id, websocket)
+        websocket_adapter = WebSocketAdapter(websocket)
+        charge_point = ChargePoint(station_id, websocket_adapter)
         await redis_manager.register_station(station_id)
         
         pubsub_task = asyncio.create_task(handle_pubsub_commands(charge_point, station_id))
