@@ -30,7 +30,7 @@ from app.crud.ocpp_service import (
     OCPPAuthorizationService,
     OCPPConfigurationService
 )
-from app.db.models.stations import ChargingSession
+from app.db.models.ocpp import ChargingSession, Station
 
 # Импорт API роутеров
 from app.api.ocpp_endpoints import router as ocpp_router

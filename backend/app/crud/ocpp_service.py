@@ -6,9 +6,10 @@ from app.db.models.ocpp import (
     OCPPTransaction, 
     OCPPMeterValue, 
     OCPPAuthorization,
-    OCPPConfiguration
+    OCPPConfiguration,
+    Station,
+    ChargingSession
 )
-from app.db.models.stations import Station, ChargingSession
 import logging
 
 logger = logging.getLogger(__name__)

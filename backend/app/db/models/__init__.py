@@ -1,7 +1,8 @@
 # Database models
 from .ocpp import (
     User, Client, Location, Station, Maintenance, 
-    ChargingSession, TariffPlan, TariffRule
+    ChargingSession, TariffPlan, TariffRule,
+    OCPPStationStatus, OCPPTransaction, OCPPMeterValue, 
+    OCPPAuthorization, OCPPConfiguration
 )
-from .stations import *
 
