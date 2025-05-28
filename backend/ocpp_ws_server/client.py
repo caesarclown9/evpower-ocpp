@@ -25,7 +25,7 @@ class ChargePoint(cp):
     @on('BootNotification')
     async def on_boot_notification(self, charge_point_model, charge_point_vendor, **kwargs):
         print(f"BootNotification: {charge_point_model}, {charge_point_vendor}")
-        return call_result.BootNotificationPayload(
+        return call_result.BootNotification(
             current_time='2024-06-01T12:00:00Z',
             interval=10,
             status='Accepted'
@@ -35,7 +35,7 @@ class ChargePoint(cp):
     async def on_heartbeat(self, **kwargs):
         from datetime import datetime
         print("Heartbeat received")
-        return call_result.HeartbeatPayload(current_time=datetime.utcnow().isoformat())
+        return call_result.Heartbeat(current_time=datetime.utcnow().isoformat())
 
 async def main():
     async with websockets.connect(

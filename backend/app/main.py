@@ -166,7 +166,7 @@ class ChargePoint(CP):
     @on('BootNotification')
     def on_boot_notification(self, charge_point_model, charge_point_vendor, **kwargs):
         self.logger.info(f"BOOT: BootNotification: {charge_point_model}, {charge_point_vendor}")
-        return call_result.BootNotificationPayload(
+        return call_result.BootNotification(
             current_time=datetime.utcnow().isoformat() + 'Z',
             interval=300,  # 5 минут для production
             status='Accepted'
@@ -175,7 +175,7 @@ class ChargePoint(CP):
     @on('Heartbeat')
     def on_heartbeat(self, **kwargs):
         self.logger.debug(f"HEARTBEAT: Heartbeat from {self.id}")
-        return call_result.HeartbeatPayload(current_time=datetime.utcnow().isoformat())
+        return call_result.Heartbeat(current_time=datetime.utcnow().isoformat())
 
     @on('StartTransaction')
     def on_start_transaction(self, connector_id, id_tag, meter_start, timestamp, **kwargs):
@@ -202,13 +202,13 @@ class ChargePoint(CP):
             }
             
             self.logger.info(f"SUCCESS: Transaction started: {transaction_id}")
-            return call_result.StartTransactionPayload(
+            return call_result.StartTransaction(
                 transaction_id=transaction_id,
                 id_tag_info={"status": "Accepted"}
             )
         except Exception as e:
             self.logger.error(f"ERROR: Error in StartTransaction: {e}")
-            return call_result.StartTransactionPayload(
+            return call_result.StartTransaction(
                 transaction_id=0,
                 id_tag_info={"status": "Invalid"}
             )
@@ -228,12 +228,12 @@ class ChargePoint(CP):
                 energy_delivered = float(meter_stop) - float(meter_start)
                 self.logger.info(f"COMPLETED: Transaction completed: energy={energy_delivered}kWh")
             
-            return call_result.StopTransactionPayload(
+            return call_result.StopTransaction(
                 id_tag_info={"status": "Accepted"}
             )
         except Exception as e:
             self.logger.error(f"ERROR: Error in StopTransaction: {e}")
-            return call_result.StopTransactionPayload(
+            return call_result.StopTransaction(
                 id_tag_info={"status": "Invalid"}
             )
 
