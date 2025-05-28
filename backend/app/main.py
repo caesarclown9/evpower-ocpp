@@ -23,6 +23,17 @@ import traceback
 from app.db.base_class import Base
 from app.db.session import engine
 from app.db import models  # noqa: F401, чтобы зарегистрировать все модели
+from app.crud.ocpp_service import (
+    OCPPStationService,
+    OCPPTransactionService, 
+    OCPPMeterService,
+    OCPPAuthorizationService,
+    OCPPConfigurationService
+)
+from app.db.models.stations import ChargingSession
+
+# Импорт API роутеров
+from app.api.ocpp_endpoints import router as ocpp_router
 
 # Конфигурация логирования
 log_level = getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO)
@@ -78,6 +89,9 @@ app.add_middleware(
 
 # Подключение OCPP роутера
 app.include_router(ocpp.router)
+
+# Подключение роутеров
+app.include_router(ocpp_router, prefix="/api/v1/ocpp", tags=["OCPP"])
 
 # Health check endpoint
 @app.get("/health")
@@ -157,7 +171,7 @@ class WebSocketAdapter:
         await self.websocket.close()
 
 class ChargePoint(CP):
-    """Production OCPP ChargePoint с расширенным логированием"""
+    """Production OCPP ChargePoint с полной интеграцией БД Phase 1"""
     
     def __init__(self, id: str, connection):
         super().__init__(id, connection)
@@ -166,101 +180,304 @@ class ChargePoint(CP):
     @on('BootNotification')
     def on_boot_notification(self, charge_point_model, charge_point_vendor, **kwargs):
         self.logger.info(f"BOOT: BootNotification: {charge_point_model}, {charge_point_vendor}")
-        return call_result.BootNotification(
-            current_time=datetime.utcnow().isoformat() + 'Z',
-            interval=300,  # 5 минут для production
-            status='Accepted'
-        )
+        
+        try:
+            db = SessionLocal()
+            
+            # Проверяем существует ли станция в БД
+            station = db.query(Station).filter(Station.id == self.id).first()
+            if not station:
+                # Создаем новую станцию если не существует
+                station = Station(
+                    id=self.id,
+                    serial_number=self.id,
+                    model=charge_point_model,
+                    manufacturer=charge_point_vendor,
+                    location_id="default",  # TODO: настроить через конфигурацию
+                    power_capacity=22.0,    # TODO: получать из конфигурации
+                    connector_types=["Type2"],
+                    status="active",
+                    admin_id="system"
+                )
+                db.add(station)
+                db.commit()
+                self.logger.info(f"CREATED: New station {self.id} added to database")
+            
+            # Обновляем статус OCPP станции
+            firmware_version = kwargs.get('firmware_version')
+            OCPPStationService.mark_boot_notification_sent(
+                db, self.id, firmware_version
+            )
+            
+            # Устанавливаем базовую конфигурацию
+            OCPPConfigurationService.set_configuration(
+                db, self.id, "HeartbeatInterval", "300", readonly=True
+            )
+            OCPPConfigurationService.set_configuration(
+                db, self.id, "MeterValueSampleInterval", "60", readonly=True
+            )
+            
+            db.close()
+            
+            return call_result.BootNotification(
+                current_time=datetime.utcnow().isoformat() + 'Z',
+                interval=300,  # 5 минут для production
+                status='Accepted'
+            )
+            
+        except Exception as e:
+            self.logger.error(f"ERROR: Error in BootNotification: {e}")
+            return call_result.BootNotification(
+                current_time=datetime.utcnow().isoformat() + 'Z',
+                interval=300,
+                status='Rejected'
+            )
 
     @on('Heartbeat')
     def on_heartbeat(self, **kwargs):
         self.logger.debug(f"HEARTBEAT: Heartbeat from {self.id}")
-        return call_result.Heartbeat(current_time=datetime.utcnow().isoformat())
+        
+        try:
+            db = SessionLocal()
+            
+            # Обновляем heartbeat в БД
+            OCPPStationService.update_heartbeat(db, self.id)
+            
+            db.close()
+            
+            return call_result.Heartbeat(current_time=datetime.utcnow().isoformat())
+            
+        except Exception as e:
+            self.logger.error(f"ERROR: Error in Heartbeat: {e}")
+            return call_result.Heartbeat(current_time=datetime.utcnow().isoformat())
+
+    @on('StatusNotification')
+    def on_status_notification(self, connector_id, error_code, status, **kwargs):
+        self.logger.info(f"STATUS: StatusNotification: connector={connector_id}, status={status}, error={error_code}")
+        
+        try:
+            db = SessionLocal()
+            
+            # Обновляем статус станции
+            info = kwargs.get('info')
+            vendor_id = kwargs.get('vendor_id')
+            vendor_error_code = kwargs.get('vendor_error_code')
+            
+            OCPPStationService.update_station_status(
+                db, self.id, status, error_code, info, vendor_id, vendor_error_code
+            )
+            
+            db.close()
+            
+            return call_result.StatusNotification()
+            
+        except Exception as e:
+            self.logger.error(f"ERROR: Error in StatusNotification: {e}")
+            return call_result.StatusNotification()
+
+    @on('Authorize')
+    def on_authorize(self, id_tag, **kwargs):
+        self.logger.info(f"AUTH: Authorize request for id_tag: {id_tag}")
+        
+        try:
+            db = SessionLocal()
+            
+            # Проверяем авторизацию
+            auth_result = OCPPAuthorizationService.authorize_id_tag(db, id_tag)
+            
+            db.close()
+            
+            self.logger.info(f"AUTH: Authorization result for {id_tag}: {auth_result['status']}")
+            
+            return call_result.Authorize(id_tag_info=auth_result)
+            
+        except Exception as e:
+            self.logger.error(f"ERROR: Error in Authorize: {e}")
+            return call_result.Authorize(id_tag_info={"status": "Invalid"})
 
     @on('StartTransaction')
     def on_start_transaction(self, connector_id, id_tag, meter_start, timestamp, **kwargs):
         self.logger.info(f"START: StartTransaction: connector={connector_id}, id_tag={id_tag}, meter_start={meter_start}")
         
         try:
+            db = SessionLocal()
+            
+            # Проверяем авторизацию
+            auth_result = OCPPAuthorizationService.authorize_id_tag(db, id_tag)
+            if auth_result["status"] != "Accepted":
+                self.logger.warning(f"START: Unauthorized id_tag: {id_tag}")
+                return call_result.StartTransaction(
+                    transaction_id=0,
+                    id_tag_info=auth_result
+                )
+            
+            # Генерируем transaction_id
+            transaction_id = int(datetime.utcnow().timestamp())
+            
+            # Получаем user_id по id_tag
+            user_id = OCPPAuthorizationService.get_user_by_id_tag(db, id_tag)
+            
+            # Создаем сессию зарядки
+            charging_session = ChargingSession(
+                id=f"session_{self.id}_{transaction_id}",
+                user_id=user_id or "unknown",
+                station_id=self.id,
+                start_time=datetime.utcnow(),
+                status="started",
+                limit_type="none"
+            )
+            db.add(charging_session)
+            db.flush()  # Получаем ID сессии
+            
+            # Создаем OCPP транзакцию
+            transaction = OCPPTransactionService.start_transaction(
+                db, self.id, transaction_id, connector_id, id_tag,
+                float(meter_start), datetime.fromisoformat(timestamp.replace('Z', '')),
+                charging_session.id
+            )
+            
+            # Сохраняем в активные сессии для мониторинга
             session = active_sessions.get(self.id, {})
             session['meter_start'] = meter_start
             session['energy_delivered'] = 0.0
-            transaction_id = int(datetime.utcnow().timestamp())
             session['transaction_id'] = transaction_id
+            session['charging_session_id'] = charging_session.id
             active_sessions[self.id] = session
             
-            # Логирование в Redis для мониторинга
-            transaction = {
-                "station_id": self.id,
-                "type": "start",
-                "connector_id": connector_id,
-                "id_tag": id_tag,
-                "meter_start": meter_start,
-                "timestamp": timestamp,
-                "created_at": datetime.utcnow().isoformat(),
-                "transaction_id": transaction_id
-            }
+            db.commit()
+            db.close()
             
             self.logger.info(f"SUCCESS: Transaction started: {transaction_id}")
             return call_result.StartTransaction(
                 transaction_id=transaction_id,
                 id_tag_info={"status": "Accepted"}
             )
+            
         except Exception as e:
             self.logger.error(f"ERROR: Error in StartTransaction: {e}")
+            if 'db' in locals():
+                db.rollback()
+                db.close()
             return call_result.StartTransaction(
                 transaction_id=0,
                 id_tag_info={"status": "Invalid"}
             )
 
     @on('StopTransaction')
-    def on_stop_transaction(self, meter_stop, timestamp, transaction_id, id_tag, **kwargs):
+    def on_stop_transaction(self, meter_stop, timestamp, transaction_id, id_tag=None, **kwargs):
         self.logger.info(f"STOP: StopTransaction: transaction_id={transaction_id}, meter_stop={meter_stop}")
         
         try:
-            session_info = active_sessions.get(self.id)
+            db = SessionLocal()
+            
+            # Завершаем OCPP транзакцию
+            stop_reason = kwargs.get('reason', 'Local')
+            transaction = OCPPTransactionService.stop_transaction(
+                db, self.id, transaction_id, float(meter_stop),
+                datetime.fromisoformat(timestamp.replace('Z', '')), stop_reason
+            )
+            
+            if transaction and transaction.charging_session_id:
+                # Обновляем сессию зарядки
+                charging_session = db.query(ChargingSession).filter(
+                    ChargingSession.id == transaction.charging_session_id
+                ).first()
+                
+                if charging_session:
+                    energy_delivered = float(meter_stop) - float(transaction.meter_start)
+                    
+                    # Рассчитываем стоимость через тариф станции
+                    station = db.query(Station).filter(Station.id == self.id).first()
+                    if station and station.price_per_kwh:
+                        amount = energy_delivered * float(station.price_per_kwh)
+                    else:
+                        amount = 0.0
+                    
+                    charging_session.stop_time = datetime.utcnow()
+                    charging_session.energy = energy_delivered
+                    charging_session.amount = amount
+                    charging_session.status = "stopped"
+            
+            # Очистка активных сессий
             if self.id in active_sessions:
                 del active_sessions[self.id]
             
-            # Упрощенная обработка без проверки БД
-            if session_info:
-                meter_start = session_info.get('meter_start', 0.0)
-                energy_delivered = float(meter_stop) - float(meter_start)
-                self.logger.info(f"COMPLETED: Transaction completed: energy={energy_delivered}kWh")
+            db.commit()
+            db.close()
             
-            return call_result.StopTransaction(
-                id_tag_info={"status": "Accepted"}
-            )
+            self.logger.info(f"SUCCESS: Transaction completed: {transaction_id}")
+            return call_result.StopTransaction(id_tag_info={"status": "Accepted"})
+            
         except Exception as e:
             self.logger.error(f"ERROR: Error in StopTransaction: {e}")
-            return call_result.StopTransaction(
-                id_tag_info={"status": "Invalid"}
-            )
+            if 'db' in locals():
+                db.rollback()
+                db.close()
+            return call_result.StopTransaction(id_tag_info={"status": "Invalid"})
 
     @on('MeterValues')
     async def on_meter_values(self, connector_id, meter_value, **kwargs):
-        self.logger.debug(f"METER: MeterValues from {self.id}: {meter_value}")
+        self.logger.debug(f"METER: MeterValues from {self.id}: connector={connector_id}")
         
         try:
+            db = SessionLocal()
+            
+            # Получаем активную транзакцию
+            active_transaction = OCPPTransactionService.get_active_transaction(db, self.id)
+            transaction_id = active_transaction.transaction_id if active_transaction else None
+            
+            # Парсим timestamp из первого meter_value
+            timestamp_str = meter_value[0].get('timestamp')
+            if timestamp_str:
+                timestamp = datetime.fromisoformat(timestamp_str.replace('Z', ''))
+            else:
+                timestamp = datetime.utcnow()
+            
+            # Парсим sampled values
+            sampled_values = []
+            for mv in meter_value:
+                for sample in mv.get('sampledValue', []):
+                    sampled_values.append({
+                        'measurand': sample.get('measurand', ''),
+                        'value': sample.get('value'),
+                        'unit': sample.get('unit', ''),
+                        'context': sample.get('context', ''),
+                        'format': sample.get('format', ''),
+                        'location': sample.get('location', '')
+                    })
+            
+            # Сохраняем показания счетчика
+            OCPPMeterService.add_meter_values(
+                db, self.id, connector_id, timestamp, sampled_values, transaction_id
+            )
+            
+            # Проверяем лимиты для активной сессии
             session = active_sessions.get(self.id)
-            if not session:
-                return
+            if session and sampled_values:
+                for sample in sampled_values:
+                    if sample['measurand'] == 'Energy.Active.Import.Register':
+                        try:
+                            current_energy = float(sample['value'])
+                            meter_start = session.get('meter_start', 0.0)
+                            energy_delivered = current_energy - meter_start
+                            session['energy_delivered'] = energy_delivered
+                            
+                            energy_limit = session.get('energy_limit')
+                            if energy_limit and energy_delivered >= energy_limit:
+                                self.logger.warning(f"LIMIT: Energy limit reached: {energy_delivered} >= {energy_limit}")
+                                await redis_manager.publish_command(self.id, {"command": "RemoteStopTransaction"})
+                            
+                            active_sessions[self.id] = session
+                            break
+                        except (ValueError, TypeError):
+                            continue
             
-            value = meter_value[0]['sampledValue'][0]['value']
-            value = float(value)
-            meter_start = session.get('meter_start', 0.0)
-            energy_delivered = value - meter_start
-            session['energy_delivered'] = energy_delivered
-            energy_limit = session.get('energy_limit')
+            db.close()
             
-            # Автоматическая остановка при достижении лимита
-            if energy_limit and energy_delivered >= energy_limit:
-                self.logger.warning(f"LIMIT: Energy limit reached: {energy_delivered} >= {energy_limit}")
-                await redis_manager.publish_command(self.id, {"command": "RemoteStopTransaction"})
-            
-            active_sessions[self.id] = session
         except Exception as e:
             self.logger.error(f"ERROR: Error in MeterValues: {e}")
+            if 'db' in locals():
+                db.close()
 
 async def handle_pubsub_commands(charge_point: ChargePoint, station_id: str):
     """Обработка команд из Redis с расширенным логированием"""

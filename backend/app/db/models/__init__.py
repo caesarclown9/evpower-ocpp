@@ -3,4 +3,5 @@ from .ocpp import (
     User, Client, Location, Station, Maintenance, 
     ChargingSession, TariffPlan, TariffRule
 )
+from .stations import *
 

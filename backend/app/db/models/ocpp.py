@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Float, DateTime, ForeignKey, Enum as SqlEnum, Boolean, Integer, Text, Time, Numeric, ARRAY
+from sqlalchemy import Column, String, Float, DateTime, ForeignKey, Enum as SqlEnum, Boolean, Integer, Text, Numeric, ARRAY, JSON
 from sqlalchemy.sql import func
 from sqlalchemy.orm import relationship
 import enum
@@ -121,8 +121,8 @@ class TariffRule(Base):
     power_range_max = Column(Numeric, default=1000)
     price = Column(Numeric, nullable=False)
     currency = Column(String, default='KGS')
-    time_start = Column(Time, default='00:00:00')
-    time_end = Column(Time, default='23:59:59')
+    time_start = Column(Text, default='00:00:00')
+    time_end = Column(Text, default='23:59:59')
     is_weekend = Column(Boolean, default=False)
     priority = Column(Integer, default=0)
     is_active = Column(Boolean, default=True)
@@ -159,6 +159,7 @@ class Station(Base):
     tariff_plan = relationship("TariffPlan", back_populates="stations")
     charging_sessions = relationship("ChargingSession", back_populates="station")
     maintenance_records = relationship("Maintenance", back_populates="station")
+    ocpp_status = relationship("OCPPStationStatus", back_populates="station")
 
 class Maintenance(Base):
     __tablename__ = 'maintenance'
@@ -195,3 +196,100 @@ class ChargingSession(Base):
     # Relationships
     user = relationship("User", back_populates="charging_sessions")
     station = relationship("Station", back_populates="charging_sessions")
+
+class OCPPStationStatus(Base):
+    """OCPP Station Status - отслеживание состояния станций в реальном времени"""
+    __tablename__ = "ocpp_station_status"
+
+    station_id = Column(String, ForeignKey("stations.id", ondelete="CASCADE"), primary_key=True)
+    status = Column(String, nullable=False, default="Available")  # Available, Preparing, Charging, etc.
+    error_code = Column(String)  # NoError, ConnectorLockFailure, etc.
+    info = Column(String)
+    vendor_id = Column(String)
+    vendor_error_code = Column(String)
+    last_heartbeat = Column(DateTime(timezone=True), server_default=func.now())
+    firmware_version = Column(String)
+    boot_notification_sent = Column(Boolean, default=False)
+    is_online = Column(Boolean, default=False)
+    connector_status = Column(JSON, default=[])  # Array of connector statuses
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationship
+    station = relationship("Station", back_populates="ocpp_status")
+
+class OCPPTransaction(Base):
+    """OCPP Transactions - отслеживание OCPP транзакций"""
+    __tablename__ = "ocpp_transactions"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    transaction_id = Column(Integer, nullable=False)
+    station_id = Column(String, ForeignKey("stations.id", ondelete="CASCADE"), nullable=False)
+    connector_id = Column(Integer, nullable=False, default=1)
+    id_tag = Column(String, nullable=False)  # RFID/NFC tag
+    meter_start = Column(Numeric, nullable=False, default=0)
+    meter_stop = Column(Numeric)
+    start_timestamp = Column(DateTime(timezone=True), nullable=False)
+    stop_timestamp = Column(DateTime(timezone=True))
+    stop_reason = Column(String)  # EmergencyStop, EVDisconnected, etc.
+    charging_session_id = Column(String, ForeignKey("charging_sessions.id"))
+    status = Column(String, nullable=False, default="Started")  # Started, Stopped
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    station = relationship("Station")
+    charging_session = relationship("ChargingSession")
+    meter_values = relationship("OCPPMeterValue", back_populates="transaction")
+
+class OCPPMeterValue(Base):
+    """OCPP Meter Values - показания счетчиков"""
+    __tablename__ = "ocpp_meter_values"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    transaction_id = Column(Integer)
+    station_id = Column(String, ForeignKey("stations.id", ondelete="CASCADE"), nullable=False)
+    connector_id = Column(Integer, nullable=False, default=1)
+    timestamp = Column(DateTime(timezone=True), nullable=False)
+    sampled_values = Column(JSON, nullable=False)  # Raw OCPP data
+    energy_active_import_register = Column(Numeric)  # kWh delivered
+    power_active_import = Column(Numeric)  # W current power
+    current_import = Column(Numeric)  # A current
+    voltage = Column(Numeric)  # V voltage
+    temperature = Column(Numeric)  # °C temperature
+    soc = Column(Numeric)  # % State of Charge
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationships
+    station = relationship("Station")
+    transaction = relationship("OCPPTransaction", back_populates="meter_values")
+
+class OCPPAuthorization(Base):
+    """OCPP Authorization - управление RFID/NFC тегами"""
+    __tablename__ = "ocpp_authorization"
+
+    id_tag = Column(String, primary_key=True)
+    parent_id_tag = Column(String)
+    expiry_date = Column(DateTime(timezone=True))
+    status = Column(String, nullable=False, default="Accepted")  # Accepted, Blocked, Expired, etc.
+    user_id = Column(String, ForeignKey("users.id"))
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    user = relationship("User")
+
+class OCPPConfiguration(Base):
+    """OCPP Configuration - конфигурация станций"""
+    __tablename__ = "ocpp_configuration"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    station_id = Column(String, ForeignKey("stations.id", ondelete="CASCADE"), nullable=False)
+    key = Column(String, nullable=False)
+    value = Column(String)
+    readonly = Column(Boolean, default=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    # Relationships
+    station = relationship("Station")
