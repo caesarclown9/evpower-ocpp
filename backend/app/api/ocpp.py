@@ -3,7 +3,7 @@ from typing import List, Optional
 from app.schemas.ocpp import (
     OCPPConnection, OCPPConnectionCreate,
     OCPPTransaction, OCPPTransactionCreate,
-    Tariff, TariffCreate, ChargingSession, ChargingSessionCreate, LimitType, ChargingSessionStatus,
+    ChargingSession, ChargingSessionCreate, LimitType, ChargingSessionStatus,
     User, UserCreate, Station, StationCreate, Location, LocationCreate,
     TariffPlan, TariffPlanCreate, TariffRule, TariffRuleCreate
 )
@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from ocpp_ws_server.redis_manager import redis_manager
 from app.crud.ocpp import (
-    create_tariff, get_tariff, list_tariffs, update_tariff, delete_tariff,
     create_charging_session, get_charging_session, list_charging_sessions, update_charging_session, delete_charging_session,
     create_user, get_user, list_users, get_user_by_email,
     create_station, get_station, list_stations, get_station_by_serial, update_station,
@@ -194,27 +193,6 @@ def get_tariff_rule_api(tariff_rule_id: str, db: Session = Depends(get_db)):
     if not tariff_rule:
         raise HTTPException(404, "Tariff rule not found")
     return tariff_rule
-
-# --- CRUD для тарифов (legacy API) ---
-@router.post("/tariffs", response_model=Tariff)
-def create_tariff_api(tariff_in: TariffCreate, db: Session = Depends(get_db)):
-    return create_tariff(db, tariff_in)
-
-@router.get("/tariffs", response_model=List[Tariff])
-def list_tariffs_api(station_id: Optional[str] = None, db: Session = Depends(get_db)):
-    return list_tariffs(db, station_id)
-
-@router.get("/tariffs/{tariff_id}", response_model=Tariff)
-def get_tariff_api(tariff_id: str, db: Session = Depends(get_db)):
-    tariff = get_tariff(db, tariff_id)
-    if not tariff:
-        raise HTTPException(404, "Tariff not found")
-    return tariff
-
-@router.delete("/tariffs/{tariff_id}")
-def delete_tariff_api(tariff_id: str, db: Session = Depends(get_db)):
-    delete_tariff(db, tariff_id)
-    return {"status": "deleted"}
 
 # --- CRUD для сессий зарядки ---
 @router.post("/sessions", response_model=ChargingSession)

@@ -8,7 +8,7 @@ from app.db.models.ocpp import (
 from app.schemas.ocpp import (
     UserCreate, ClientCreate, LocationCreate, StationCreate, 
     MaintenanceCreate, ChargingSessionCreate, TariffPlanCreate, 
-    TariffRuleCreate, TariffCreate
+    TariffRuleCreate
 )
 from decimal import Decimal
 import uuid
@@ -250,57 +250,4 @@ def calculate_charging_cost(db: Session, station_id: str, energy_kwh: float) -> 
                 }
     
     return {"cost": 0, "currency": "KGS", "error": "No tariff found"}
-
-# --- Legacy CRUD для обратной совместимости ---
-def create_tariff(db: Session, tariff_in: TariffCreate):
-    """Legacy функция для создания простого тарифа"""
-    # Создаем простой тарифный план и правило
-    tariff_plan = TariffPlan(
-        name=f"Station {tariff_in.station_id} Tariff",
-        description="Auto-generated tariff plan"
-    )
-    db.add(tariff_plan)
-    db.commit()
-    db.refresh(tariff_plan)
-    
-    tariff_rule = TariffRule(
-        tariff_plan_id=tariff_plan.id,
-        name="Base Rate",
-        price=Decimal(str(tariff_in.price_per_kwh)),
-        currency=tariff_in.currency
-    )
-    db.add(tariff_rule)
-    db.commit()
-    
-    # Обновляем станцию
-    update_station(db, tariff_in.station_id, {
-        "tariff_plan_id": tariff_plan.id,
-        "price_per_kwh": tariff_in.price_per_kwh,
-        "currency": tariff_in.currency
-    })
-    
-    return tariff_rule
-
-def get_tariff(db: Session, tariff_id: str):
-    """Legacy функция"""
-    return get_tariff_rule(db, tariff_id)
-
-def list_tariffs(db: Session, station_id: Optional[str] = None):
-    """Legacy функция"""
-    if station_id:
-        station = get_station(db, station_id)
-        if station and station.tariff_plan_id:
-            return list_tariff_rules(db, station.tariff_plan_id)
-    return list_tariff_rules(db)
-
-def update_tariff(db: Session, tariff_id: str, data: dict):
-    """Legacy функция"""
-    db.execute(update(TariffRule).where(TariffRule.id == tariff_id).values(**data))
-    db.commit()
-    return get_tariff_rule(db, tariff_id)
-
-def delete_tariff(db: Session, tariff_id: str) -> None:
-    """Legacy функция"""
-    db.execute(delete(TariffRule).where(TariffRule.id == tariff_id))
-    db.commit()
 

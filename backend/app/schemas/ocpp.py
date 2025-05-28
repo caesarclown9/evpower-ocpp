@@ -242,17 +242,3 @@ class ChargingSession(ChargingSessionBase):
     transaction_id: Optional[str] = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
-
-# Legacy schemas for backward compatibility
-class TariffBase(BaseModel):
-    station_id: str
-    price_per_kwh: float
-    currency: str = 'KGS'
-
-class TariffCreate(TariffBase):
-    pass
-
-class Tariff(TariffBase):
-    id: str
-    created_at: datetime
-    model_config = ConfigDict(from_attributes=True)

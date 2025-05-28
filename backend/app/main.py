@@ -71,13 +71,13 @@ if cors_origins and cors_origins[0]:
     )
 else:
     # Для development
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Подключение OCPP роутера
 app.include_router(ocpp.router)
@@ -118,8 +118,8 @@ async def on_startup():
     
     try:
         # Создание таблиц БД
-        with engine.begin() as conn:
-            Base.metadata.create_all(bind=conn)
+    with engine.begin() as conn:
+        Base.metadata.create_all(bind=conn)
         logger.info("✅ База данных инициализирована")
         
         # Создание директории для логов
@@ -167,30 +167,30 @@ class ChargePoint(CP):
         self.logger.info(f"▶️ StartTransaction: connector={connector_id}, id_tag={id_tag}, meter_start={meter_start}")
         
         try:
-            session = active_sessions.get(self.id, {})
-            session['meter_start'] = meter_start
-            session['energy_delivered'] = 0.0
-            transaction_id = int(datetime.utcnow().timestamp())
-            session['transaction_id'] = transaction_id
-            active_sessions[self.id] = session
+        session = active_sessions.get(self.id, {})
+        session['meter_start'] = meter_start
+        session['energy_delivered'] = 0.0
+        transaction_id = int(datetime.utcnow().timestamp())
+        session['transaction_id'] = transaction_id
+        active_sessions[self.id] = session
             
             # Логирование в Redis для мониторинга
-            transaction = {
-                "station_id": self.id,
-                "type": "start",
-                "connector_id": connector_id,
-                "id_tag": id_tag,
-                "meter_start": meter_start,
-                "timestamp": timestamp,
-                "created_at": datetime.utcnow().isoformat(),
-                "transaction_id": transaction_id
-            }
+        transaction = {
+            "station_id": self.id,
+            "type": "start",
+            "connector_id": connector_id,
+            "id_tag": id_tag,
+            "meter_start": meter_start,
+            "timestamp": timestamp,
+            "created_at": datetime.utcnow().isoformat(),
+            "transaction_id": transaction_id
+        }
             
             self.logger.info(f"✅ Transaction started: {transaction_id}")
-            return call_result.StartTransactionPayload(
-                transaction_id=transaction_id,
-                id_tag_info={"status": "Accepted"}
-            )
+        return call_result.StartTransactionPayload(
+            transaction_id=transaction_id,
+            id_tag_info={"status": "Accepted"}
+        )
         except Exception as e:
             self.logger.error(f"❌ Error in StartTransaction: {e}")
             return call_result.StartTransactionPayload(
@@ -203,22 +203,22 @@ class ChargePoint(CP):
         self.logger.info(f"⏹️ StopTransaction: transaction_id={transaction_id}, meter_stop={meter_stop}")
         
         try:
-            session_info = active_sessions.get(self.id)
-            if self.id in active_sessions:
-                del active_sessions[self.id]
+        session_info = active_sessions.get(self.id)
+        if self.id in active_sessions:
+            del active_sessions[self.id]
             
             # Обновление сессии в БД
-            if session_info and session_info.get('session_id'):
-                session_id = session_info['session_id']
+        if session_info and session_info.get('session_id'):
+            session_id = session_info['session_id']
                 db = SessionLocal()
                 try:
-                    charging_session = get_charging_session(db, session_id)
-                    if charging_session:
-                        meter_start = session_info.get('meter_start', 0.0)
-                        energy_delivered = float(meter_stop) - float(meter_start)
-                        tariffs = list_tariffs(db, charging_session.station_id)
-                        tariff = tariffs[0] if tariffs else None
-                        amount = energy_delivered * tariff.price_per_kwh if tariff else 0.0
+                charging_session = get_charging_session(db, session_id)
+                if charging_session:
+                    meter_start = session_info.get('meter_start', 0.0)
+                    energy_delivered = float(meter_stop) - float(meter_start)
+                    tariffs = list_tariffs(db, charging_session.station_id)
+                    tariff = tariffs[0] if tariffs else None
+                    amount = energy_delivered * tariff.price_per_kwh if tariff else 0.0
                         
                         update_charging_session(db, session_id, {
                             'energy': energy_delivered,
@@ -229,14 +229,14 @@ class ChargePoint(CP):
                         db.commit()
                         
                         self.logger.info(f"💰 Session updated: energy={energy_delivered}kWh, amount=${amount}")
-                except Exception as e:
+            except Exception as e:
                     self.logger.error(f"❌ DB error in StopTransaction: {e}")
-                finally:
-                    db.close()
+            finally:
+                db.close()
             
-            return call_result.StopTransactionPayload(
-                id_tag_info={"status": "Accepted"}
-            )
+        return call_result.StopTransactionPayload(
+            id_tag_info={"status": "Accepted"}
+        )
         except Exception as e:
             self.logger.error(f"❌ Error in StopTransaction: {e}")
             return call_result.StopTransactionPayload(
@@ -248,23 +248,23 @@ class ChargePoint(CP):
         self.logger.debug(f"📊 MeterValues from {self.id}: {meter_value}")
         
         try:
-            session = active_sessions.get(self.id)
-            if not session:
-                return
+        session = active_sessions.get(self.id)
+        if not session:
+            return
                 
             value = meter_value[0]['sampledValue'][0]['value']
             value = float(value)
-            meter_start = session.get('meter_start', 0.0)
-            energy_delivered = value - meter_start
-            session['energy_delivered'] = energy_delivered
-            energy_limit = session.get('energy_limit')
+        meter_start = session.get('meter_start', 0.0)
+        energy_delivered = value - meter_start
+        session['energy_delivered'] = energy_delivered
+        energy_limit = session.get('energy_limit')
             
             # Автоматическая остановка при достижении лимита
-            if energy_limit and energy_delivered >= energy_limit:
+        if energy_limit and energy_delivered >= energy_limit:
                 self.logger.warning(f"⚠️ Energy limit reached: {energy_delivered} >= {energy_limit}")
-                await redis_manager.publish_command(self.id, {"command": "RemoteStopTransaction"})
+            await redis_manager.publish_command(self.id, {"command": "RemoteStopTransaction"})
                 
-            active_sessions[self.id] = session
+        active_sessions[self.id] = session
         except Exception as e:
             self.logger.error(f"❌ Error in MeterValues: {e}")
 
@@ -273,28 +273,28 @@ async def handle_pubsub_commands(charge_point: ChargePoint, station_id: str):
     logger.info(f"📡 Listening for commands for station {station_id}")
     
     try:
-        async for command in redis_manager.listen_commands(station_id):
+    async for command in redis_manager.listen_commands(station_id):
             logger.info(f"📨 Command received for {station_id}: {command}")
             
             try:
-                if command.get("command") == "RemoteStartTransaction":
-                    payload = command.get("payload", {})
-                    session_id = payload.get("session_id")
-                    energy_limit = payload.get("energy_limit")
+        if command.get("command") == "RemoteStartTransaction":
+            payload = command.get("payload", {})
+            session_id = payload.get("session_id")
+            energy_limit = payload.get("energy_limit")
                     
-                    active_sessions[station_id] = {
-                        "session_id": session_id,
-                        "energy_limit": energy_limit,
-                        "energy_delivered": 0.0
-                    }
+            active_sessions[station_id] = {
+                "session_id": session_id,
+                "energy_limit": energy_limit,
+                "energy_delivered": 0.0
+            }
                     
-                    response = await charge_point.call("RemoteStartTransaction", **payload)
+            response = await charge_point.call("RemoteStartTransaction", **payload)
                     logger.info(f"✅ RemoteStartTransaction response: {response}")
                     
-                elif command.get("command") == "RemoteStopTransaction":
+        elif command.get("command") == "RemoteStopTransaction":
                     logger.info(f"⏹️ RemoteStopTransaction for {station_id}")
-                    session = active_sessions.get(station_id, {})
-                    transaction_id = session.get('transaction_id', 1)
+            session = active_sessions.get(station_id, {})
+            transaction_id = session.get('transaction_id', 1)
                     
                     await charge_point.call("StopTransaction", 
                                            transaction_id=transaction_id, 
@@ -316,11 +316,11 @@ async def ocpp_ws(websocket: WebSocket, station_id: str):
     logger.info(f"🔌 New OCPP connection from {client_ip} for station {station_id}")
     
     try:
-        await websocket.accept(subprotocol="ocpp1.6")
-        charge_point = ChargePoint(station_id, websocket)
-        await redis_manager.register_station(station_id)
+    await websocket.accept(subprotocol="ocpp1.6")
+    charge_point = ChargePoint(station_id, websocket)
+    await redis_manager.register_station(station_id)
         
-        pubsub_task = asyncio.create_task(handle_pubsub_commands(charge_point, station_id))
+    pubsub_task = asyncio.create_task(handle_pubsub_commands(charge_point, station_id))
         
         logger.info(f"✅ Station {station_id} connected and registered")
         await charge_point.start()
@@ -332,8 +332,8 @@ async def ocpp_ws(websocket: WebSocket, station_id: str):
         logger.error(traceback.format_exc())
     finally:
         try:
-            pubsub_task.cancel()
-            await redis_manager.unregister_station(station_id)
+        pubsub_task.cancel()
+        await redis_manager.unregister_station(station_id)
             logger.info(f"🔌 Station {station_id} cleanup completed")
         except Exception as e:
             logger.error(f"❌ Error during cleanup for {station_id}: {e}")

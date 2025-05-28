@@ -87,11 +87,11 @@ class ChargePoint(CP):
                     amount = energy_delivered * tariff.price_per_kwh if tariff else 0.0
                     # Обновляем сессию
                     update_charging_session(db, session_id, {
-                        'energy': energy_delivered,
-                        'amount': amount,
-                        'status': 'stopped',
-                        'stop_time': datetime.utcnow()
-                    })
+                            'energy': energy_delivered,
+                            'amount': amount,
+                            'status': 'stopped',
+                            'stop_time': datetime.utcnow()
+                        })
                     db.commit()
             except Exception as e:
                 print(f"[DB ERROR] Ошибка при обновлении ChargingSession: {e}")
