@@ -313,6 +313,8 @@ class OCPPChargePoint(CP):
                 
         except Exception as e:
             self.logger.error(f"Error in MeterValues: {e}")
+        
+        return call_result.MeterValues()
 
     # ============================================================================
     # TIER 1: ДОПОЛНИТЕЛЬНЫЕ (критически важные)
