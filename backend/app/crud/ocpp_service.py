@@ -49,17 +49,20 @@ class OCPPStationService:
     
     @staticmethod
     def update_heartbeat(db: Session, station_id: str) -> OCPPStationStatus:
-        """Обновление последнего heartbeat"""
+        """Обновляет время последнего heartbeat"""
         station_status = db.query(OCPPStationStatus).filter(
             OCPPStationStatus.station_id == station_id
         ).first()
         
         if not station_status:
-            station_status = OCPPStationStatus(station_id=station_id)
+            station_status = OCPPStationStatus(
+                station_id=station_id,
+                status="Available"
+            )
             db.add(station_status)
         
         station_status.last_heartbeat = datetime.utcnow()
-        station_status.is_online = True
+        station_status.updated_at = datetime.utcnow()
         
         db.commit()
         db.refresh(station_status)
@@ -67,22 +70,27 @@ class OCPPStationService:
     
     @staticmethod
     def mark_boot_notification_sent(
-        db: Session, 
-        station_id: str, 
+        db: Session,
+        station_id: str,
         firmware_version: str = None
     ) -> OCPPStationStatus:
-        """Отметка об отправке BootNotification"""
+        """Отмечает отправку BootNotification"""
         station_status = db.query(OCPPStationStatus).filter(
             OCPPStationStatus.station_id == station_id
         ).first()
         
         if not station_status:
-            station_status = OCPPStationStatus(station_id=station_id)
+            station_status = OCPPStationStatus(
+                station_id=station_id,
+                status="Available",
+                firmware_version=firmware_version
+            )
             db.add(station_status)
-        
-        station_status.boot_notification_sent = True
-        station_status.firmware_version = firmware_version
-        station_status.is_online = True
+        else:
+            if firmware_version:
+                station_status.firmware_version = firmware_version
+            station_status.status = "Available"
+            station_status.updated_at = datetime.utcnow()
         
         db.commit()
         db.refresh(station_status)
@@ -90,7 +98,7 @@ class OCPPStationService:
     
     @staticmethod
     def get_station_status(db: Session, station_id: str) -> Optional[OCPPStationStatus]:
-        """Получение статуса станции"""
+        """Получает статус станции"""
         return db.query(OCPPStationStatus).filter(
             OCPPStationStatus.station_id == station_id
         ).first()
@@ -325,21 +333,21 @@ class OCPPAuthorizationService:
         return auth.user_id if auth else None
 
 class OCPPConfigurationService:
-    """Сервис для управления конфигурацией станций"""
+    """Сервис для управления конфигурацией OCPP"""
     
     @staticmethod
     def get_configuration(
-        db: Session, 
-        station_id: str, 
-        key: str = None
+        db: Session,
+        station_id: str,
+        keys: List[str] = None
     ) -> List[OCPPConfiguration]:
-        """Получение конфигурации станции"""
+        """Получение конфигурационных параметров"""
         query = db.query(OCPPConfiguration).filter(
             OCPPConfiguration.station_id == station_id
         )
         
-        if key:
-            query = query.filter(OCPPConfiguration.key == key)
+        if keys:
+            query = query.filter(OCPPConfiguration.key.in_(keys))
         
         return query.all()
     
@@ -351,7 +359,7 @@ class OCPPConfigurationService:
         value: str,
         readonly: bool = False
     ) -> OCPPConfiguration:
-        """Установка конфигурации станции"""
+        """Установка конфигурационного параметра"""
         config = db.query(OCPPConfiguration).filter(
             OCPPConfiguration.station_id == station_id,
             OCPPConfiguration.key == key
@@ -372,5 +380,51 @@ class OCPPConfigurationService:
         
         db.commit()
         db.refresh(config)
+        return config
+    
+    @staticmethod
+    def change_configuration(
+        db: Session,
+        station_id: str,
+        key: str,
+        value: str
+    ) -> Dict[str, str]:
+        """Изменение конфигурации с проверкой readonly"""
+        config = db.query(OCPPConfiguration).filter(
+            OCPPConfiguration.station_id == station_id,
+            OCPPConfiguration.key == key
+        ).first()
         
-        return config 
+        if not config:
+            # Создаем новый параметр
+            config = OCPPConfiguration(
+                station_id=station_id,
+                key=key,
+                value=value
+            )
+            db.add(config)
+            db.commit()
+            return {"status": "Accepted"}
+        
+        if config.readonly:
+            return {"status": "Rejected"}
+        
+        # Валидация известных параметров
+        known_configs = {
+            "HeartbeatInterval": lambda v: v.isdigit() and 30 <= int(v) <= 3600,
+            "MeterValueSampleInterval": lambda v: v.isdigit() and 5 <= int(v) <= 3600,
+            "NumberOfConnectors": lambda v: v.isdigit() and 1 <= int(v) <= 10,
+            "AuthorizeRemoteTxRequests": lambda v: v.lower() in ["true", "false"],
+            "LocalAuthorizeOffline": lambda v: v.lower() in ["true", "false"],
+            "TransactionMessageAttempts": lambda v: v.isdigit() and 1 <= int(v) <= 10
+        }
+        
+        if key in known_configs:
+            if not known_configs[key](value):
+                return {"status": "Rejected"}
+        
+        config.value = value
+        config.updated_at = datetime.utcnow()
+        db.commit()
+        
+        return {"status": "Accepted"} 
