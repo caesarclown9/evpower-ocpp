@@ -4,14 +4,11 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     # Database settings for Supabase
-    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "https://fsoffzrngojgsigrmlui.supabase.co")
-    SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZzb2ZmenJuZ29qZ3NpZ3JtbHVpIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDc3NDI0MjgsImV4cCI6MjA2MzMxODQyOH0.sYUOvl85imQdQx0Z5SAs3VsuDwM9Lg7t56lQTSAUqSE")
+    SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
+    SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
     
     # PostgreSQL connection URL for Supabase
-    DATABASE_URL: str = os.getenv(
-        "DATABASE_URL", 
-        "postgresql://postgres.fsoffzrngojgsigrmlui:YourActualPassword@aws-0-eu-north-1.pooler.supabase.com:6543/postgres"
-    )
+    DATABASE_URL: str = os.getenv("DATABASE_URL", "")
     
     # Redis settings
     REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
@@ -25,25 +22,34 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
-    # Legacy JWT settings (backward compatibility)
-    JWT_SECRET_KEY: Optional[str] = None
-    JWT_ALGORITHM: Optional[str] = None
-    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: Optional[str] = None
+    # App settings - правильные порты для production
+    APP_HOST: str = os.getenv("APP_HOST", "0.0.0.0")
+    APP_PORT: int = int(os.getenv("APP_PORT", "8180"))  # Production порт
     
-    # App settings
-    APP_HOST: Optional[str] = "0.0.0.0"
-    APP_PORT: Optional[str] = "8000"
+    # OCPP WebSocket settings
+    OCPP_WS_PORT: int = int(os.getenv("OCPP_WS_PORT", "8180"))
+    OCPP_PROTOCOL_VERSION: str = os.getenv("OCPP_PROTOCOL_VERSION", "1.6")
     
-    # CORS
+    # CORS для FlutterFlow и внешних приложений
     ALLOWED_HOSTS: str = os.getenv("ALLOWED_HOSTS", "*")
-    CORS_ORIGINS: str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8000")
+    CORS_ORIGINS: str = os.getenv(
+        "CORS_ORIGINS", 
+        "http://localhost:3000,http://localhost:8180,https://app.flutterflow.io"
+    )
     
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
-    LOG_PATH: str = os.getenv("LOG_PATH", "/tmp/logs")
+    LOG_PATH: str = os.getenv("LOG_PATH", "/var/log/evpower-ocpp")
+    
+    # Environment
+    APP_ENV: str = os.getenv("APP_ENV", "development")
+    
+    @property
+    def is_production(self) -> bool:
+        return self.APP_ENV == "production"
     
     class Config:
         env_file = ".env"
-        extra = "ignore"  # Игнорируем дополнительные поля
+        extra = "ignore"
 
 settings = Settings() 

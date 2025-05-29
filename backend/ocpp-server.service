@@ -2,7 +2,7 @@
 # Сохранить как /etc/systemd/system/evpower-ocpp.service
 
 [Unit]
-Description=EvPower OCPP Server
+Description=EvPower OCPP Server - Pure FastAPI
 After=network.target postgresql.service redis.service
 Requires=postgresql.service redis.service
 
@@ -13,7 +13,7 @@ Group=evpower
 WorkingDirectory=/opt/evpower-ocpp/backend
 Environment=PATH=/opt/evpower-ocpp/backend/venv/bin
 EnvironmentFile=/opt/evpower-ocpp/backend/.env
-ExecStart=/opt/evpower-ocpp/backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8180 --workers 4
+ExecStart=/opt/evpower-ocpp/backend/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port 8180 --workers 1
 ExecReload=/bin/kill -HUP $MAINPID
 KillMode=mixed
 TimeoutStopSec=5
