@@ -247,7 +247,8 @@ class OCPPMeterValue(Base):
     __tablename__ = "ocpp_meter_values"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    transaction_id = Column(Integer)
+    transaction_id = Column(Integer, nullable=True)  # OCPP transaction_id (not FK)
+    ocpp_transaction_id = Column(Integer, ForeignKey("ocpp_transactions.id"), nullable=True)  # FK to OCPPTransaction.id
     station_id = Column(String, ForeignKey("stations.id", ondelete="CASCADE"), nullable=False)
     connector_id = Column(Integer, nullable=False, default=1)
     timestamp = Column(DateTime(timezone=True), nullable=False)
@@ -262,7 +263,8 @@ class OCPPMeterValue(Base):
 
     # Relationships
     station = relationship("Station")
-    transaction = relationship("OCPPTransaction", back_populates="meter_values")
+    transaction = relationship("OCPPTransaction", back_populates="meter_values", 
+                             foreign_keys=[ocpp_transaction_id])
 
 class OCPPAuthorization(Base):
     """OCPP Authorization - управление RFID/NFC тегами"""

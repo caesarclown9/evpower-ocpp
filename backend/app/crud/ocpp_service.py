@@ -202,6 +202,16 @@ class OCPPMeterService:
     ) -> OCPPMeterValue:
         """Добавление показаний счетчика"""
         
+        # Находим OCPPTransaction объект по transaction_id
+        ocpp_transaction_id = None
+        if transaction_id:
+            ocpp_transaction = db.query(OCPPTransaction).filter(
+                OCPPTransaction.transaction_id == transaction_id,
+                OCPPTransaction.station_id == station_id
+            ).first()
+            if ocpp_transaction:
+                ocpp_transaction_id = ocpp_transaction.id
+        
         # Парсим показания
         energy = None
         power = None
@@ -232,7 +242,8 @@ class OCPPMeterService:
                     continue
         
         meter_value = OCPPMeterValue(
-            transaction_id=transaction_id,
+            transaction_id=transaction_id,  # OCPP transaction_id (не FK)
+            ocpp_transaction_id=ocpp_transaction_id,  # FK к OCPPTransaction.id
             station_id=station_id,
             connector_id=connector_id,
             timestamp=timestamp,
