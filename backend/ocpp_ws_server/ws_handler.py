@@ -113,12 +113,12 @@ class OCPPChargePoint(CP):
                 vendor_id = kwargs.get('vendor_id')
                 vendor_error_code = kwargs.get('vendor_error_code')
                 
-                # Обновляем статус станции с информацией о коннекторе
+                # Обновляем статус станции (старая логика для совместимости)
                 station_status = OCPPStationService.update_station_status(
                     db, self.id, status, error_code, info, vendor_id, vendor_error_code
                 )
                 
-                # Обновляем статус коннектора в JSON поле
+                # Обновляем статус коннектора в JSON поле (старая логика)
                 connector_status = station_status.connector_status or []
                 
                 # Находим или создаем статус для коннектора
@@ -145,6 +145,31 @@ class OCPPChargePoint(CP):
                     })
                 
                 station_status.connector_status = connector_status
+                
+                # 🆕 НОВАЯ ЛОГИКА: Обновляем таблицу connectors
+                # Конвертируем OCPP статус в наш формат
+                connector_status_mapping = {
+                    'Available': 'Available',
+                    'Preparing': 'Occupied', 
+                    'Charging': 'Occupied',
+                    'SuspendedEVSE': 'Occupied',
+                    'SuspendedEV': 'Occupied',
+                    'Finishing': 'Occupied',
+                    'Reserved': 'Occupied',
+                    'Unavailable': 'Unavailable',
+                    'Faulted': 'Faulted'
+                }
+                
+                new_status = connector_status_mapping.get(status, 'Unavailable')
+                
+                # Обновляем запись в таблице connectors
+                update_query = """
+                    UPDATE connectors 
+                    SET status = %s, error_code = %s, last_status_update = NOW()
+                    WHERE station_id = %s AND connector_number = %s
+                """
+                db.execute(update_query, (new_status, error_code, self.id, connector_id))
+                
                 db.commit()
                 
             return call_result.StatusNotification()
@@ -198,6 +223,15 @@ class OCPPChargePoint(CP):
                     float(meter_start), datetime.fromisoformat(timestamp.replace('Z', ''))
                 )
                 
+                # 🆕 АВТОМАТИЧЕСКОЕ ОБНОВЛЕНИЕ: Коннектор становится занят
+                update_query = """
+                    UPDATE connectors 
+                    SET status = 'Occupied', last_status_update = NOW()
+                    WHERE station_id = %s AND connector_number = %s
+                """
+                db.execute(update_query, (self.id, connector_id))
+                db.commit()
+                
                 # Сохраняем в активные сессии
                 active_sessions[self.id] = {
                     'transaction_id': transaction_id,
@@ -207,7 +241,7 @@ class OCPPChargePoint(CP):
                     'id_tag': id_tag
                 }
                 
-            self.logger.info(f"Transaction started: {transaction_id}")
+            self.logger.info(f"Transaction started: {transaction_id}, connector {connector_id} marked as Occupied")
             return call_result.StartTransaction(
                 transaction_id=transaction_id,
                 id_tag_info={"status": AuthorizationStatus.accepted}
@@ -230,17 +264,37 @@ class OCPPChargePoint(CP):
         
         try:
             with next(get_db()) as db:
+                # Получаем информацию о транзакции для определения коннектора
+                from app.models.ocpp import OCPPTransaction
+                transaction = db.query(OCPPTransaction).filter(
+                    OCPPTransaction.station_id == self.id,
+                    OCPPTransaction.transaction_id == transaction_id
+                ).first()
+                
+                connector_id = transaction.connector_id if transaction else None
+                
                 # Завершаем транзакцию
                 transaction = OCPPTransactionService.stop_transaction(
                     db, self.id, transaction_id, float(meter_stop),
                     datetime.fromisoformat(timestamp.replace('Z', '')), reason
                 )
                 
+                # 🆕 АВТОМАТИЧЕСКОЕ ОБНОВЛЕНИЕ: Коннектор становится свободен
+                if connector_id:
+                    update_query = """
+                        UPDATE connectors 
+                        SET status = 'Available', error_code = 'NoError', last_status_update = NOW()
+                        WHERE station_id = %s AND connector_number = %s
+                    """
+                    db.execute(update_query, (self.id, connector_id))
+                
+                db.commit()
+                
                 # Очищаем активные сессии
                 if self.id in active_sessions:
                     del active_sessions[self.id]
                 
-            self.logger.info(f"Transaction completed: {transaction_id}")
+            self.logger.info(f"Transaction completed: {transaction_id}, connector {connector_id} marked as Available")
             return call_result.StopTransaction(
                 id_tag_info={"status": AuthorizationStatus.accepted}
             )

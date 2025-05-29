@@ -8,6 +8,7 @@ import os
 from app.core.config import settings
 from ocpp_ws_server.ws_handler import OCPPWebSocketHandler
 from ocpp_ws_server.redis_manager import redis_manager
+from app.api import mobile  # Импорт mobile API
 
 # Настройка логирования
 logging.basicConfig(
@@ -20,12 +21,10 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Lifecycle manager для приложения"""
     logger.info("🚀 Starting OCPP WebSocket Server...")
-    await redis_manager.connect()
-    logger.info("✅ Redis connection established")
+    logger.info("✅ Redis manager initialized") 
     yield
     logger.info("🛑 Shutting down OCPP WebSocket Server...")
-    await redis_manager.disconnect()
-    logger.info("✅ Redis connection closed")
+    logger.info("✅ Application shutdown complete")
 
 # Создание FastAPI приложения
 app = FastAPI(
@@ -49,6 +48,13 @@ app.add_middleware(
     allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
+
+# ============================================================================
+# ПОДКЛЮЧЕНИЕ API РОУТЕРОВ
+# ============================================================================
+
+# Mobile API для FlutterFlow
+app.include_router(mobile.router)
 
 # ============================================================================
 # HEALTH CHECK ENDPOINT (единственный HTTP endpoint)
