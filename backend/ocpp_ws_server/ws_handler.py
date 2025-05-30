@@ -30,6 +30,7 @@ from app.crud.ocpp_service import (
     OCPPConfigurationService
 )
 from app.db.models.ocpp import OCPPTransaction
+from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
 
@@ -164,12 +165,17 @@ class OCPPChargePoint(CP):
                 new_status = connector_status_mapping.get(status, 'Unavailable')
                 
                 # Обновляем запись в таблице connectors
-                update_query = """
+                update_query = text("""
                     UPDATE connectors 
-                    SET status = %s, error_code = %s, last_status_update = NOW()
-                    WHERE station_id = %s AND connector_number = %s
-                """
-                db.execute(update_query, (new_status, error_code, self.id, connector_id))
+                    SET status = :status, error_code = :error_code, last_status_update = NOW()
+                    WHERE station_id = :station_id AND connector_number = :connector_id
+                """)
+                db.execute(update_query, {
+                    "status": new_status.lower(), 
+                    "error_code": error_code, 
+                    "station_id": self.id, 
+                    "connector_id": connector_id
+                })
                 
                 db.commit()
                 
@@ -225,12 +231,12 @@ class OCPPChargePoint(CP):
                 )
                 
                 # 🆕 АВТОМАТИЧЕСКОЕ ОБНОВЛЕНИЕ: Коннектор становится занят
-                update_query = """
+                update_query = text("""
                     UPDATE connectors 
-                    SET status = 'Occupied', last_status_update = NOW()
-                    WHERE station_id = %s AND connector_number = %s
-                """
-                db.execute(update_query, (self.id, connector_id))
+                    SET status = 'occupied', last_status_update = NOW()
+                    WHERE station_id = :station_id AND connector_number = :connector_id
+                """)
+                db.execute(update_query, {"station_id": self.id, "connector_id": connector_id})
                 db.commit()
                 
                 # Сохраняем в активные сессии
@@ -281,12 +287,12 @@ class OCPPChargePoint(CP):
                 
                 # 🆕 АВТОМАТИЧЕСКОЕ ОБНОВЛЕНИЕ: Коннектор становится свободен
                 if connector_id:
-                    update_query = """
+                    update_query = text("""
                         UPDATE connectors 
-                        SET status = 'Available', error_code = 'NoError', last_status_update = NOW()
-                        WHERE station_id = %s AND connector_number = %s
-                    """
-                    db.execute(update_query, (self.id, connector_id))
+                        SET status = 'available', error_code = 'NoError', last_status_update = NOW()
+                        WHERE station_id = :station_id AND connector_number = :connector_id
+                    """)
+                    db.execute(update_query, {"station_id": self.id, "connector_id": connector_id})
                 
                 db.commit()
                 
