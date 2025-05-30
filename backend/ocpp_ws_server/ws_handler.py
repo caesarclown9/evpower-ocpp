@@ -399,13 +399,17 @@ class OCPPChargePoint(CP):
                             'location': sample.get('location', '')
                         })
                 
+                self.logger.info(f"🔍 DEBUG: Parsed values: {sampled_values}")
+                
                 # Сохраняем показания
                 OCPPMeterService.add_meter_values(
                     db, self.id, connector_id, timestamp, sampled_values, transaction_id
                 )
                 
-                # Активная сессия для лимитов
+                # 🔍 DEBUG: Проверяем активную сессию
                 session = active_sessions.get(self.id)
+                self.logger.info(f"🔍 DEBUG: Active session for {self.id}: {session}")
+                
                 if session and sampled_values:
                     for sample in sampled_values:
                         if sample['measurand'] == 'Energy.Active.Import.Register':
@@ -415,10 +419,14 @@ class OCPPChargePoint(CP):
                                 energy_delivered = current_energy - meter_start
                                 session['energy_delivered'] = energy_delivered
                                 
+                                self.logger.info(f"🔍 ENERGY DEBUG: current={current_energy}, start={meter_start}, delivered={energy_delivered}")
+                                
                                 # 🆕 ОБНОВЛЕНИЕ МОБИЛЬНОЙ СЕССИИ: Записываем энергию в charging_sessions
                                 if session.get('id_tag', '').startswith("CLIENT_"):
                                     client_id = session['id_tag'].replace("CLIENT_", "")
                                     energy_kwh = energy_delivered / 1000.0  # Wh → kWh
+                                    
+                                    self.logger.info(f"🔍 CLIENT DEBUG: id_tag={session.get('id_tag')}, client_id={client_id}")
                                     
                                     # Получаем тариф для расчета стоимости
                                     tariff_query = text("""
@@ -430,6 +438,8 @@ class OCPPChargePoint(CP):
                                     
                                     current_amount = energy_kwh * tariff_rub_kwh
                                     
+                                    self.logger.info(f"🔍 CALC DEBUG: energy_kwh={energy_kwh}, tariff={tariff_rub_kwh}, amount={current_amount}")
+                                    
                                     # Обновляем мобильную сессию
                                     update_mobile_session_query = text("""
                                         UPDATE charging_sessions 
@@ -439,7 +449,7 @@ class OCPPChargePoint(CP):
                                         AND status = 'started'
                                         AND transaction_id IS NOT NULL
                                     """)
-                                    db.execute(update_mobile_session_query, {
+                                    result = db.execute(update_mobile_session_query, {
                                         "energy_kwh": energy_kwh,
                                         "current_amount": current_amount,
                                         "station_id": self.id,
@@ -447,7 +457,10 @@ class OCPPChargePoint(CP):
                                     })
                                     db.commit()
                                     
+                                    self.logger.info(f"🔍 UPDATE DEBUG: rows affected={result.rowcount}")
                                     self.logger.info(f"📊 Обновил мобильную сессию: {energy_kwh:.2f} kWh, {current_amount:.2f} руб")
+                                else:
+                                    self.logger.warning(f"🔍 ID_TAG DEBUG: session id_tag={session.get('id_tag')} не начинается с CLIENT_")
                                 
                                 # Проверка лимитов (если установлены)
                                 energy_limit = session.get('energy_limit')
@@ -462,8 +475,11 @@ class OCPPChargePoint(CP):
                                 
                                 active_sessions[self.id] = session
                                 break
-                            except (ValueError, TypeError):
+                            except (ValueError, TypeError) as e:
+                                self.logger.error(f"🔍 VALUE ERROR: {e}")
                                 continue
+                else:
+                    self.logger.warning(f"🔍 NO SESSION DEBUG: session={session}, sampled_values={bool(sampled_values)}")
                 
         except Exception as e:
             self.logger.error(f"Error in MeterValues: {e}")
