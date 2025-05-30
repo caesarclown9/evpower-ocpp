@@ -71,6 +71,48 @@ class OCPPChargePoint(CP):
                     db, self.id, "MeterValueSampleInterval", "60", readonly=True
                 )
                 
+                # 🆕 АВТОЗАПУСК: Проверяем pending сессии
+                pending_sessions_query = text("""
+                    SELECT id, user_id, limit_value, limit_type
+                    FROM charging_sessions 
+                    WHERE station_id = :station_id 
+                    AND status = 'started' 
+                    AND transaction_id IS NULL
+                """)
+                
+                pending_sessions = db.execute(pending_sessions_query, {"station_id": self.id}).fetchall()
+                
+                # Отправляем команды автозапуска для каждой pending сессии
+                for session in pending_sessions:
+                    session_id, user_id, limit_value, limit_type = session
+                    id_tag = f"CLIENT_{user_id}"
+                    
+                    # Определяем коннектор из занятых коннекторов
+                    connector_query = text("""
+                        SELECT connector_number FROM connectors 
+                        WHERE station_id = :station_id AND status = 'occupied'
+                        LIMIT 1
+                    """)
+                    connector_result = db.execute(connector_query, {"station_id": self.id}).fetchone()
+                    connector_id = connector_result[0] if connector_result else 1
+                    
+                    # Отправляем команду автозапуска через Redis
+                    command_data = {
+                        "action": "RemoteStartTransaction",
+                        "connector_id": connector_id,
+                        "id_tag": id_tag,
+                        "session_id": session_id,
+                        "limit_type": limit_type,
+                        "limit_value": limit_value
+                    }
+                    
+                    # Используем asyncio для отправки Redis команды
+                    asyncio.create_task(
+                        redis_manager.publish_command(self.id, command_data)
+                    )
+                    
+                    self.logger.info(f"🚀 Автозапуск зарядки для сессии {session_id}")
+                
             return call_result.BootNotification(
                 current_time=datetime.utcnow().isoformat() + 'Z',
                 interval=300,
@@ -230,6 +272,24 @@ class OCPPChargePoint(CP):
                     float(meter_start), datetime.fromisoformat(timestamp.replace('Z', ''))
                 )
                 
+                # 🆕 СВЯЗЫВАНИЕ: Обновляем мобильную сессию transaction_id
+                if id_tag.startswith("CLIENT_"):
+                    client_id = id_tag.replace("CLIENT_", "")
+                    update_session_query = text("""
+                        UPDATE charging_sessions 
+                        SET transaction_id = :transaction_id
+                        WHERE station_id = :station_id 
+                        AND user_id = :client_id 
+                        AND status = 'started' 
+                        AND transaction_id IS NULL
+                    """)
+                    db.execute(update_session_query, {
+                        "transaction_id": str(transaction_id),
+                        "station_id": self.id,
+                        "client_id": client_id
+                    })
+                    self.logger.info(f"🔗 Связал OCPP транзакцию {transaction_id} с мобильной сессией для {client_id}")
+                
                 # 🆕 АВТОМАТИЧЕСКОЕ ОБНОВЛЕНИЕ: Коннектор становится занят
                 update_query = text("""
                     UPDATE connectors 
@@ -344,7 +404,15 @@ class OCPPChargePoint(CP):
                     db, self.id, connector_id, timestamp, sampled_values, transaction_id
                 )
                 
-                # Проверяем лимиты
+                # Сохраняем в БД для мониторинга 
+                try:
+                    OCPPMeterService.save_meter_values(
+                        db, self.id, connector_id, meter_value
+                    )
+                except Exception as e:
+                    self.logger.error(f"Error saving meter values to DB: {e}")
+                
+                # Активная сессия для лимитов
                 session = active_sessions.get(self.id)
                 if session and sampled_values:
                     for sample in sampled_values:
@@ -354,6 +422,40 @@ class OCPPChargePoint(CP):
                                 meter_start = session.get('meter_start', 0.0)
                                 energy_delivered = current_energy - meter_start
                                 session['energy_delivered'] = energy_delivered
+                                
+                                # 🆕 ОБНОВЛЕНИЕ МОБИЛЬНОЙ СЕССИИ: Записываем энергию в charging_sessions
+                                if session.get('id_tag', '').startswith("CLIENT_"):
+                                    client_id = session['id_tag'].replace("CLIENT_", "")
+                                    energy_kwh = energy_delivered / 1000.0  # Wh → kWh
+                                    
+                                    # Получаем тариф для расчета стоимости
+                                    tariff_query = text("""
+                                        SELECT tariff_rub_kwh FROM stations 
+                                        WHERE id = :station_id
+                                    """)
+                                    tariff_result = db.execute(tariff_query, {"station_id": self.id}).fetchone()
+                                    tariff_rub_kwh = float(tariff_result[0]) if tariff_result and tariff_result[0] else 14.95
+                                    
+                                    current_amount = energy_kwh * tariff_rub_kwh
+                                    
+                                    # Обновляем мобильную сессию
+                                    update_mobile_session_query = text("""
+                                        UPDATE charging_sessions 
+                                        SET energy = :energy_kwh, amount = :current_amount
+                                        WHERE station_id = :station_id 
+                                        AND user_id = :client_id 
+                                        AND status = 'started'
+                                        AND transaction_id IS NOT NULL
+                                    """)
+                                    db.execute(update_mobile_session_query, {
+                                        "energy_kwh": energy_kwh,
+                                        "current_amount": current_amount,
+                                        "station_id": self.id,
+                                        "client_id": client_id
+                                    })
+                                    db.commit()
+                                    
+                                    self.logger.info(f"📊 Обновил мобильную сессию: {energy_kwh:.2f} kWh, {current_amount:.2f} руб")
                                 
                                 # Проверка лимитов (если установлены)
                                 energy_limit = session.get('energy_limit')
