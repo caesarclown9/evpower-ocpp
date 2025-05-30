@@ -1,303 +1,244 @@
 """
-Mobile API для FlutterFlow приложения
-Простые POST endpoints для управления зарядкой
+📱 Mobile API endpoints для FlutterFlow
 """
-from fastapi import APIRouter, HTTPException, Depends
-from pydantic import BaseModel
-from typing import Optional
-import uuid
-import logging
-from datetime import datetime
-
-from ocpp_ws_server.redis_manager import redis_manager
-from app.db.session import get_db
-from app.db.models.ocpp import (
-    Station, Location, OCPPStationStatus, OCPPTransaction, 
-    OCPPMeterValue, ChargingSession, OCPPAuthorization
-)
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
+from typing import Optional
+import logging
+from datetime import datetime, timezone
 
-router = APIRouter(prefix="/api/mobile", tags=["mobile"])
+from ..database import get_db
+from ..redis_client import redis_manager
+from pydantic import BaseModel, Field
+
+# Логгер
 logger = logging.getLogger(__name__)
 
-# ============================================================================
-# МОДЕЛИ ДАННЫХ
-# ============================================================================
+# Router
+router = APIRouter(prefix="/api", tags=["mobile"])
+
+# ================== Pydantic Models ==================
 
 class ChargingStartRequest(BaseModel):
-    station_id: str
-    client_id: str
-    connector_id: int
-    energy_kwh: float  # сколько кВт⋅ч заказал клиент
-    amount_rub: float  # сколько заплатил клиент
+    """🔌 Запрос на начало зарядки"""
+    client_id: str = Field(..., min_length=1, description="ID клиента")
+    station_id: str = Field(..., min_length=1, description="ID станции")
+    connector_id: int = Field(..., ge=1, description="Номер коннектора")
+    limit_type: Optional[str] = Field("time", pattern="^(time|energy|amount)$", description="Тип лимита")
+    limit_value: Optional[float] = Field(0, ge=0, description="Значение лимита")
 
-class StopChargingRequest(BaseModel):
-    station_id: str
-    client_id: str
-    session_id: Optional[str] = None
+class ChargingStopRequest(BaseModel):
+    """⏹️ Запрос на остановку зарядки"""
+    client_id: str = Field(..., min_length=1, description="ID клиента")
+    station_id: str = Field(..., min_length=1, description="ID станции")
 
 class ChargingStatusRequest(BaseModel):
-    station_id: str
-    client_id: str
-    session_id: Optional[str] = None
+    """📊 Запрос статуса зарядки"""
+    client_id: str = Field(..., min_length=1, description="ID клиента")
+    station_id: str = Field(..., min_length=1, description="ID станции")
 
 class StationStatusRequest(BaseModel):
-    station_id: str
+    """🏢 Запрос статуса станции"""
+    station_id: str = Field(..., min_length=1, description="ID станции")
 
-# ============================================================================
-# ОСНОВНЫЕ ENDPOINTS (только POST для простоты)
-# ============================================================================
+# ================== API Endpoints ==================
 
 @router.post("/charging/start")
 async def start_charging(request: ChargingStartRequest, db: Session = Depends(get_db)):
-    """
-    Запуск зарядки через mobile приложение
-    Автоматически создает авторизацию для клиента если её нет
-    """
+    """🔌 Начать зарядку"""
     try:
-        # 1. Проверяем существование станции
-        station_query = """
-            SELECT s.*, l.name as location_name, l.address as location_address 
-            FROM stations s 
-            JOIN locations l ON s.location_id = l.id 
-            WHERE s.id = :station_id AND s.status = 'active'
-        """
-        station_result = db.execute(text(station_query), {"station_id": request.station_id})
-        station = station_result.fetchone()
-        
-        if not station:
-            return {
-                "success": False, 
-                "error": "station_not_found",
-                "message": "Станция не найдена или неактивна"
-            }
-        
-        # 2. Проверяем существование клиента
-        client_query = "SELECT * FROM clients WHERE id = :client_id"
-        client_result = db.execute(text(client_query), {"client_id": request.client_id})
-        client = client_result.fetchone()
-        
-        if not client:
+        # 1. Проверяем существование клиента
+        client_check = db.execute(text("SELECT id FROM clients WHERE id = :client_id"), 
+                                {"client_id": request.client_id})
+        if not client_check.fetchone():
             return {
                 "success": False,
-                "error": "client_not_found", 
+                "error": "client_not_found",
                 "message": "Клиент не найден"
             }
+
+        # 2. Проверяем станцию
+        station_check = db.execute(text("""
+            SELECT id, status FROM stations 
+            WHERE id = :station_id AND status = 'active'
+        """), {"station_id": request.station_id})
         
-        # 3. Проверяем доступность коннектора
-        connector_query = """
-            SELECT * FROM connectors 
-            WHERE station_id = :station_id 
-            AND connector_number = :connector_id 
-            AND status = 'available'
-        """
-        connector_result = db.execute(text(connector_query), {
-            "station_id": request.station_id,
-            "connector_id": request.connector_id
-        })
-        connector = connector_result.fetchone()
+        station = station_check.fetchone()
+        if not station:
+            return {
+                "success": False,
+                "error": "station_unavailable",
+                "message": "Станция недоступна"
+            }
+
+        # 3. Проверяем коннектор
+        connector_check = db.execute(text("""
+            SELECT connector_number, status FROM connectors 
+            WHERE station_id = :station_id AND connector_number = :connector_id
+        """), {"station_id": request.station_id, "connector_id": request.connector_id})
         
+        connector = connector_check.fetchone()
         if not connector:
             return {
                 "success": False,
-                "error": "connector_unavailable",
-                "message": "Коннектор недоступен"
+                "error": "connector_not_found", 
+                "message": "Коннектор не найден"
             }
         
-        # 4. Проверяем нет ли активной зарядки у клиента
-        active_session_query = """
-            SELECT * FROM charging_sessions 
-            WHERE user_id = :client_id 
-            AND status = 'started'
-        """
-        active_session_result = db.execute(text(active_session_query), {"client_id": request.client_id})
-        active_session = active_session_result.fetchone()
+        if connector[1] != "available":
+            return {
+                "success": False,
+                "error": "connector_occupied",
+                "message": "Коннектор занят или неисправен"
+            }
+
+        # 4. Проверяем активные сессии клиента
+        active_session_check = db.execute(text("""
+            SELECT id FROM charging_sessions 
+            WHERE user_id = :client_id AND status = 'started'
+        """), {"client_id": request.client_id})
         
-        if active_session:
+        if active_session_check.fetchone():
             return {
                 "success": False,
                 "error": "session_already_active",
-                "message": "У клиента уже есть активная зарядка"
+                "message": "У вас уже есть активная сессия зарядки"
             }
-        
-        # 5. Проверяем онлайн ли станция через Redis
-        try:
-            stations = await redis_manager.get_stations()
-            if request.station_id not in stations:
-                return {
-                    "success": False,
-                    "error": "station_offline", 
-                    "message": "Станция недоступна"
-                }
-        except Exception as e:
-            logger.error(f"Redis error: {e}")
+
+        # 5. Проверяем подключение станции
+        connected_stations = await redis_manager.get_stations()
+        if request.station_id not in connected_stations:
             return {
                 "success": False,
                 "error": "station_offline",
-                "message": "Станция недоступна"
+                "message": "Станция не подключена"
             }
-        
-        # 6. 🆕 АВТОМАТИЧЕСКАЯ АВТОРИЗАЦИЯ: Создаем или получаем авторизацию для клиента
+
+        # 6. Создаем авторизацию OCPP (автоматически)
         id_tag = f"CLIENT_{request.client_id}"
         
-        auth_check_query = "SELECT * FROM ocpp_authorization WHERE client_id = :client_id"
-        auth_result = db.execute(text(auth_check_query), {"client_id": request.client_id})
-        auth_record = auth_result.fetchone()
+        # Проверяем существование авторизации
+        auth_check = db.execute(text("""
+            SELECT id_tag FROM ocpp_authorization 
+            WHERE id_tag = :id_tag
+        """), {"id_tag": id_tag})
         
-        if not auth_record:
-            # Создаем новую авторизацию для клиента
-            auth_insert_query = """
-                INSERT INTO ocpp_authorization (id_tag, status, client_id, created_at, updated_at)
-                VALUES (:id_tag, 'Accepted', :client_id, NOW(), NOW())
-            """
-            db.execute(text(auth_insert_query), {
-                "id_tag": id_tag,
-                "client_id": request.client_id
-            })
-            logger.info(f"Создана авторизация для клиента {request.client_id} с id_tag {id_tag}")
-        else:
-            id_tag = auth_record.id_tag
-            logger.info(f"Используется существующая авторизация {id_tag} для клиента {request.client_id}")
-        
+        if not auth_check.fetchone():
+            # Создаем новую авторизацию
+            db.execute(text("""
+                INSERT INTO ocpp_authorization (id_tag, status, parent_id_tag) 
+                VALUES (:id_tag, 'Accepted', NULL)
+            """), {"id_tag": id_tag})
+
         # 7. Создаем сессию зарядки
-        session_id = f"CS_{request.station_id}_{request.client_id}_{int(datetime.now().timestamp())}"
-        
-        session_insert_query = """
-            INSERT INTO charging_sessions (
-                id, station_id, user_id, 
-                start_time, status, energy, amount,
-                created_at
-            ) VALUES (
-                :session_id, :station_id, :client_id,
-                NOW(), 'started', 0, 0,
-                NOW()
-            )
-        """
-        
-        db.execute(text(session_insert_query), {
-            "session_id": session_id,
+        session_insert = db.execute(text("""
+            INSERT INTO charging_sessions 
+            (user_id, station_id, start_time, status, limit_type, limit_value)
+            VALUES (:user_id, :station_id, :start_time, 'started', :limit_type, :limit_value)
+            RETURNING id
+        """), {
+            "user_id": request.client_id,
             "station_id": request.station_id,
-            "client_id": request.client_id
+            "start_time": datetime.now(timezone.utc),
+            "limit_type": request.limit_type,
+            "limit_value": request.limit_value
         })
         
-        # 8. Обновляем статус коннектора на Occupied (занят зарядкой)
-        update_connector_query = """
+        session_id = session_insert.fetchone()[0]
+
+        # 8. Обновляем статус коннектора
+        db.execute(text("""
             UPDATE connectors 
-            SET status = 'occupied', last_status_update = NOW()
+            SET status = 'occupied' 
             WHERE station_id = :station_id AND connector_number = :connector_id
-        """
-        db.execute(text(update_connector_query), {
-            "station_id": request.station_id,
-            "connector_id": request.connector_id
-        })
-        
+        """), {"station_id": request.station_id, "connector_id": request.connector_id})
+
+        # 9. Коммитим транзакцию
         db.commit()
-        
-        # 9. Отправляем команду станции через Redis
-        command = {
-            "command": "RemoteStartTransaction",
-            "payload": {
-                "connectorId": request.connector_id,
-                "idTag": id_tag,
-                "session_id": session_id,
-                "energy_limit": request.energy_kwh
-            }
+
+        # 10. Отправляем команду через Redis
+        command_data = {
+            "action": "RemoteStartTransaction",
+            "connector_id": request.connector_id,
+            "id_tag": id_tag,
+            "session_id": session_id,
+            "limit_type": request.limit_type,
+            "limit_value": request.limit_value
         }
         
-        await redis_manager.publish_command(request.station_id, command)
-        logger.info(f"Отправлена команда RemoteStartTransaction для {request.station_id}")
+        await redis_manager.publish_command(request.station_id, command_data)
+        
+        logger.info(f"✅ Зарядка запущена: сессия {session_id}, клиент {request.client_id}, станция {request.station_id}")
         
         return {
             "success": True,
             "session_id": session_id,
-            "id_tag": id_tag,
-            "message": "Команда запуска отправлена на станцию",
-            "station_name": station.location_name,
-            "connector_id": request.connector_id,
-            "energy_limit": request.energy_kwh,
-            "amount_limit": request.amount_rub
+            "message": "Команда запуска отправлена"
         }
-        
+
     except Exception as e:
         db.rollback()
         logger.error(f"Ошибка при запуске зарядки: {e}")
         return {
             "success": False,
             "error": "internal_error",
-            "message": f"Ошибка сервера: {str(e)}"
+            "message": f"Ошибка: {str(e)}"
         }
 
 @router.post("/charging/stop")
-async def stop_charging(request: StopChargingRequest, db: Session = Depends(get_db)):
-    """🛑 Остановить зарядку"""
+async def stop_charging(request: ChargingStopRequest, db: Session = Depends(get_db)):
+    """⏹️ Остановить зарядку"""
     try:
-        # Ищем активную сессию клиента на станции
-        active_session_query = """
-            SELECT * FROM charging_sessions 
-            WHERE station_id = :station_id 
-            AND user_id = :client_id 
-            AND status = 'started'
-            ORDER BY start_time DESC
+        # 1. Ищем активную сессию
+        session_query = """
+            SELECT cs.id, cs.transaction_id, c.connector_number
+            FROM charging_sessions cs
+            JOIN connectors c ON cs.station_id = c.station_id
+            WHERE cs.user_id = :client_id 
+            AND cs.station_id = :station_id 
+            AND cs.status = 'started'
+            AND c.status = 'occupied'
+            ORDER BY cs.start_time DESC
             LIMIT 1
         """
         
-        session_result = db.execute(text(active_session_query), {
-            "station_id": request.station_id,
-            "client_id": request.client_id
+        session_result = db.execute(text(session_query), {
+            "client_id": request.client_id,
+            "station_id": request.station_id
         })
-        active_session = session_result.fetchone()
+        session = session_result.fetchone()
         
-        if not active_session:
-                return {
-                    "success": False,
-                    "error": "no_active_transaction",
-                    "message": "Активная зарядка не найдена"
-                }
-            
-        session_id = active_session[0]  # id поле
-        
-        # Получаем авторизацию клиента для отправки команды
-        auth_query = "SELECT id_tag FROM ocpp_authorization WHERE client_id = :client_id"
-        auth_result = db.execute(text(auth_query), {"client_id": request.client_id})
-        auth_record = auth_result.fetchone()
-        
-        if not auth_record:
+        if not session:
             return {
                 "success": False,
-                "error": "client_not_authorized",
-                "message": "Клиент не авторизован"
+                "error": "no_active_session",
+                "message": "Активная сессия зарядки не найдена"
             }
-        
-        # Обновляем статус сессии
-        update_session_query = """
-            UPDATE charging_sessions 
-            SET status = 'stopped'
-            WHERE id = :session_id
-        """
-        db.execute(text(update_session_query), {"session_id": session_id})
-        
-        # Обновляем статус коннектора обратно на Available
-        update_connector_query = """
-            UPDATE connectors 
-            SET status = 'available', last_status_update = NOW()
-            WHERE station_id = :station_id AND connector_number = 1
-        """
-        db.execute(text(update_connector_query), {"station_id": request.station_id})
-        
-        db.commit()
-        
-        # Отправляем команду остановки через Redis
-        command = {
-            "command": "RemoteStopTransaction",
-            "payload": {
-                "session_id": session_id,
-                "client_id": request.client_id
+
+        session_id = session[0]
+        transaction_id = session[1] 
+        connector_id = session[2]
+
+        # 2. Проверяем подключение станции
+        connected_stations = await redis_manager.get_stations()
+        if request.station_id not in connected_stations:
+            return {
+                "success": False,
+                "error": "station_offline", 
+                "message": "Станция не подключена"
             }
+
+        # 3. Отправляем команду остановки через Redis
+        command_data = {
+            "action": "RemoteStopTransaction",
+            "transaction_id": transaction_id,
+            "session_id": session_id
         }
         
-        await redis_manager.publish_command(request.station_id, command)
-        logger.info(f"Отправлена команда RemoteStopTransaction для клиента {request.client_id}")
+        await redis_manager.publish_command(request.station_id, command_data)
+        
+        logger.info(f"🛑 Команда остановки отправлена: сессия {session_id}, транзакция {transaction_id}")
         
         return {
             "success": True,
@@ -334,12 +275,12 @@ async def get_charging_status(request: ChargingStatusRequest, db: Session = Depe
         session = session_result.fetchone()
         
         if not session:
-                return {
-                    "success": True,
-                    "status": "no_transaction",
-                    "message": "Зарядка не найдена"
-                }
-            
+            return {
+                "success": True,
+                "status": "no_transaction",
+                "message": "Зарядка не найдена"
+            }
+        
         # Получаем данные сессии (по структуре реальной таблицы)
         session_id = session[0]  # id
         user_id = session[1]  # user_id  
@@ -352,9 +293,9 @@ async def get_charging_status(request: ChargingStatusRequest, db: Session = Depe
         transaction_id = session[8]  # transaction_id
         limit_type = session[9]  # limit_type
         limit_value = session[10] or 0  # limit_value
-            
-            return {
-                "success": True,
+        
+        return {
+            "success": True,
             "status": status,
             "session_id": session_id,
             "start_time": start_time.isoformat() if start_time else None,
@@ -367,8 +308,8 @@ async def get_charging_status(request: ChargingStatusRequest, db: Session = Depe
             "message": "Зарядка активна" if status == 'started' 
                       else "Зарядка завершена" if status == 'stopped'
                       else "Ошибка зарядки"
-            }
-            
+        }
+        
     except Exception as e:
         logger.error(f"Ошибка при получении статуса зарядки: {e}")
         return {
@@ -404,24 +345,24 @@ async def get_station_status(request: StationStatusRequest, db: Session = Depend
         """), {"station_id": request.station_id})
         
         station_data = result.fetchone()
-            
-            if not station_data:
-                return {
-                    "success": False,
-                    "error": "station_not_found",
-                    "message": "Станция не найдена"
-                }
-            
+        
+        if not station_data:
+            return {
+                "success": False,
+                "error": "station_not_found",
+                "message": "Станция не найдена"
+            }
+        
         # Проверяем подключение станции
         connected_stations = await redis_manager.get_stations()
         is_online = request.station_id in connected_stations
         
         # Получаем статус коннекторов
         connectors_result = db.execute(text("""
-                SELECT connector_number, connector_type, power_kw, status, error_code
-                FROM connectors 
+            SELECT connector_number, connector_type, power_kw, status, error_code
+            FROM connectors 
             WHERE station_id = :station_id 
-                ORDER BY connector_number
+            ORDER BY connector_number
         """), {"station_id": request.station_id})
         
         connectors = []
@@ -450,52 +391,52 @@ async def get_station_status(request: StationStatusRequest, db: Session = Depend
                 connector_available = False
                 faulted_count += 1
                 status_text = "Неизвестно"
-                
-                connectors.append({
+            
+            connectors.append({
                 "id": conn[0],  # connector_number
-                    "type": conn[1],  # connector_type
+                "type": conn[1],  # connector_type
                 "status": status_text,
                 "available": connector_available,
-                    "power_kw": conn[2],  # power_kw
+                "power_kw": conn[2],  # power_kw
                 "error": conn[4] if conn[4] and conn[4] != "NoError" else None
-                })
-            
+            })
+        
         # Формируем ответ
-            return {
-                "success": True,
-                "station_id": request.station_id,
-                "serial_number": station_data[1],
+        return {
+            "success": True,
+            "station_id": request.station_id,
+            "serial_number": station_data[1],
             "model": station_data[2],
             "manufacturer": station_data[3],
-                
+            
             # Статусы
-                "online": is_online,
+            "online": is_online,
             "station_status": station_data[4],  # active/maintenance/inactive
             "location_status": station_data[13],  # active/maintenance/inactive
             "available_for_charging": is_online and station_data[4] == "active" and available_count > 0,
-                
-                # Локация
+            
+            # Локация
             "location_name": station_data[11],
             "location_address": station_data[12],
-                
+            
             # Коннекторы
-                "connectors": connectors,
+            "connectors": connectors,
             "total_connectors": station_data[7],  # connectors_count
             "available_connectors": available_count,
             "occupied_connectors": occupied_count,
             "faulted_connectors": faulted_count,
-                
-                # Тарифы
+            
+            # Тарифы
             "tariff_rub_kwh": float(station_data[8]) if station_data[8] else 14.95,
             "session_fee": float(station_data[9]) if station_data[9] else 0.0,
             "currency": station_data[10] or "KGS",
-                "working_hours": "Круглосуточно",
-                
+            "working_hours": "Круглосуточно",
+            
             "message": "Станция работает" if is_online and station_data[4] == "active" 
                       else "Станция на обслуживании" if station_data[4] == "maintenance"
-                          else "Станция недоступна"
-            }
-            
+                      else "Станция недоступна"
+        }
+        
     except Exception as e:
         return {
             "success": False,
