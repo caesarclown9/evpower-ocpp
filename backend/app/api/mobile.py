@@ -90,7 +90,7 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
             SELECT * FROM connectors 
             WHERE station_id = :station_id 
             AND connector_number = :connector_id 
-            AND status = 'Available'
+            AND status = 'available'
         """
         connector_result = db.execute(text(connector_query), {
             "station_id": request.station_id,
@@ -108,7 +108,7 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
         # 4. Проверяем нет ли активной зарядки у клиента
         active_session_query = """
             SELECT * FROM charging_sessions 
-            WHERE client_id = :client_id 
+            WHERE user_id = :client_id 
             AND status IN ('active', 'preparing', 'charging')
         """
         active_session_result = db.execute(text(active_session_query), {"client_id": request.client_id})
@@ -165,29 +165,26 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
         
         session_insert_query = """
             INSERT INTO charging_sessions (
-                id, station_id, client_id, connector_id, 
-                start_time, status, energy_limit_kwh, amount_limit_rub,
-                created_at, updated_at
+                id, station_id, user_id, 
+                start_time, status, energy, amount,
+                created_at
             ) VALUES (
-                :session_id, :station_id, :client_id, :connector_id,
-                NOW(), 'preparing', :energy_kwh, :amount_rub,
-                NOW(), NOW()
+                :session_id, :station_id, :client_id,
+                NOW(), 'preparing', 0, 0,
+                NOW()
             )
         """
         
         db.execute(text(session_insert_query), {
             "session_id": session_id,
             "station_id": request.station_id,
-            "client_id": request.client_id,
-            "connector_id": request.connector_id,
-            "energy_kwh": request.energy_kwh,
-            "amount_rub": request.amount_rub
+            "client_id": request.client_id
         })
         
         # 8. Обновляем статус коннектора
         update_connector_query = """
             UPDATE connectors 
-            SET status = 'Preparing', last_status_update = NOW()
+            SET status = 'preparing', last_status_update = NOW()
             WHERE station_id = :station_id AND connector_number = :connector_id
         """
         db.execute(text(update_connector_query), {
@@ -239,7 +236,7 @@ async def stop_charging(request: StopChargingRequest, db: Session = Depends(get_
         active_session_query = """
             SELECT * FROM charging_sessions 
             WHERE station_id = :station_id 
-            AND client_id = :client_id 
+            AND user_id = :client_id 
             AND status IN ('preparing', 'active', 'charging')
             ORDER BY start_time DESC
             LIMIT 1
@@ -275,7 +272,7 @@ async def stop_charging(request: StopChargingRequest, db: Session = Depends(get_
         # Обновляем статус сессии
         update_session_query = """
             UPDATE charging_sessions 
-            SET status = 'stopping', updated_at = NOW()
+            SET status = 'stopping'
             WHERE id = :session_id
         """
         db.execute(text(update_session_query), {"session_id": session_id})
@@ -316,7 +313,7 @@ async def get_charging_status(request: ChargingStatusRequest, db: Session = Depe
         session_query = """
             SELECT * FROM charging_sessions 
             WHERE station_id = :station_id 
-            AND client_id = :client_id 
+            AND user_id = :client_id 
             ORDER BY start_time DESC
             LIMIT 1
         """
@@ -334,36 +331,30 @@ async def get_charging_status(request: ChargingStatusRequest, db: Session = Depe
                 "message": "Зарядка не найдена"
             }
         
-        # Получаем данные сессии
+        # Получаем данные сессии (по структуре реальной таблицы)
         session_id = session[0]  # id
-        station_id = session[1]  # station_id
-        client_id = session[2]  # client_id
-        connector_id = session[3]  # connector_id
-        start_time = session[4]  # start_time
-        stop_time = session[5]  # stop_time
-        status = session[6]  # status
-        energy_consumed = session[7] or 0  # energy_consumed_kwh
-        amount_charged = session[8] or 0  # amount_charged_rub
-        energy_limit = session[9] or 0  # energy_limit_kwh
-        amount_limit = session[10] or 0  # amount_limit_rub
-        
-        # Если зарядка активна, пытаемся получить реальные показания счетчика
-        if status in ['preparing', 'active', 'charging']:
-            # Здесь можно добавить логику получения реальных данных из OCPP транзакций
-            # Пока используем данные из charging_sessions
-            pass
+        user_id = session[1]  # user_id  
+        station_id = session[2]  # station_id
+        start_time = session[3]  # start_time
+        stop_time = session[4]  # stop_time
+        energy_consumed = session[5] or 0  # energy
+        amount_charged = session[6] or 0  # amount
+        status = session[7]  # status
+        transaction_id = session[8]  # transaction_id
+        limit_type = session[9]  # limit_type
+        limit_value = session[10] or 0  # limit_value
         
         return {
             "success": True,
             "status": status,
             "session_id": session_id,
-            "connector_id": connector_id,
             "start_time": start_time.isoformat() if start_time else None,
             "stop_time": stop_time.isoformat() if stop_time else None,
             "energy_delivered_kwh": round(float(energy_consumed), 2),
             "amount_charged_rub": round(float(amount_charged), 2),
-            "energy_limit_kwh": round(float(energy_limit), 2),
-            "amount_limit_rub": round(float(amount_limit), 2),
+            "limit_type": limit_type,
+            "limit_value": round(float(limit_value), 2),
+            "transaction_id": transaction_id,
             "message": "Зарядка активна" if status in ['preparing', 'active', 'charging'] 
                       else "Зарядка завершена" if status == 'completed'
                       else "Зарядка остановлена"
