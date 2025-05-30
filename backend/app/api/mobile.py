@@ -25,22 +25,12 @@ class ChargingStartRequest(BaseModel):
     client_id: str = Field(..., min_length=1, description="ID клиента")
     station_id: str = Field(..., min_length=1, description="ID станции")
     connector_id: int = Field(..., ge=1, description="Номер коннектора")
-    limit_type: Optional[str] = Field("none", pattern="^(none|energy|amount)$", description="Тип лимита")
-    limit_value: Optional[float] = Field(0, ge=0, description="Значение лимита")
+    energy_kwh: float = Field(..., gt=0, le=200, description="Энергия для зарядки в кВт⋅ч")
+    amount_som: float = Field(..., gt=0, description="Предоплаченная сумма в сомах")
 
 class ChargingStopRequest(BaseModel):
     """⏹️ Запрос на остановку зарядки"""
-    client_id: str = Field(..., min_length=1, description="ID клиента")
-    station_id: str = Field(..., min_length=1, description="ID станции")
-
-class ChargingStatusRequest(BaseModel):
-    """📊 Запрос статуса зарядки"""
-    client_id: str = Field(..., min_length=1, description="ID клиента")
-    station_id: str = Field(..., min_length=1, description="ID станции")
-
-class StationStatusRequest(BaseModel):
-    """🏢 Запрос статуса станции"""
-    station_id: str = Field(..., min_length=1, description="ID станции")
+    session_id: str = Field(..., min_length=1, description="ID сессии зарядки")
 
 # ================== API Endpoints ==================
 
@@ -127,14 +117,13 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
         session_insert = db.execute(text("""
             INSERT INTO charging_sessions 
             (user_id, station_id, start_time, status, limit_type, limit_value)
-            VALUES (:user_id, :station_id, :start_time, 'started', :limit_type, :limit_value)
+            VALUES (:user_id, :station_id, :start_time, 'started', 'energy', :energy_kwh)
             RETURNING id
         """), {
             "user_id": request.client_id,
             "station_id": request.station_id,
             "start_time": datetime.now(timezone.utc),
-            "limit_type": request.limit_type,
-            "limit_value": request.limit_value
+            "energy_kwh": request.energy_kwh
         })
         
         session_id = session_insert.fetchone()[0]
@@ -160,8 +149,8 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
                 "connector_id": request.connector_id,
                 "id_tag": id_tag,
                 "session_id": session_id,
-                "limit_type": request.limit_type,
-                "limit_value": request.limit_value
+                "limit_type": 'energy',
+                "limit_value": request.energy_kwh
             }
             
             await redis_manager.publish_command(request.station_id, command_data)
@@ -171,7 +160,13 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
             return {
                 "success": True,
                 "session_id": session_id,
-                "message": "Команда запуска отправлена на станцию"
+                "station_id": request.station_id,
+                "client_id": request.client_id,
+                "connector_id": request.connector_id,
+                "energy_kwh": request.energy_kwh,
+                "amount_som": request.amount_som,
+                "message": "Команда запуска отправлена на станцию",
+                "station_online": True
             }
         else:
             logger.info(f"✅ Зарядка создана: сессия {session_id}, станция оффлайн - команда будет отправлена при подключении")
@@ -179,7 +174,13 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
             return {
                 "success": True,
                 "session_id": session_id,
-                "message": "Сессия зарядки создана. Станция пока не подключена - зарядка начнется автоматически при подключении."
+                "station_id": request.station_id,
+                "client_id": request.client_id,
+                "connector_id": request.connector_id,
+                "energy_kwh": request.energy_kwh,
+                "amount_som": request.amount_som,
+                "message": "Сессия зарядки создана. Станция пока не подключена - зарядка начнется автоматически при подключении.",
+                "station_online": False
             }
 
     except Exception as e:
@@ -195,22 +196,16 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
 async def stop_charging(request: ChargingStopRequest, db: Session = Depends(get_db)):
     """⏹️ Остановить зарядку"""
     try:
-        # 1. Ищем активную сессию
+        # 1. Ищем активную сессию по session_id
         session_query = """
-            SELECT cs.id, cs.transaction_id, c.connector_number
+            SELECT cs.id, cs.station_id, cs.user_id, cs.transaction_id, cs.status
             FROM charging_sessions cs
-            JOIN connectors c ON cs.station_id = c.station_id
-            WHERE cs.user_id = :client_id 
-            AND cs.station_id = :station_id 
+            WHERE cs.id = :session_id 
             AND cs.status = 'started'
-            AND c.status = 'occupied'
-            ORDER BY cs.start_time DESC
-            LIMIT 1
         """
         
         session_result = db.execute(text(session_query), {
-            "client_id": request.client_id,
-            "station_id": request.station_id
+            "session_id": request.session_id
         })
         session = session_result.fetchone()
         
@@ -222,12 +217,13 @@ async def stop_charging(request: ChargingStopRequest, db: Session = Depends(get_
             }
 
         session_id = session[0]
-        transaction_id = session[1] 
-        connector_id = session[2]
+        station_id = session[1]
+        user_id = session[2]
+        transaction_id = session[3]
 
         # 2. Проверяем подключение станции
         connected_stations = await redis_manager.get_stations()
-        if request.station_id not in connected_stations:
+        if station_id not in connected_stations:
             return {
                 "success": False,
                 "error": "station_offline", 
@@ -241,7 +237,7 @@ async def stop_charging(request: ChargingStopRequest, db: Session = Depends(get_
             "session_id": session_id
         }
         
-        await redis_manager.publish_command(request.station_id, command_data)
+        await redis_manager.publish_command(station_id, command_data)
         
         logger.info(f"🛑 Команда остановки отправлена: сессия {session_id}, транзакция {transaction_id}")
         
@@ -260,30 +256,26 @@ async def stop_charging(request: ChargingStopRequest, db: Session = Depends(get_
             "message": f"Ошибка: {str(e)}"
         }
 
-@router.post("/charging/status")
-async def get_charging_status(request: ChargingStatusRequest, db: Session = Depends(get_db)):
+@router.get("/charging/status/{session_id}")
+async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
     """📊 Проверить статус зарядки"""
     try:
-        # Ищем сессию клиента на станции
+        # Ищем сессию по ID
         session_query = """
             SELECT * FROM charging_sessions 
-            WHERE station_id = :station_id 
-            AND user_id = :client_id 
-            ORDER BY start_time DESC
-            LIMIT 1
+            WHERE id = :session_id
         """
         
         session_result = db.execute(text(session_query), {
-            "station_id": request.station_id,
-            "client_id": request.client_id
+            "session_id": session_id
         })
         session = session_result.fetchone()
         
         if not session:
             return {
-                "success": True,
-                "status": "no_transaction",
-                "message": "Зарядка не найдена"
+                "success": False,
+                "error": "session_not_found",
+                "message": "Сессия зарядки не найдена"
             }
         
         # Получаем данные сессии (по структуре реальной таблицы)
@@ -299,17 +291,38 @@ async def get_charging_status(request: ChargingStatusRequest, db: Session = Depe
         limit_type = session[9]  # limit_type
         limit_value = session[10] or 0  # limit_value
         
+        # Рассчитываем прогресс и оставшееся время
+        progress_percent = 0
+        estimated_completion = None
+        
+        if limit_type == "energy" and limit_value > 0:
+            progress_percent = min(100, (float(energy_consumed) / float(limit_value)) * 100)
+        elif limit_type == "amount" and limit_value > 0:
+            progress_percent = min(100, (float(amount_charged) / float(limit_value)) * 100)
+        
+        # Длительность в минутах
+        duration_minutes = 0
+        if start_time:
+            if stop_time:
+                duration_minutes = int((stop_time - start_time).total_seconds() / 60)
+            else:
+                duration_minutes = int((datetime.now(timezone.utc) - start_time).total_seconds() / 60)
+        
         return {
             "success": True,
-            "status": status,
             "session_id": session_id,
+            "status": status,
             "start_time": start_time.isoformat() if start_time else None,
             "stop_time": stop_time.isoformat() if stop_time else None,
-            "energy_delivered_kwh": round(float(energy_consumed), 2),
-            "amount_charged_rub": round(float(amount_charged), 2),
+            "duration_minutes": duration_minutes,
+            "current_energy": round(float(energy_consumed), 2),
+            "current_amount": round(float(amount_charged), 2),
             "limit_type": limit_type,
             "limit_value": round(float(limit_value), 2),
+            "progress_percent": round(progress_percent, 1),
             "transaction_id": transaction_id,
+            "station_id": station_id,
+            "client_id": user_id,
             "message": "Зарядка активна" if status == 'started' 
                       else "Зарядка завершена" if status == 'stopped'
                       else "Ошибка зарядки"
@@ -323,8 +336,8 @@ async def get_charging_status(request: ChargingStatusRequest, db: Session = Depe
             "message": f"Ошибка: {str(e)}"
         }
 
-@router.post("/station/status") 
-async def get_station_status(request: StationStatusRequest, db: Session = Depends(get_db)):
+@router.get("/station/status/{station_id}") 
+async def get_station_status(station_id: str, db: Session = Depends(get_db)):
     """🏢 Статус станции и коннекторов"""
     try:
         # Получаем данные станции с локацией через JOIN
@@ -347,7 +360,7 @@ async def get_station_status(request: StationStatusRequest, db: Session = Depend
             FROM stations s
             LEFT JOIN locations l ON s.location_id = l.id
             WHERE s.id = :station_id
-        """), {"station_id": request.station_id})
+        """), {"station_id": station_id})
         
         station_data = result.fetchone()
         
@@ -360,7 +373,7 @@ async def get_station_status(request: StationStatusRequest, db: Session = Depend
         
         # Проверяем подключение станции
         connected_stations = await redis_manager.get_stations()
-        is_online = request.station_id in connected_stations
+        is_online = station_id in connected_stations
         
         # Получаем статус коннекторов
         connectors_result = db.execute(text("""
@@ -368,7 +381,7 @@ async def get_station_status(request: StationStatusRequest, db: Session = Depend
             FROM connectors 
             WHERE station_id = :station_id 
             ORDER BY connector_number
-        """), {"station_id": request.station_id})
+        """), {"station_id": station_id})
         
         connectors = []
         available_count = 0
@@ -409,7 +422,7 @@ async def get_station_status(request: StationStatusRequest, db: Session = Depend
         # Формируем ответ
         return {
             "success": True,
-            "station_id": request.station_id,
+            "station_id": station_id,
             "serial_number": station_data[1],
             "model": station_data[2],
             "manufacturer": station_data[3],
