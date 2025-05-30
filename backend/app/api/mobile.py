@@ -58,7 +58,24 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
                 "message": "Клиент не найден"
             }
 
-        # 2. Проверяем станцию
+        # 2. 🆕 СОЗДАЕМ АВТОРИЗАЦИЮ OCPP СРАЗУ (для мобильного приложения)
+        id_tag = f"CLIENT_{request.client_id}"
+        
+        # Проверяем существование авторизации
+        auth_check = db.execute(text("""
+            SELECT id_tag FROM ocpp_authorization 
+            WHERE id_tag = :id_tag
+        """), {"id_tag": id_tag})
+        
+        if not auth_check.fetchone():
+            # Создаем новую авторизацию
+            db.execute(text("""
+                INSERT INTO ocpp_authorization (id_tag, status, parent_id_tag) 
+                VALUES (:id_tag, 'Accepted', NULL)
+            """), {"id_tag": id_tag})
+            logger.info(f"✅ Created OCPP authorization for {id_tag}")
+
+        # 3. Проверяем станцию
         station_check = db.execute(text("""
             SELECT id, status FROM stations 
             WHERE id = :station_id AND status = 'active'
@@ -72,7 +89,7 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
                 "message": "Станция недоступна"
             }
 
-        # 3. Проверяем коннектор
+        # 4. Проверяем коннектор
         connector_check = db.execute(text("""
             SELECT connector_number, status FROM connectors 
             WHERE station_id = :station_id AND connector_number = :connector_id
@@ -93,7 +110,7 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
                 "message": "Коннектор занят или неисправен"
             }
 
-        # 4. Проверяем активные сессии клиента
+        # 5. Проверяем активные сессии клиента
         active_session_check = db.execute(text("""
             SELECT id FROM charging_sessions 
             WHERE user_id = :client_id AND status = 'started'
@@ -106,32 +123,7 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
                 "message": "У вас уже есть активная сессия зарядки"
             }
 
-        # 5. Проверяем подключение станции
-        connected_stations = await redis_manager.get_stations()
-        if request.station_id not in connected_stations:
-            return {
-                "success": False,
-                "error": "station_offline",
-                "message": "Станция не подключена"
-            }
-
-        # 6. Создаем авторизацию OCPP (автоматически)
-        id_tag = f"CLIENT_{request.client_id}"
-        
-        # Проверяем существование авторизации
-        auth_check = db.execute(text("""
-            SELECT id_tag FROM ocpp_authorization 
-            WHERE id_tag = :id_tag
-        """), {"id_tag": id_tag})
-        
-        if not auth_check.fetchone():
-            # Создаем новую авторизацию
-            db.execute(text("""
-                INSERT INTO ocpp_authorization (id_tag, status, parent_id_tag) 
-                VALUES (:id_tag, 'Accepted', NULL)
-            """), {"id_tag": id_tag})
-
-        # 7. Создаем сессию зарядки
+        # 6. 🆕 СОЗДАЕМ СЕССИЮ НЕЗАВИСИМО ОТ ПОДКЛЮЧЕНИЯ СТАНЦИИ
         session_insert = db.execute(text("""
             INSERT INTO charging_sessions 
             (user_id, station_id, start_time, status, limit_type, limit_value)
@@ -147,35 +139,48 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
         
         session_id = session_insert.fetchone()[0]
 
-        # 8. Обновляем статус коннектора
+        # 7. Обновляем статус коннектора
         db.execute(text("""
             UPDATE connectors 
             SET status = 'occupied' 
             WHERE station_id = :station_id AND connector_number = :connector_id
         """), {"station_id": request.station_id, "connector_id": request.connector_id})
 
-        # 9. Коммитим транзакцию
+        # 8. Коммитим транзакцию
         db.commit()
 
-        # 10. Отправляем команду через Redis
-        command_data = {
-            "action": "RemoteStartTransaction",
-            "connector_id": request.connector_id,
-            "id_tag": id_tag,
-            "session_id": session_id,
-            "limit_type": request.limit_type,
-            "limit_value": request.limit_value
-        }
+        # 9. 🆕 ПРОВЕРЯЕМ ПОДКЛЮЧЕНИЕ СТАНЦИИ (но не блокируем создание сессии)
+        connected_stations = await redis_manager.get_stations()
+        is_station_online = request.station_id in connected_stations
         
-        await redis_manager.publish_command(request.station_id, command_data)
-        
-        logger.info(f"✅ Зарядка запущена: сессия {session_id}, клиент {request.client_id}, станция {request.station_id}")
-        
-        return {
-            "success": True,
-            "session_id": session_id,
-            "message": "Команда запуска отправлена"
-        }
+        if is_station_online:
+            # 10. Отправляем команду через Redis только если станция онлайн
+            command_data = {
+                "action": "RemoteStartTransaction",
+                "connector_id": request.connector_id,
+                "id_tag": id_tag,
+                "session_id": session_id,
+                "limit_type": request.limit_type,
+                "limit_value": request.limit_value
+            }
+            
+            await redis_manager.publish_command(request.station_id, command_data)
+            
+            logger.info(f"✅ Зарядка запущена: сессия {session_id}, команда отправлена на станцию")
+            
+            return {
+                "success": True,
+                "session_id": session_id,
+                "message": "Команда запуска отправлена на станцию"
+            }
+        else:
+            logger.info(f"✅ Зарядка создана: сессия {session_id}, станция оффлайн - команда будет отправлена при подключении")
+            
+            return {
+                "success": True,
+                "session_id": session_id,
+                "message": "Сессия зарядки создана. Станция пока не подключена - зарядка начнется автоматически при подключении."
+            }
 
     except Exception as e:
         db.rollback()
