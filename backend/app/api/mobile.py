@@ -25,7 +25,7 @@ class ChargingStartRequest(BaseModel):
     client_id: str = Field(..., min_length=1, description="ID клиента")
     station_id: str = Field(..., min_length=1, description="ID станции")
     connector_id: int = Field(..., ge=1, description="Номер коннектора")
-    limit_type: Optional[str] = Field("time", pattern="^(time|energy|amount)$", description="Тип лимита")
+    limit_type: Optional[str] = Field("none", pattern="^(none|energy|amount)$", description="Тип лимита")
     limit_value: Optional[float] = Field(0, ge=0, description="Значение лимита")
 
 class ChargingStopRequest(BaseModel):

@@ -29,6 +29,7 @@ from app.crud.ocpp_service import (
     OCPPAuthorizationService,
     OCPPConfigurationService
 )
+from app.db.models.ocpp import OCPPTransaction
 
 logger = logging.getLogger(__name__)
 
@@ -265,7 +266,6 @@ class OCPPChargePoint(CP):
         try:
             with next(get_db()) as db:
                 # Получаем информацию о транзакции для определения коннектора
-                from app.models.ocpp import OCPPTransaction
                 transaction = db.query(OCPPTransaction).filter(
                     OCPPTransaction.station_id == self.id,
                     OCPPTransaction.transaction_id == transaction_id
