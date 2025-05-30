@@ -438,7 +438,7 @@ class OCPPChargePoint(CP):
                                     
                                     # Получаем тариф для расчета стоимости
                                     tariff_query = text("""
-                                        SELECT tariff_rub_kwh FROM stations 
+                                        SELECT price_per_kwh FROM stations 
                                         WHERE id = :station_id
                                     """)
                                     tariff_result = db.execute(tariff_query, {"station_id": self.id}).fetchone()
