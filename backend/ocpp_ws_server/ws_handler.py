@@ -379,8 +379,12 @@ class OCPPChargePoint(CP):
         
         try:
             with next(get_db()) as db:
+                # 🔍 DEBUG: Логируем сырую структуру
+                self.logger.info(f"🔍 RAW DEBUG: meter_value={meter_value}")
+                self.logger.info(f"🔍 RAW DEBUG: type={type(meter_value)}")
+                
                 # Парсим timestamp
-                timestamp_str = meter_value[0].get('timestamp')
+                timestamp_str = meter_value[0].get('timestamp') if meter_value else None
                 if timestamp_str:
                     timestamp = datetime.fromisoformat(timestamp_str.replace('Z', ''))
                 else:
@@ -389,7 +393,11 @@ class OCPPChargePoint(CP):
                 # Парсим sampled values
                 sampled_values = []
                 for mv in meter_value:
-                    for sample in mv.get('sampledValue', []):
+                    self.logger.info(f"🔍 MV DEBUG: mv={mv}")
+                    sampled_value_list = mv.get('sampledValue', [])
+                    self.logger.info(f"🔍 SV DEBUG: sampledValue={sampled_value_list}")
+                    for sample in sampled_value_list:
+                        self.logger.info(f"🔍 SAMPLE DEBUG: sample={sample}")
                         sampled_values.append({
                             'measurand': sample.get('measurand', ''),
                             'value': sample.get('value'),
