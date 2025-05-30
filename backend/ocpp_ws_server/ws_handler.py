@@ -442,11 +442,11 @@ class OCPPChargePoint(CP):
                                         WHERE id = :station_id
                                     """)
                                     tariff_result = db.execute(tariff_query, {"station_id": self.id}).fetchone()
-                                    tariff_rub_kwh = float(tariff_result[0]) if tariff_result and tariff_result[0] else 14.95
+                                    tariff_som_kwh = float(tariff_result[0]) if tariff_result and tariff_result[0] else 14.95
                                     
-                                    current_amount = energy_kwh * tariff_rub_kwh
+                                    current_amount = energy_kwh * tariff_som_kwh
                                     
-                                    self.logger.info(f"🔍 CALC DEBUG: energy_kwh={energy_kwh}, tariff={tariff_rub_kwh}, amount={current_amount}")
+                                    self.logger.info(f"🔍 CALC DEBUG: energy_kwh={energy_kwh}, tariff={tariff_som_kwh}, amount={current_amount}")
                                     
                                     # Обновляем мобильную сессию
                                     update_mobile_session_query = text("""
@@ -466,7 +466,7 @@ class OCPPChargePoint(CP):
                                     db.commit()
                                     
                                     self.logger.info(f"🔍 UPDATE DEBUG: rows affected={result.rowcount}")
-                                    self.logger.info(f"📊 Обновил мобильную сессию: {energy_kwh:.2f} kWh, {current_amount:.2f} руб")
+                                    self.logger.info(f"📊 Обновил мобильную сессию: {energy_kwh:.2f} kWh, {current_amount:.2f} сом")
                                 else:
                                     self.logger.warning(f"🔍 ID_TAG DEBUG: session id_tag={session.get('id_tag')} не начинается с CLIENT_")
                                 
