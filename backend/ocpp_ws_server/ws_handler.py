@@ -947,15 +947,14 @@ class OCPPWebSocketHandler:
                 if not self.charge_point:
                     continue
                     
-                command_type = command.get("command")
-                payload = command.get("payload", {})
+                command_type = command.get("action")
                 
                 try:
                     if command_type == "RemoteStartTransaction":
                         response = await self.charge_point.call(
                             call.RemoteStartTransaction(
-                                connector_id=payload.get("connectorId", 1),
-                                id_tag=payload.get("idTag", "system")
+                                connector_id=command.get("connector_id", 1),
+                                id_tag=command.get("id_tag", "system")
                             )
                         )
                         self.logger.info(f"RemoteStartTransaction response: {response}")
@@ -963,7 +962,7 @@ class OCPPWebSocketHandler:
                     elif command_type == "RemoteStopTransaction":
                         session = active_sessions.get(self.station_id, {})
                         transaction_id = session.get('transaction_id', 
-                                                   payload.get("transactionId", 1))
+                                                   command.get("transaction_id", 1))
                         
                         response = await self.charge_point.call(
                             call.RemoteStopTransaction(transaction_id=transaction_id)
@@ -971,22 +970,22 @@ class OCPPWebSocketHandler:
                         self.logger.info(f"RemoteStopTransaction response: {response}")
                         
                     elif command_type == "Reset":
-                        reset_type = payload.get("type", "Soft")
+                        reset_type = command.get("type", "Soft")
                         response = await self.charge_point.call(
                             call.Reset(type=ResetType[reset_type.lower()])
                         )
                         self.logger.info(f"Reset response: {response}")
                         
                     elif command_type == "UnlockConnector":
-                        connector_id = payload.get("connectorId", 1)
+                        connector_id = command.get("connectorId", 1)
                         response = await self.charge_point.call(
                             call.UnlockConnector(connector_id=connector_id)
                         )
                         self.logger.info(f"UnlockConnector response: {response}")
                         
                     elif command_type == "ChangeConfiguration":
-                        key = payload.get("key")
-                        value = payload.get("value")
+                        key = command.get("key")
+                        value = command.get("value")
                         if key and value:
                             response = await self.charge_point.call(
                                 call.ChangeConfiguration(key=key, value=value)
@@ -994,15 +993,15 @@ class OCPPWebSocketHandler:
                             self.logger.info(f"ChangeConfiguration response: {response}")
                             
                     elif command_type == "GetConfiguration":
-                        keys = payload.get("keys", [])
+                        keys = command.get("keys", [])
                         response = await self.charge_point.call(
                             call.GetConfiguration(key=keys if keys else None)
                         )
                         self.logger.info(f"GetConfiguration response: {response}")
                         
                     elif command_type == "ChangeAvailability":
-                        connector_id = payload.get("connectorId", 0)
-                        availability_type = payload.get("type", "Operative")
+                        connector_id = command.get("connectorId", 0)
+                        availability_type = command.get("type", "Operative")
                         response = await self.charge_point.call(
                             call.ChangeAvailability(
                                 connector_id=connector_id,
@@ -1016,15 +1015,15 @@ class OCPPWebSocketHandler:
                         self.logger.info(f"ClearCache response: {response}")
                         
                     elif command_type == "GetDiagnostics":
-                        location = payload.get("location", "/tmp/diagnostics.log")
+                        location = command.get("location", "/tmp/diagnostics.log")
                         response = await self.charge_point.call(
                             call.GetDiagnostics(location=location)
                         )
                         self.logger.info(f"GetDiagnostics response: {response}")
                         
                     elif command_type == "UpdateFirmware":
-                        location = payload.get("location")
-                        retrieve_date = payload.get("retrieveDate")
+                        location = command.get("location")
+                        retrieve_date = command.get("retrieveDate")
                         if location and retrieve_date:
                             response = await self.charge_point.call(
                                 call.UpdateFirmware(
@@ -1035,8 +1034,8 @@ class OCPPWebSocketHandler:
                             self.logger.info(f"UpdateFirmware response: {response}")
                             
                     elif command_type == "TriggerMessage":
-                        requested_message = payload.get("requestedMessage")
-                        connector_id = payload.get("connectorId")
+                        requested_message = command.get("requestedMessage")
+                        connector_id = command.get("connectorId")
                         if requested_message:
                             response = await self.charge_point.call(
                                 call.TriggerMessage(
