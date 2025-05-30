@@ -404,14 +404,6 @@ class OCPPChargePoint(CP):
                     db, self.id, connector_id, timestamp, sampled_values, transaction_id
                 )
                 
-                # Сохраняем в БД для мониторинга 
-                try:
-                    OCPPMeterService.save_meter_values(
-                        db, self.id, connector_id, meter_value
-                    )
-                except Exception as e:
-                    self.logger.error(f"Error saving meter values to DB: {e}")
-                
                 # Активная сессия для лимитов
                 session = active_sessions.get(self.id)
                 if session and sampled_values:
