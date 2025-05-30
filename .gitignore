@@ -47,6 +47,7 @@ logs/
 # IDE
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 *~
@@ -58,8 +59,40 @@ Thumbs.db
 # Coverage
 htmlcov/
 .coverage
-.coverage.*
-coverage.xml
+.coverage.*PS D:\Projects\EvPower-Backend> Invoke-RestMethod -Uri "http://193.176.239.218:8180/api/mobile/charging/start" `
+>>   -Method POST `
+>>   -ContentType "application/json" `
+>>   -Body '{
+>>     "station_id": "BIS_LOC_0001_ST0001",
+>>     "client_id": "test_user_001",
+>>     "connector_id": 1,
+>>     "energy_kwh": 25.5,
+>>     "amount_rub": 500.0
+>>   }'
+
+success error          message
+------- -----          -------
+  False internal_error ÐÑÐ¸Ð±ÐºÐ° ÑÐµÑÐ²ÐµÑÐ°: (psycopg2.errors.ForeignKeyViolation) insert or update on table "ocpp_authorization" violates foreign key constraint "ocpp...      
+
+
+PS D:\Projects\EvPower-Backend> 
+coverage.xmlPS D:\Projects\EvPower-Backend> Invoke-RestMethod -Uri "http://193.176.239.218:8180/api/mobile/charging/start" `
+>>   -Method POST `
+>>   -ContentType "application/json" `
+>>   -Body '{
+>>     "station_id": "BIS_LOC_0001_ST0001",
+>>     "client_id": "test_user_001",
+>>     "connector_id": 1,
+>>     "energy_kwh": 25.5,
+>>     "amount_rub": 500.0
+>>   }'
+
+success error          message
+------- -----          -------
+  False internal_error ÐÑÐ¸Ð±ÐºÐ° ÑÐµÑÐ²ÐµÑÐ°: (psycopg2.errors.ForeignKeyViolation) insert or update on table "ocpp_authorization" violates foreign key constraint "ocpp...      
+
+
+PS D:\Projects\EvPower-Backend> 
 *.cover
 
 # Testing

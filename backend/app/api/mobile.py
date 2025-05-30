@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Optional
 import uuid
+import logging
 from datetime import datetime
 
 from ocpp_ws_server.redis_manager import redis_manager
@@ -18,12 +19,13 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 router = APIRouter(prefix="/api/mobile", tags=["mobile"])
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # МОДЕЛИ ДАННЫХ
 # ============================================================================
 
-class StartChargingRequest(BaseModel):
+class ChargingStartRequest(BaseModel):
     station_id: str
     client_id: str
     connector_id: int
@@ -48,74 +50,181 @@ class StationStatusRequest(BaseModel):
 # ============================================================================
 
 @router.post("/charging/start")
-async def start_charging(request: StartChargingRequest, db: Session = Depends(get_db)):
-    """🚀 Начать зарядку - главная кнопка в приложении"""
+async def start_charging(request: ChargingStartRequest, db: Session = Depends(get_db)):
+    """
+    Запуск зарядки через mobile приложение
+    Автоматически создает авторизацию для клиента если её нет
+    """
     try:
-        # 1. Проверяем что станция существует в БД
-        station = db.query(Station).filter(Station.id == request.station_id).first()
+        # 1. Проверяем существование станции
+        station_query = """
+            SELECT s.*, l.name as location_name, l.address as location_address 
+            FROM stations s 
+            JOIN locations l ON s.location_id = l.id 
+            WHERE s.id = :station_id AND s.status = 'active'
+        """
+        station_result = db.execute(text(station_query), {"station_id": request.station_id})
+        station = station_result.fetchone()
+        
         if not station:
             return {
-                "success": False,
+                "success": False, 
                 "error": "station_not_found",
-                "message": "Станция не найдена в БД"
+                "message": "Станция не найдена или неактивна"
             }
         
-        # 2. Проверяем что станция подключена
-        connected_stations = await redis_manager.get_stations()
-        if request.station_id not in connected_stations:
+        # 2. Проверяем существование клиента
+        client_query = "SELECT * FROM clients WHERE id = :client_id"
+        client_result = db.execute(text(client_query), {"client_id": request.client_id})
+        client = client_result.fetchone()
+        
+        if not client:
+            return {
+                "success": False,
+                "error": "client_not_found", 
+                "message": "Клиент не найден"
+            }
+        
+        # 3. Проверяем доступность коннектора
+        connector_query = """
+            SELECT * FROM connectors 
+            WHERE station_id = :station_id 
+            AND connector_number = :connector_id 
+            AND status = 'Available'
+        """
+        connector_result = db.execute(text(connector_query), {
+            "station_id": request.station_id,
+            "connector_id": request.connector_id
+        })
+        connector = connector_result.fetchone()
+        
+        if not connector:
+            return {
+                "success": False,
+                "error": "connector_unavailable",
+                "message": "Коннектор недоступен"
+            }
+        
+        # 4. Проверяем нет ли активной зарядки у клиента
+        active_session_query = """
+            SELECT * FROM charging_sessions 
+            WHERE client_id = :client_id 
+            AND status IN ('active', 'preparing', 'charging')
+        """
+        active_session_result = db.execute(text(active_session_query), {"client_id": request.client_id})
+        active_session = active_session_result.fetchone()
+        
+        if active_session:
+            return {
+                "success": False,
+                "error": "session_already_active",
+                "message": "У клиента уже есть активная зарядка"
+            }
+        
+        # 5. Проверяем онлайн ли станция через Redis
+        try:
+            stations = await redis_manager.get_stations()
+            if request.station_id not in stations:
+                return {
+                    "success": False,
+                    "error": "station_offline", 
+                    "message": "Станция недоступна"
+                }
+        except Exception as e:
+            logger.error(f"Redis error: {e}")
             return {
                 "success": False,
                 "error": "station_offline",
                 "message": "Станция недоступна"
             }
         
-        # 3. Генерируем уникальную сессию и короткий idTag
-        session_id = f"CS_{request.station_id}_{str(uuid.uuid4())[:8]}"
-        id_tag = f"CL{request.client_id[-6:]}"
+        # 6. 🆕 АВТОМАТИЧЕСКАЯ АВТОРИЗАЦИЯ: Создаем или получаем авторизацию для клиента
+        id_tag = f"CLIENT_{request.client_id}"
         
-        # 4. Авторизуем клиента в БД OCPP
-        existing_auth = db.query(OCPPAuthorization).filter(
-            OCPPAuthorization.id_tag == id_tag
-        ).first()
+        auth_check_query = "SELECT * FROM ocpp_authorization WHERE client_id = :client_id"
+        auth_result = db.execute(text(auth_check_query), {"client_id": request.client_id})
+        auth_record = auth_result.fetchone()
         
-        if not existing_auth:
-            new_auth = OCPPAuthorization(
-                id_tag=id_tag,
-                status="Accepted",
-                user_id=request.client_id
+        if not auth_record:
+            # Создаем новую авторизацию для клиента
+            auth_insert_query = """
+                INSERT INTO ocpp_authorization (id_tag, status, client_id, created_at, updated_at)
+                VALUES (:id_tag, 'Accepted', :client_id, NOW(), NOW())
+            """
+            db.execute(text(auth_insert_query), {
+                "id_tag": id_tag,
+                "client_id": request.client_id
+            })
+            logger.info(f"Создана авторизация для клиента {request.client_id} с id_tag {id_tag}")
+        else:
+            id_tag = auth_record.id_tag
+            logger.info(f"Используется существующая авторизация {id_tag} для клиента {request.client_id}")
+        
+        # 7. Создаем сессию зарядки
+        session_id = f"CS_{request.station_id}_{request.client_id}_{int(datetime.now().timestamp())}"
+        
+        session_insert_query = """
+            INSERT INTO charging_sessions (
+                id, station_id, client_id, connector_id, 
+                start_time, status, energy_limit_kwh, amount_limit_rub,
+                created_at, updated_at
+            ) VALUES (
+                :session_id, :station_id, :client_id, :connector_id,
+                NOW(), 'preparing', :energy_kwh, :amount_rub,
+                NOW(), NOW()
             )
-            db.add(new_auth)
-            db.commit()
+        """
         
-        # 5. Отправляем команду станции
-        command_result = await redis_manager.publish_command(request.station_id, {
+        db.execute(text(session_insert_query), {
+            "session_id": session_id,
+            "station_id": request.station_id,
+            "client_id": request.client_id,
+            "connector_id": request.connector_id,
+            "energy_kwh": request.energy_kwh,
+            "amount_rub": request.amount_rub
+        })
+        
+        # 8. Обновляем статус коннектора
+        update_connector_query = """
+            UPDATE connectors 
+            SET status = 'Preparing', last_status_update = NOW()
+            WHERE station_id = :station_id AND connector_number = :connector_id
+        """
+        db.execute(text(update_connector_query), {
+            "station_id": request.station_id,
+            "connector_id": request.connector_id
+        })
+        
+        db.commit()
+        
+        # 9. Отправляем команду станции через Redis
+        command = {
             "command": "RemoteStartTransaction",
             "payload": {
                 "connectorId": request.connector_id,
-                "idTag": id_tag
+                "idTag": id_tag,
+                "session_id": session_id,
+                "energy_limit": request.energy_kwh
             }
-        })
+        }
         
-        if command_result == 0:
-            return {
-                "success": False,
-                "error": "station_not_listening",
-                "message": "Станция не отвечает"
-            }
+        await redis_manager.publish_command(request.station_id, command)
+        logger.info(f"Отправлена команда RemoteStartTransaction для {request.station_id}")
         
         return {
             "success": True,
             "session_id": session_id,
             "id_tag": id_tag,
-            "station_id": request.station_id,
+            "message": "Команда запуска отправлена на станцию",
+            "station_name": station.location_name,
             "connector_id": request.connector_id,
-            "energy_kwh": request.energy_kwh,
-            "amount_rub": request.amount_rub,
-            "status": "command_sent",
-            "message": "Команда отправлена станции. Ожидайте начала зарядки..."
+            "energy_limit": request.energy_kwh,
+            "amount_limit": request.amount_rub
         }
         
     except Exception as e:
+        db.rollback()
+        logger.error(f"Ошибка при запуске зарядки: {e}")
         return {
             "success": False,
             "error": "internal_error",
@@ -126,46 +235,73 @@ async def start_charging(request: StartChargingRequest, db: Session = Depends(ge
 async def stop_charging(request: StopChargingRequest, db: Session = Depends(get_db)):
     """🛑 Остановить зарядку"""
     try:
-        # Ищем активную транзакцию клиента на станции
-        id_tag_pattern = f"%{request.client_id[-6:]}%"
+        # Ищем активную сессию клиента на станции
+        active_session_query = """
+            SELECT * FROM charging_sessions 
+            WHERE station_id = :station_id 
+            AND client_id = :client_id 
+            AND status IN ('preparing', 'active', 'charging')
+            ORDER BY start_time DESC
+            LIMIT 1
+        """
         
-        active_transaction = db.query(OCPPTransaction).filter(
-            OCPPTransaction.station_id == request.station_id,
-            OCPPTransaction.id_tag.like(id_tag_pattern),
-            OCPPTransaction.status == "Started"
-        ).order_by(OCPPTransaction.start_timestamp.desc()).first()
+        session_result = db.execute(text(active_session_query), {
+            "station_id": request.station_id,
+            "client_id": request.client_id
+        })
+        active_session = session_result.fetchone()
         
-        if not active_transaction:
+        if not active_session:
             return {
                 "success": False,
                 "error": "no_active_transaction",
                 "message": "Активная зарядка не найдена"
             }
         
-        transaction_id = active_transaction.transaction_id
+        session_id = active_session[0]  # id поле
         
-        # Отправляем команду остановки
-        command_result = await redis_manager.publish_command(request.station_id, {
-            "command": "RemoteStopTransaction", 
-            "payload": {
-                "transactionId": transaction_id
-            }
-        })
+        # Получаем авторизацию клиента для отправки команды
+        auth_query = "SELECT id_tag FROM ocpp_authorization WHERE client_id = :client_id"
+        auth_result = db.execute(text(auth_query), {"client_id": request.client_id})
+        auth_record = auth_result.fetchone()
         
-        if command_result == 0:
+        if not auth_record:
             return {
                 "success": False,
-                "error": "station_not_listening",
-                "message": "Станция не отвечает"
+                "error": "client_not_authorized",
+                "message": "Клиент не авторизован"
             }
+        
+        # Обновляем статус сессии
+        update_session_query = """
+            UPDATE charging_sessions 
+            SET status = 'stopping', updated_at = NOW()
+            WHERE id = :session_id
+        """
+        db.execute(text(update_session_query), {"session_id": session_id})
+        db.commit()
+        
+        # Отправляем команду остановки через Redis
+        command = {
+            "command": "RemoteStopTransaction",
+            "payload": {
+                "session_id": session_id,
+                "client_id": request.client_id
+            }
+        }
+        
+        await redis_manager.publish_command(request.station_id, command)
+        logger.info(f"Отправлена команда RemoteStopTransaction для клиента {request.client_id}")
         
         return {
             "success": True,
-            "transaction_id": transaction_id,
+            "session_id": session_id,
             "message": "Команда остановки отправлена"
         }
         
     except Exception as e:
+        db.rollback()
+        logger.error(f"Ошибка при остановке зарядки: {e}")
         return {
             "success": False,
             "error": "internal_error", 
@@ -176,50 +312,65 @@ async def stop_charging(request: StopChargingRequest, db: Session = Depends(get_
 async def get_charging_status(request: ChargingStatusRequest, db: Session = Depends(get_db)):
     """📊 Проверить статус зарядки"""
     try:
-        # Ищем транзакцию клиента
-        id_tag_pattern = f"%{request.client_id[-6:]}%"
+        # Ищем сессию клиента на станции
+        session_query = """
+            SELECT * FROM charging_sessions 
+            WHERE station_id = :station_id 
+            AND client_id = :client_id 
+            ORDER BY start_time DESC
+            LIMIT 1
+        """
         
-        transaction = db.query(OCPPTransaction).filter(
-            OCPPTransaction.station_id == request.station_id,
-            OCPPTransaction.id_tag.like(id_tag_pattern)
-        ).order_by(OCPPTransaction.start_timestamp.desc()).first()
+        session_result = db.execute(text(session_query), {
+            "station_id": request.station_id,
+            "client_id": request.client_id
+        })
+        session = session_result.fetchone()
         
-        if not transaction:
+        if not session:
             return {
                 "success": True,
                 "status": "no_transaction",
                 "message": "Зарядка не найдена"
             }
         
-        # Получаем последние показания счетчика
-        latest_meter = db.query(OCPPMeterValue).filter(
-            OCPPMeterValue.station_id == request.station_id,
-            OCPPMeterValue.transaction_id == transaction.transaction_id
-        ).order_by(OCPPMeterValue.timestamp.desc()).first()
+        # Получаем данные сессии
+        session_id = session[0]  # id
+        station_id = session[1]  # station_id
+        client_id = session[2]  # client_id
+        connector_id = session[3]  # connector_id
+        start_time = session[4]  # start_time
+        stop_time = session[5]  # stop_time
+        status = session[6]  # status
+        energy_consumed = session[7] or 0  # energy_consumed_kwh
+        amount_charged = session[8] or 0  # amount_charged_rub
+        energy_limit = session[9] or 0  # energy_limit_kwh
+        amount_limit = session[10] or 0  # amount_limit_rub
         
-        # Рассчитываем данные
-        energy_delivered = 0
-        current_cost = 0
-        
-        if latest_meter and latest_meter.energy_active_import_register:
-            energy_delivered = float(latest_meter.energy_active_import_register)
-            current_cost = energy_delivered * 14.95  # базовый тариф
+        # Если зарядка активна, пытаемся получить реальные показания счетчика
+        if status in ['preparing', 'active', 'charging']:
+            # Здесь можно добавить логику получения реальных данных из OCPP транзакций
+            # Пока используем данные из charging_sessions
+            pass
         
         return {
             "success": True,
-            "status": transaction.status,
-            "transaction_id": transaction.transaction_id,
-            "connector_id": transaction.connector_id,
-            "start_time": transaction.start_timestamp.isoformat(),
-            "stop_time": transaction.stop_timestamp.isoformat() if transaction.stop_timestamp else None,
-            "energy_delivered_kwh": round(energy_delivered, 2),
-            "current_cost_rub": round(current_cost, 2),
-            "meter_start": float(transaction.meter_start) if transaction.meter_start else 0,
-            "meter_stop": float(transaction.meter_stop) if transaction.meter_stop else None,
-            "message": "Зарядка активна" if transaction.status == "Started" else "Зарядка завершена"
+            "status": status,
+            "session_id": session_id,
+            "connector_id": connector_id,
+            "start_time": start_time.isoformat() if start_time else None,
+            "stop_time": stop_time.isoformat() if stop_time else None,
+            "energy_delivered_kwh": round(float(energy_consumed), 2),
+            "amount_charged_rub": round(float(amount_charged), 2),
+            "energy_limit_kwh": round(float(energy_limit), 2),
+            "amount_limit_rub": round(float(amount_limit), 2),
+            "message": "Зарядка активна" if status in ['preparing', 'active', 'charging'] 
+                      else "Зарядка завершена" if status == 'completed'
+                      else "Зарядка остановлена"
         }
         
     except Exception as e:
+        logger.error(f"Ошибка при получении статуса зарядки: {e}")
         return {
             "success": False,
             "error": "internal_error",
