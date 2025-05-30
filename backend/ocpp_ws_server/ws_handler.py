@@ -394,7 +394,7 @@ class OCPPChargePoint(CP):
                 sampled_values = []
                 for mv in meter_value:
                     self.logger.info(f"🔍 MV DEBUG: mv={mv}")
-                    sampled_value_list = mv.get('sampledValue', [])
+                    sampled_value_list = mv.get('sampled_value', [])
                     self.logger.info(f"🔍 SV DEBUG: sampledValue={sampled_value_list}")
                     for sample in sampled_value_list:
                         self.logger.info(f"🔍 SAMPLE DEBUG: sample={sample}")
