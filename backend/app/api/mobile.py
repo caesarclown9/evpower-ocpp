@@ -8,8 +8,8 @@ from typing import Optional
 import logging
 from datetime import datetime, timezone
 
-from ..database import get_db
-from ..redis_client import redis_manager
+from app.db.session import get_db
+from ocpp_ws_server.redis_manager import redis_manager
 from pydantic import BaseModel, Field
 
 # Логгер
