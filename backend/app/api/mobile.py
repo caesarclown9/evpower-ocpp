@@ -109,7 +109,7 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
         active_session_query = """
             SELECT * FROM charging_sessions 
             WHERE user_id = :client_id 
-            AND status IN ('active', 'preparing', 'charging')
+            AND status = 'started'
         """
         active_session_result = db.execute(text(active_session_query), {"client_id": request.client_id})
         active_session = active_session_result.fetchone()
@@ -170,7 +170,7 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
                 created_at
             ) VALUES (
                 :session_id, :station_id, :client_id,
-                NOW(), 'preparing', 0, 0,
+                NOW(), 'started', 0, 0,
                 NOW()
             )
         """
@@ -181,10 +181,10 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
             "client_id": request.client_id
         })
         
-        # 8. Обновляем статус коннектора
+        # 8. Обновляем статус коннектора на Occupied (занят зарядкой)
         update_connector_query = """
             UPDATE connectors 
-            SET status = 'preparing', last_status_update = NOW()
+            SET status = 'occupied', last_status_update = NOW()
             WHERE station_id = :station_id AND connector_number = :connector_id
         """
         db.execute(text(update_connector_query), {
@@ -237,7 +237,7 @@ async def stop_charging(request: StopChargingRequest, db: Session = Depends(get_
             SELECT * FROM charging_sessions 
             WHERE station_id = :station_id 
             AND user_id = :client_id 
-            AND status IN ('preparing', 'active', 'charging')
+            AND status = 'started'
             ORDER BY start_time DESC
             LIMIT 1
         """
@@ -249,12 +249,12 @@ async def stop_charging(request: StopChargingRequest, db: Session = Depends(get_
         active_session = session_result.fetchone()
         
         if not active_session:
-            return {
-                "success": False,
-                "error": "no_active_transaction",
-                "message": "Активная зарядка не найдена"
-            }
-        
+                return {
+                    "success": False,
+                    "error": "no_active_transaction",
+                    "message": "Активная зарядка не найдена"
+                }
+            
         session_id = active_session[0]  # id поле
         
         # Получаем авторизацию клиента для отправки команды
@@ -272,10 +272,19 @@ async def stop_charging(request: StopChargingRequest, db: Session = Depends(get_
         # Обновляем статус сессии
         update_session_query = """
             UPDATE charging_sessions 
-            SET status = 'stopping'
+            SET status = 'stopped'
             WHERE id = :session_id
         """
         db.execute(text(update_session_query), {"session_id": session_id})
+        
+        # Обновляем статус коннектора обратно на Available
+        update_connector_query = """
+            UPDATE connectors 
+            SET status = 'available', last_status_update = NOW()
+            WHERE station_id = :station_id AND connector_number = 1
+        """
+        db.execute(text(update_connector_query), {"station_id": request.station_id})
+        
         db.commit()
         
         # Отправляем команду остановки через Redis
@@ -325,12 +334,12 @@ async def get_charging_status(request: ChargingStatusRequest, db: Session = Depe
         session = session_result.fetchone()
         
         if not session:
-            return {
-                "success": True,
-                "status": "no_transaction",
-                "message": "Зарядка не найдена"
-            }
-        
+                return {
+                    "success": True,
+                    "status": "no_transaction",
+                    "message": "Зарядка не найдена"
+                }
+            
         # Получаем данные сессии (по структуре реальной таблицы)
         session_id = session[0]  # id
         user_id = session[1]  # user_id  
@@ -343,9 +352,9 @@ async def get_charging_status(request: ChargingStatusRequest, db: Session = Depe
         transaction_id = session[8]  # transaction_id
         limit_type = session[9]  # limit_type
         limit_value = session[10] or 0  # limit_value
-        
-        return {
-            "success": True,
+            
+            return {
+                "success": True,
             "status": status,
             "session_id": session_id,
             "start_time": start_time.isoformat() if start_time else None,
@@ -355,11 +364,11 @@ async def get_charging_status(request: ChargingStatusRequest, db: Session = Depe
             "limit_type": limit_type,
             "limit_value": round(float(limit_value), 2),
             "transaction_id": transaction_id,
-            "message": "Зарядка активна" if status in ['preparing', 'active', 'charging'] 
-                      else "Зарядка завершена" if status == 'completed'
-                      else "Зарядка остановлена"
-        }
-        
+            "message": "Зарядка активна" if status == 'started' 
+                      else "Зарядка завершена" if status == 'stopped'
+                      else "Ошибка зарядки"
+            }
+            
     except Exception as e:
         logger.error(f"Ошибка при получении статуса зарядки: {e}")
         return {
@@ -395,24 +404,24 @@ async def get_station_status(request: StationStatusRequest, db: Session = Depend
         """), {"station_id": request.station_id})
         
         station_data = result.fetchone()
-        
-        if not station_data:
-            return {
-                "success": False,
-                "error": "station_not_found",
-                "message": "Станция не найдена"
-            }
-        
+            
+            if not station_data:
+                return {
+                    "success": False,
+                    "error": "station_not_found",
+                    "message": "Станция не найдена"
+                }
+            
         # Проверяем подключение станции
         connected_stations = await redis_manager.get_stations()
         is_online = request.station_id in connected_stations
         
         # Получаем статус коннекторов
         connectors_result = db.execute(text("""
-            SELECT connector_number, connector_type, power_kw, status, error_code
-            FROM connectors 
+                SELECT connector_number, connector_type, power_kw, status, error_code
+                FROM connectors 
             WHERE station_id = :station_id 
-            ORDER BY connector_number
+                ORDER BY connector_number
         """), {"station_id": request.station_id})
         
         connectors = []
@@ -422,62 +431,71 @@ async def get_station_status(request: StationStatusRequest, db: Session = Depend
         
         for conn in connectors_result.fetchall():
             connector_status = conn[3]  # status
-            connector_available = connector_status.lower() == "available" and is_online
             
-            if connector_available:
+            # Упрощенные статусы коннекторов (3 основных)
+            if connector_status == "available":
+                connector_available = is_online  # доступен только если станция онлайн
                 available_count += 1
-            elif connector_status.lower() == "occupied":
+                status_text = "Свободен"
+            elif connector_status == "occupied":
+                connector_available = False
                 occupied_count += 1
-            else:
+                status_text = "Занят"
+            elif connector_status == "faulted":
+                connector_available = False
                 faulted_count += 1
-            
-            connectors.append({
+                status_text = "Неисправен"
+            else:
+                # Неизвестный статус - считаем неисправным
+                connector_available = False
+                faulted_count += 1
+                status_text = "Неизвестно"
+                
+                connectors.append({
                 "id": conn[0],  # connector_number
-                "type": conn[1],  # connector_type
-                "status": "Свободен" if connector_status.lower() == "available" 
-                         else "Занят" if connector_status.lower() == "occupied" 
-                         else "Неисправен",
+                    "type": conn[1],  # connector_type
+                "status": status_text,
                 "available": connector_available,
-                "power_kw": conn[2],  # power_kw
+                    "power_kw": conn[2],  # power_kw
                 "error": conn[4] if conn[4] and conn[4] != "NoError" else None
-            })
-        
+                })
+            
         # Формируем ответ
-        return {
-            "success": True,
-            "station_id": request.station_id,
-            "serial_number": station_data[1],
+            return {
+                "success": True,
+                "station_id": request.station_id,
+                "serial_number": station_data[1],
             "model": station_data[2],
             "manufacturer": station_data[3],
-            
+                
             # Статусы
-            "online": is_online,
+                "online": is_online,
             "station_status": station_data[4],  # active/maintenance/inactive
             "location_status": station_data[13],  # active/maintenance/inactive
             "available_for_charging": is_online and station_data[4] == "active" and available_count > 0,
-            
-            # Локация
+                
+                # Локация
             "location_name": station_data[11],
             "location_address": station_data[12],
-            
+                
             # Коннекторы
-            "connectors": connectors,
+                "connectors": connectors,
             "total_connectors": station_data[7],  # connectors_count
             "available_connectors": available_count,
             "occupied_connectors": occupied_count,
             "faulted_connectors": faulted_count,
-            
-            # Тарифы
+                
+                # Тарифы
             "tariff_rub_kwh": float(station_data[8]) if station_data[8] else 14.95,
             "session_fee": float(station_data[9]) if station_data[9] else 0.0,
             "currency": station_data[10] or "KGS",
-            "working_hours": "Круглосуточно",
-            
+                "working_hours": "Круглосуточно",
+                
             "message": "Станция работает" if is_online and station_data[4] == "active" 
                       else "Станция на обслуживании" if station_data[4] == "maintenance"
-                      else "Станция недоступна"
-        }
-        
+                          else "Станция недоступна"
+            }
+            
     except Exception as e:
         return {
             "success": False,
