@@ -65,22 +65,28 @@ async def health_check():
     """Проверка состояния OCPP WebSocket сервера"""
     try:
         redis_status = await redis_manager.ping()
+        if not redis_status:
+            raise Exception("Redis недоступен - OCPP функции не работают")
+            
         connected_stations = await redis_manager.get_stations()
         return {
             "status": "healthy",
             "service": "EvPower OCPP WebSocket Server",
             "version": "1.0.0",
-            "redis": "connected" if redis_status else "disconnected",
+            "redis": "connected",
             "connected_stations": len(connected_stations),
             "endpoints": ["ws://{host}/ws/{station_id}", "GET /health"],
-            "note": "HTTP endpoints реализованы в FlutterFlow"
+            "note": "Все системы работают"
         }
     except Exception as e:
         logger.error(f"Health check failed: {e}")
         return {
             "status": "unhealthy",
+            "service": "EvPower OCPP WebSocket Server", 
+            "version": "1.0.0",
             "error": str(e),
-            "redis": "error"
+            "redis": "disconnected",
+            "note": "КРИТИЧЕСКАЯ ОШИБКА: Redis недоступен - OCPP и зарядка не работают!"
         }
 
 # ============================================================================

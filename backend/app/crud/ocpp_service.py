@@ -444,7 +444,7 @@ from sqlalchemy import text
 from decimal import Decimal
 
 class ODengiService:
-    """Сервис для работы с O!Dengi API"""
+    """Сервис для работы с O!Dengi JSON API"""
     
     def __init__(self):
         self.api_url = (
@@ -452,9 +452,21 @@ class ODengiService:
             if settings.ODENGI_USE_PRODUCTION 
             else settings.ODENGI_API_URL
         )
-        self.merchant_id = settings.ODENGI_MERCHANT_ID
-        self.password = settings.ODENGI_PASSWORD
+        
+        # Выбираем правильные креды в зависимости от окружения
+        if settings.ODENGI_USE_PRODUCTION:
+            self.merchant_id = settings.ODENGI_PROD_MERCHANT_ID or settings.ODENGI_MERCHANT_ID
+            self.password = settings.ODENGI_PROD_PASSWORD or settings.ODENGI_PASSWORD
+        else:
+            self.merchant_id = settings.ODENGI_MERCHANT_ID
+            self.password = settings.ODENGI_PASSWORD
+            
         self.use_production = settings.ODENGI_USE_PRODUCTION
+        self.api_version = 1005  # Версия API из документации
+        
+        # Проверка production конфигурации
+        if self.use_production and (not self.merchant_id or not self.password):
+            logger.warning("⚠️ Production режим включен, но отсутствуют production креды O!Dengi!")
     
     def generate_secure_order_id(self, payment_type: str, client_id: str, **kwargs) -> str:
         """Генерация безопасного order_id"""
@@ -499,6 +511,30 @@ class ODengiService:
         except Exception:
             return False
     
+    def generate_hash(self, request_data: Dict[str, Any]) -> str:
+        """Генерация hash подписи для запроса O!Dengi с использованием HMAC-MD5"""
+        import json
+        
+        # Создаем JSON в точном порядке как в документации
+        ordered_data = {
+            "cmd": request_data["cmd"],
+            "version": request_data["version"], 
+            "sid": request_data["sid"],
+            "mktime": request_data["mktime"],
+            "lang": request_data["lang"],
+            "data": request_data["data"]
+        }
+        
+        # Сериализуем JSON без пробелов и БЕЗ сортировки ключей
+        json_string = json.dumps(ordered_data, separators=(',', ':'), ensure_ascii=False, sort_keys=False)
+        
+        # Генерируем HMAC-MD5 подпись с паролем как ключом
+        return hmac.new(
+            self.password.encode('utf-8'),
+            json_string.encode('utf-8'),
+            hashlib.md5
+        ).hexdigest()
+    
     async def create_invoice(
         self, 
         order_id: str, 
@@ -506,28 +542,32 @@ class ODengiService:
         amount_kopecks: int,
         **kwargs
     ) -> Dict[str, Any]:
-        """Создание счета в O!Dengi"""
+        """Создание счета в O!Dengi через JSON API"""
+        
+        current_time = int(time.time())
         
         request_data = {
-            "method": "createInvoice",
-            "merchant_id": self.merchant_id,
-            "password": self.password,
-            "order_id": order_id,
-            "desc": description,
-            "amount": amount_kopecks,
-            "currency": settings.DEFAULT_CURRENCY,
-            "test": 0 if self.use_production else 1,
-            "long_term": False,
-            "count_push": 3,
-            **kwargs
+            "cmd": "createInvoice",
+            "version": self.api_version,
+            "sid": self.merchant_id,
+            "mktime": str(current_time * 1000),
+            "lang": "ru",
+            "data": {
+                "amount": amount_kopecks,
+                "desc": description,
+                "order_id": order_id
+            }
         }
         
+        # Генерируем подпись
+        request_data["hash"] = self.generate_hash(request_data)
+        
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                 response = await client.post(
                     self.api_url,
                     json=request_data,
-                    headers={"Content-Type": "application/json"}
+                    headers={"Content-Type": "application/json; charset=utf-8"}
                 )
                 response.raise_for_status()
                 
@@ -543,22 +583,31 @@ class ODengiService:
     async def get_payment_status(self, invoice_id: str, order_id: Optional[str] = None) -> Dict[str, Any]:
         """Проверка статуса платежа"""
         
+        current_time = int(time.time())
+        
         request_data = {
-            "method": "statusPayment",
-            "merchant_id": self.merchant_id,
-            "password": self.password,
-            "invoice_id": invoice_id
+            "cmd": "statusPayment",
+            "version": self.api_version,
+            "sid": self.merchant_id,
+            "mktime": str(current_time),
+            "lang": "ru",
+            "data": {
+                "invoice_id": invoice_id
+            }
         }
         
         if order_id:
-            request_data["order_id"] = order_id
+            request_data["data"]["order_id"] = order_id
+        
+        # Генерируем подпись
+        request_data["hash"] = self.generate_hash(request_data)
         
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
                 response = await client.post(
                     self.api_url,
                     json=request_data,
-                    headers={"Content-Type": "application/json"}
+                    headers={"Content-Type": "application/json; charset=utf-8"}
                 )
                 response.raise_for_status()
                 

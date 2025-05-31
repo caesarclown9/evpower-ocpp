@@ -10,6 +10,14 @@ class RedisOcppManager:
     def __init__(self):
         self.redis = redis.from_url(REDIS_URL, decode_responses=True)
 
+    async def ping(self) -> bool:
+        """Проверка соединения с Redis"""
+        try:
+            await self.redis.ping()
+            return True
+        except Exception:
+            return False
+
     async def register_station(self, station_id: str):
         await self.redis.sadd("ocpp:stations", station_id)
 

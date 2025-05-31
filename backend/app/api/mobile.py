@@ -547,8 +547,8 @@ async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
             duration_minutes = int((end_time - start_time).total_seconds() / 60)
         
         # 🆕 ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ: energy_consumed и cost как отдельные поля
-        return {
-            "success": True,
+            return {
+                "success": True,
             "session_id": session_id,
             "status": status,
             "start_time": start_time.isoformat() if start_time else None,
@@ -754,7 +754,9 @@ async def create_balance_topup(
             amount_kopecks=amount_kopecks
         )
         
-        if not odengi_response.get("invoice_id"):
+        # Исправляем доступ к данным из ответа O!Dengi
+        odengi_data = odengi_response.get("data", {})
+        if not odengi_data.get("invoice_id"):
             return BalanceTopupResponse(
                 success=False,
                 error="odengi_error",
@@ -770,27 +772,27 @@ async def create_balance_topup(
                     :currency, :description, :qr_code_url, :app_link, 'pending', 0)
             RETURNING id
         """), {
-            "invoice_id": odengi_response["invoice_id"],
+            "invoice_id": odengi_data["invoice_id"],
             "order_id": order_id,
             "merchant_id": settings.ODENGI_MERCHANT_ID,
             "client_id": request.client_id,
             "requested_amount": request.amount,
             "currency": settings.DEFAULT_CURRENCY,
             "description": description,
-            "qr_code_url": odengi_response.get("qr"),
-            "app_link": odengi_response.get("link_app")
+            "qr_code_url": odengi_data.get("qr"),
+            "app_link": odengi_data.get("link_app")
         })
         
         db.commit()
         
-        logger.info(f"Пополнение создано: {order_id}, invoice_id: {odengi_response['invoice_id']}")
+        logger.info(f"Пополнение создано: {order_id}, invoice_id: {odengi_data['invoice_id']}")
         
         return BalanceTopupResponse(
             success=True,
-            invoice_id=odengi_response["invoice_id"],
+            invoice_id=odengi_data["invoice_id"],
             order_id=order_id,
-            qr_code=odengi_response.get("qr"),
-            app_link=odengi_response.get("link_app"),
+            qr_code=odengi_data.get("qr"),
+            app_link=odengi_data.get("link_app"),
             amount=request.amount,
             client_id=request.client_id,
             current_balance=float(client[1])  # Текущий баланс

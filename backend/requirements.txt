@@ -1,9 +1,10 @@
 # requirements.txt
 # Зависимости для FastAPI, работы с PostgreSQL (например, Neon.tech), JWT и асинхронности
 fastapi
-uvicorn
+uvicorn[standard]
 sqlalchemy
 pydantic
+pydantic-settings
 python-dotenv
 httpx>=0.24.0
 email-validator

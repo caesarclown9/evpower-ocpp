@@ -42,11 +42,15 @@ class Settings(BaseSettings):
     ODENGI_PRODUCTION_API_URL: str = os.getenv("ODENGI_PRODUCTION_API_URL", "https://mw-api.dengi.kg/api/json/json.php")
     ODENGI_MERCHANT_ID: str = os.getenv("ODENGI_MERCHANT_ID", "4672496329")
     ODENGI_PASSWORD: str = os.getenv("ODENGI_PASSWORD", "F7XFAI4O5A@CS2W")
-    ODENGI_WEBHOOK_SECRET: Optional[str] = os.getenv("ODENGI_WEBHOOK_SECRET")
+    ODENGI_WEBHOOK_SECRET: Optional[str] = os.getenv("ODENGI_WEBHOOK_SECRET", "evpower_webhook_secret_2024")
     ODENGI_USE_PRODUCTION: bool = os.getenv("ODENGI_USE_PRODUCTION", "false").lower() == "true"
     
+    # O!Dengi Production настройки (получить у O!Dengi при регистрации merchant)
+    ODENGI_PROD_MERCHANT_ID: str = os.getenv("ODENGI_PROD_MERCHANT_ID", "")
+    ODENGI_PROD_PASSWORD: str = os.getenv("ODENGI_PROD_PASSWORD", "")
+    
     # EZS Payment Settings
-    EZS_SECRET_KEY: str = os.getenv("EZS_SECRET_KEY", "evpower_secret_key_2024")
+    EZS_SECRET_KEY: str = os.getenv("EZS_SECRET_KEY", "evpower_secret_key_2024_production")
     DEFAULT_CURRENCY: str = os.getenv("DEFAULT_CURRENCY", "KGS")
     PAYMENT_TIMEOUT_MINUTES: int = int(os.getenv("PAYMENT_TIMEOUT_MINUTES", "30"))
     
