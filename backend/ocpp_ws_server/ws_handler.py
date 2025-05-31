@@ -86,7 +86,13 @@ class OCPPChargePoint(CP):
                 # Отправляем команды автозапуска для каждой pending сессии
                 for session in pending_sessions:
                     session_id, user_id, limit_value, limit_type = session
-                    id_tag = f"CLIENT_{user_id}"
+                    
+                    # 🆕 ИСПРАВЛЕНИЕ: Получаем номер телефона клиента вместо CLIENT_ префикса
+                    phone_query = text("""
+                        SELECT phone FROM clients WHERE id = :client_id
+                    """)
+                    phone_result = db.execute(phone_query, {"client_id": user_id}).fetchone()
+                    id_tag = phone_result[0] if phone_result else f"CLIENT_{user_id}"
                     
                     # Определяем коннектор из занятых коннекторов
                     connector_query = text("""

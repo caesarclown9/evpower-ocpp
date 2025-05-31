@@ -79,10 +79,13 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
                 "message": "Станция недоступна"
             }
         
-        # 3. Определяем тариф (из станции или тарифного плана)
-        rate_per_kwh = float(station[2])  # price_per_kwh из станции
+        # 3. Определяем тариф: ПРИОРИТЕТ СТАНЦИИ над тарифным планом
+        rate_per_kwh = 9.0  # fallback по умолчанию
         
-        if station[3]:  # Если есть тарифный план
+        # Сначала проверяем тариф станции
+        if station[2]:  # Если у станции есть price_per_kwh
+            rate_per_kwh = float(station[2])
+        elif station[3]:  # Только если у станции НЕТ тарифа - ищем в тарифном плане
             tariff_check = db.execute(text("""
                 SELECT price FROM tariff_rules 
                 WHERE tariff_plan_id = :tariff_plan_id 
@@ -131,7 +134,7 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
                 "message": "Коннектор занят или неисправен"
             }
         
-        # 7. Проверяем активные сессии клиента
+        # 7. Проверяем, нет ли уже активной сессии для клиента
         active_session_check = db.execute(text("""
             SELECT id FROM charging_sessions 
             WHERE user_id = :client_id AND status = 'started'
@@ -150,8 +153,13 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
             f"Резервирование средств для зарядки на станции {request.station_id}"
         )
 
-        # 9. Создаем авторизацию OCPP
-        id_tag = f"CLIENT_{request.client_id}"
+        # 9. Создаем ocpp_sessions запись с правильным idTag
+        # 🆕 ИСПРАВЛЕНИЕ: Используем номер телефона вместо CLIENT_ префикса
+        phone_query = text("""
+            SELECT phone FROM clients WHERE id = :client_id
+        """)
+        phone_result = db.execute(phone_query, {"client_id": request.client_id}).fetchone()
+        id_tag = phone_result[0] if phone_result else f"CLIENT_{request.client_id}"
         
         auth_check = db.execute(text("""
             SELECT id_tag FROM ocpp_authorization 
@@ -494,7 +502,7 @@ async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
         meter_start = session[12]
         meter_stop = session[13]
         ocpp_status = session[14]
-        price_per_kwh = session[15] or 6.5
+        price_per_kwh = session[15] or 9.0
         
         # 🆕 УЛУЧШЕНИЕ: Расчет реальных данных из OCPP
         actual_energy_consumed = float(energy_consumed)
