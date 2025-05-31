@@ -140,7 +140,7 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
         if active_session_check.fetchone():
             return {
                 "success": False,
-                "error": "session_already_active",
+                "error": "session_already_active", 
                 "message": "У вас уже есть активная сессия зарядки"
             }
 
@@ -509,11 +509,11 @@ async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
         elif meter_start is not None and status == 'started':
             # Активная зарядка - получаем последние показания из meter_values
             latest_meter_query = text("""
-                SELECT mv.value 
+                SELECT mv.energy_active_import_register
                 FROM ocpp_meter_values mv
-                JOIN ocpp_transactions ot ON mv.transaction_id = ot.id
-                WHERE ot.charging_session_id = :session_id 
-                AND mv.measurand = 'Energy.Active.Import.Register'
+                JOIN ocpp_transactions ot ON mv.ocpp_transaction_id = ot.transaction_id
+                WHERE ot.charging_session_id = :session_id
+                AND mv.energy_active_import_register IS NOT NULL
                 ORDER BY mv.timestamp DESC LIMIT 1
             """)
             latest_result = db.execute(latest_meter_query, {"session_id": session_id})
