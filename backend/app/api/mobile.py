@@ -547,8 +547,8 @@ async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
             duration_minutes = int((end_time - start_time).total_seconds() / 60)
         
         # 🆕 ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ: energy_consumed и cost как отдельные поля
-            return {
-                "success": True,
+        return {
+            "success": True,
             "session_id": session_id,
             "status": status,
             "start_time": start_time.isoformat() if start_time else None,
