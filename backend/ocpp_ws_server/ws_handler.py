@@ -272,56 +272,63 @@ class OCPPChargePoint(CP):
                     float(meter_start), datetime.fromisoformat(timestamp.replace('Z', ''))
                 )
                 
-                # 🆕 УЛУЧШЕННОЕ СВЯЗЫВАНИЕ: Двунаправленная привязка OCPP ↔ Mobile
+                # 🆕 УЛУЧШЕННОЕ СВЯЗЫВАНИЕ: Находим клиента по номеру телефона
                 charging_session_id = None
-                if id_tag.startswith("CLIENT_"):
-                    client_id = id_tag.replace("CLIENT_", "")
+                client_id = None
+                
+                # Поиск клиента по номеру телефона (idTag)
+                client_query = text("""
+                    SELECT id FROM clients 
+                    WHERE phone = :phone 
+                    LIMIT 1
+                """)
+                client_result = db.execute(client_query, {"phone": id_tag})
+                client_row = client_result.fetchone()
+                
+                if client_row:
+                    client_id = client_row[0]
+                    self.logger.info(f"🔍 НАЙДЕН КЛИЕНТ: phone={id_tag} -> client_id={client_id}")
                     
-                    # 1. Ищем активную мобильную сессию для клиента
+                    # Ищем активную мобильную сессию для клиента
                     find_session_query = text("""
                         SELECT id FROM charging_sessions 
-                        WHERE station_id = :station_id 
-                        AND user_id = :client_id 
-                        AND status = 'started' 
-                        AND transaction_id IS NULL
+                        WHERE user_id = :client_id AND status = 'started' 
                         ORDER BY start_time DESC LIMIT 1
                     """)
-                    session_result = db.execute(find_session_query, {
-                        "station_id": self.id,
-                        "client_id": client_id
-                    })
+                    session_result = db.execute(find_session_query, {"client_id": client_id})
                     session_row = session_result.fetchone()
                     
                     if session_row:
                         charging_session_id = session_row[0]
+                        self.logger.info(f"🔗 НАЙДЕНА АКТИВНАЯ СЕССИЯ: {charging_session_id}")
                         
-                        # 2. Обновляем мобильную сессию с OCPP transaction_id
-                        update_session_query = text("""
-                            UPDATE charging_sessions 
-                            SET transaction_id = :transaction_id
-                            WHERE id = :session_id
-                        """)
-                        db.execute(update_session_query, {
-                            "transaction_id": str(transaction_id),
-                            "session_id": charging_session_id
-                        })
-                        
-                        # 3. Обновляем OCPP транзакцию с charging_session_id
-                        update_ocpp_query = text("""
+                        # Связываем OCPP транзакцию с мобильной сессией
+                        link_query = text("""
                             UPDATE ocpp_transactions 
-                            SET charging_session_id = :charging_session_id
-                            WHERE station_id = :station_id 
-                            AND transaction_id = :transaction_id
+                            SET charging_session_id = :session_id 
+                            WHERE transaction_id = :transaction_id
                         """)
-                        db.execute(update_ocpp_query, {
-                            "charging_session_id": charging_session_id,
-                            "station_id": self.id,
+                        db.execute(link_query, {
+                            "session_id": charging_session_id,
                             "transaction_id": transaction_id
                         })
                         
-                        self.logger.info(f"🔗 СВЯЗАЛ: OCPP транзакция {transaction_id} ↔ Мобильная сессия {charging_session_id} для клиента {client_id}")
+                        # Обновляем мобильную сессию с OCPP данными
+                        update_session_query = text("""
+                            UPDATE charging_sessions 
+                            SET transaction_id = :transaction_id 
+                            WHERE id = :session_id
+                        """)
+                        db.execute(update_session_query, {
+                            "transaction_id": transaction_id,
+                            "session_id": charging_session_id
+                        })
+                        
+                        self.logger.info(f"✅ СВЯЗЫВАНИЕ ЗАВЕРШЕНО: OCPP {transaction_id} ↔ Mobile {charging_session_id}")
                     else:
                         self.logger.warning(f"⚠️ Активная мобильная сессия для клиента {client_id} не найдена")
+                else:
+                    self.logger.warning(f"⚠️ Клиент с номером {id_tag} не найден")
                 
                 # Сохраняем в активные сессии с улучшенными данными
                 active_sessions[self.id] = {
@@ -331,7 +338,7 @@ class OCPPChargePoint(CP):
                     'energy_delivered': 0.0,
                     'connector_id': connector_id,
                     'id_tag': id_tag,
-                    'client_id': id_tag.replace("CLIENT_", "") if id_tag.startswith("CLIENT_") else None
+                    'client_id': client_id
                 }
                 
                 # 🆕 АВТОМАТИЧЕСКОЕ ОБНОВЛЕНИЕ: Коннектор становится занят
@@ -535,58 +542,37 @@ class OCPPChargePoint(CP):
                                 self.logger.info(f"🔍 ENERGY DEBUG: current={current_energy}, start={meter_start}, delivered={energy_delivered}")
                                 
                                 # 🆕 ОБНОВЛЕНИЕ МОБИЛЬНОЙ СЕССИИ: Записываем энергию в charging_sessions
-                                if session.get('client_id'):
+                                if session.get('client_id') and session.get('charging_session_id'):
                                     client_id = session['client_id']
-                                    charging_session_id = session.get('charging_session_id')
+                                    charging_session_id = session['charging_session_id']
                                     energy_kwh = energy_delivered / 1000.0  # Wh → kWh
                                     
-                                    self.logger.info(f"🔍 CLIENT DEBUG: client_id={client_id}, session_id={charging_session_id}")
+                                    self.logger.info(f"🔄 ОБНОВЛЕНИЕ СЕССИИ: client_id={client_id}, session_id={charging_session_id}, energy={energy_kwh} кВтч")
                                     
                                     # Получаем тариф для расчета стоимости
                                     tariff_query = text("""
                                         SELECT price_per_kwh FROM stations 
                                         WHERE id = :station_id
                                     """)
-                                    tariff_result = db.execute(tariff_query, {"station_id": self.id}).fetchone()
-                                    tariff_som_kwh = float(tariff_result[0]) if tariff_result and tariff_result[0] else 6.5
+                                    tariff_result = db.execute(tariff_query, {"station_id": self.id})
+                                    tariff_row = tariff_result.fetchone()
+                                    rate_per_kwh = tariff_row[0] if tariff_row else 6.5
                                     
-                                    current_amount = energy_kwh * tariff_som_kwh
+                                    current_cost = energy_kwh * rate_per_kwh
                                     
-                                    self.logger.info(f"🔍 CALC DEBUG: energy_kwh={energy_kwh}, tariff={tariff_som_kwh}, amount={current_amount}")
+                                    # Обновляем мобильную сессию с текущими данными
+                                    update_mobile_session = text("""
+                                        UPDATE charging_sessions 
+                                        SET energy = :energy, amount = :cost 
+                                        WHERE id = :session_id
+                                    """)
+                                    db.execute(update_mobile_session, {
+                                        "energy": energy_kwh,
+                                        "cost": current_cost,
+                                        "session_id": charging_session_id
+                                    })
                                     
-                                    # Обновляем мобильную сессию через ID (более надежно)
-                                    if charging_session_id:
-                                        update_mobile_session_query = text("""
-                                            UPDATE charging_sessions 
-                                            SET energy = :energy_kwh, amount = :current_amount
-                                            WHERE id = :session_id AND status = 'started'
-                                        """)
-                                        result = db.execute(update_mobile_session_query, {
-                                            "energy_kwh": energy_kwh,
-                                            "current_amount": current_amount,
-                                            "session_id": charging_session_id
-                                        })
-                                    else:
-                                        # Резервный метод - поиск по клиенту и станции
-                                        update_mobile_session_query = text("""
-                                            UPDATE charging_sessions 
-                                            SET energy = :energy_kwh, amount = :current_amount
-                                            WHERE station_id = :station_id 
-                                            AND user_id = :client_id 
-                                            AND status = 'started'
-                                            AND transaction_id IS NOT NULL
-                                        """)
-                                        result = db.execute(update_mobile_session_query, {
-                                            "energy_kwh": energy_kwh,
-                                            "current_amount": current_amount,
-                                            "station_id": self.id,
-                                            "client_id": client_id
-                                        })
-                                    
-                                    db.commit()
-                                    
-                                    self.logger.info(f"🔍 UPDATE DEBUG: rows affected={result.rowcount}")
-                                    self.logger.info(f"📊 Обновил мобильную сессию: {energy_kwh:.3f} kWh, {current_amount:.2f} сом")
+                                    self.logger.info(f"✅ СЕССИЯ ОБНОВЛЕНА: {energy_kwh} кВтч, {current_cost} сом")
                                 
                                 # Проверка лимитов (если установлены)
                                 energy_limit = session.get('energy_limit')
