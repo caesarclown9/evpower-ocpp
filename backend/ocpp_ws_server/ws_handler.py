@@ -31,6 +31,7 @@ from app.crud.ocpp_service import (
 )
 from app.db.models.ocpp import OCPPTransaction
 from sqlalchemy import text
+from decimal import Decimal
 
 logger = logging.getLogger(__name__)
 
@@ -556,23 +557,40 @@ class OCPPChargePoint(CP):
                                     """)
                                     tariff_result = db.execute(tariff_query, {"station_id": self.id})
                                     tariff_row = tariff_result.fetchone()
-                                    rate_per_kwh = tariff_row[0] if tariff_row else 6.5
+                                    tariff_rate = float(tariff_row[0]) if tariff_row else 6.5
                                     
-                                    current_cost = energy_kwh * rate_per_kwh
-                                    
-                                    # Обновляем мобильную сессию с текущими данными
-                                    update_mobile_session = text("""
-                                        UPDATE charging_sessions 
-                                        SET energy = :energy, amount = :cost 
-                                        WHERE id = :session_id
-                                    """)
-                                    db.execute(update_mobile_session, {
-                                        "energy": energy_kwh,
-                                        "cost": current_cost,
-                                        "session_id": charging_session_id
-                                    })
-                                    
-                                    self.logger.info(f"✅ СЕССИЯ ОБНОВЛЕНА: {energy_kwh} кВтч, {current_cost} сом")
+                                    # Рассчитываем текущую стоимость
+                                    try:
+                                        current_cost = Decimal(str(energy_kwh)) * tariff_rate
+                                        
+                                        # Обновляем мобильную сессию
+                                        update_query = text("""
+                                            UPDATE charging_sessions 
+                                            SET energy = :energy, amount = :cost
+                                            WHERE id = :session_id
+                                        """)
+                                        db.execute(update_query, {
+                                            "energy": energy_kwh,
+                                            "cost": float(current_cost),
+                                            "session_id": charging_session_id
+                                        })
+                                        db.commit()
+                                        
+                                        self.logger.info(f"✅ СЕССИЯ ОБНОВЛЕНА: {energy_kwh} кВт⋅ч, {current_cost} сом")
+                                        
+                                    except Exception as cost_error:
+                                        self.logger.error(f"🔍 COST ERROR: {cost_error}")
+                                        # Обновляем только энергию без стоимости
+                                        update_query = text("""
+                                            UPDATE charging_sessions 
+                                            SET energy = :energy
+                                            WHERE id = :session_id
+                                        """)
+                                        db.execute(update_query, {
+                                            "energy": energy_kwh,
+                                            "session_id": charging_session_id
+                                        })
+                                        db.commit()
                                 
                                 # Проверка лимитов (если установлены)
                                 energy_limit = session.get('energy_limit')
