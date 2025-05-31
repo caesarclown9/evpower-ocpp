@@ -506,7 +506,7 @@ async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
         
         # 🆕 УЛУЧШЕНИЕ: Расчет реальных данных из OCPP
         actual_energy_consumed = float(energy_consumed)
-        actual_cost = float(amount_charged)
+        actual_cost = actual_energy_consumed * float(price_per_kwh)
         
         # Если есть OCPP данные - используем их для более точного расчета
         if meter_start is not None and meter_stop is not None:
