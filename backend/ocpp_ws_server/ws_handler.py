@@ -561,7 +561,7 @@ class OCPPChargePoint(CP):
                                     
                                     # Рассчитываем текущую стоимость
                                     try:
-                                        current_cost = Decimal(str(energy_kwh)) * tariff_rate
+                                        current_cost = Decimal(str(energy_kwh)) * Decimal(str(tariff_rate))
                                         
                                         # Обновляем мобильную сессию
                                         update_query = text("""
