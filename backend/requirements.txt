@@ -5,7 +5,7 @@ uvicorn
 sqlalchemy
 pydantic
 python-dotenv
-httpx
+httpx>=0.24.0
 email-validator
 passlib[bcrypt]
 pyjwt
@@ -21,3 +21,6 @@ alembic
 
 # --- Для загрузки файлов через FastAPI ---
 python-multipart
+
+# --- Для O!Dengi интеграции ---
+cryptography>=3.4.8

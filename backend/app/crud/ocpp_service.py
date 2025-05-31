@@ -427,4 +427,276 @@ class OCPPConfigurationService:
         config.updated_at = datetime.utcnow()
         db.commit()
         
-        return {"status": "Accepted"} 
+        return {"status": "Accepted"}
+
+# ============================================================================
+# O!DENGI ПЛАТЕЖНЫЙ СЕРВИС
+# ============================================================================
+
+import httpx
+import hmac
+import hashlib
+import time
+from typing import Dict, Any, Optional
+from app.core.config import settings
+from app.schemas.ocpp import PaymentWebhookData
+from sqlalchemy import text
+from decimal import Decimal
+
+class ODengiService:
+    """Сервис для работы с O!Dengi API"""
+    
+    def __init__(self):
+        self.api_url = (
+            settings.ODENGI_PRODUCTION_API_URL 
+            if settings.ODENGI_USE_PRODUCTION 
+            else settings.ODENGI_API_URL
+        )
+        self.merchant_id = settings.ODENGI_MERCHANT_ID
+        self.password = settings.ODENGI_PASSWORD
+        self.use_production = settings.ODENGI_USE_PRODUCTION
+    
+    def generate_secure_order_id(self, payment_type: str, client_id: str, **kwargs) -> str:
+        """Генерация безопасного order_id"""
+        timestamp = int(time.time())
+        
+        if payment_type == "topup":
+            data = f"TOPUP_{client_id}_{timestamp}"
+        elif payment_type == "charging":
+            station_id = kwargs.get('station_id', '')
+            connector_id = kwargs.get('connector_id', 1)
+            data = f"CHARGE_{station_id}_{connector_id}_{timestamp}_{client_id}"
+        else:
+            data = f"PAYMENT_{client_id}_{timestamp}"
+        
+        signature = hmac.new(
+            settings.EZS_SECRET_KEY.encode(),
+            data.encode(),
+            hashlib.sha256
+        ).hexdigest()[:8]
+        
+        return f"{data}_{signature}"
+    
+    def validate_order_id(self, order_id: str) -> bool:
+        """Валидация order_id для предотвращения мошенничества"""
+        try:
+            parts = order_id.split('_')
+            if len(parts) < 4:
+                return False
+            
+            # Получаем подпись (последняя часть)
+            signature = parts[-1]
+            # Восстанавливаем исходные данные
+            data = '_'.join(parts[:-1])
+            
+            expected_signature = hmac.new(
+                settings.EZS_SECRET_KEY.encode(),
+                data.encode(),
+                hashlib.sha256
+            ).hexdigest()[:8]
+            
+            return signature == expected_signature
+        except Exception:
+            return False
+    
+    async def create_invoice(
+        self, 
+        order_id: str, 
+        description: str, 
+        amount_kopecks: int,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Создание счета в O!Dengi"""
+        
+        request_data = {
+            "method": "createInvoice",
+            "merchant_id": self.merchant_id,
+            "password": self.password,
+            "order_id": order_id,
+            "desc": description,
+            "amount": amount_kopecks,
+            "currency": settings.DEFAULT_CURRENCY,
+            "test": 0 if self.use_production else 1,
+            "long_term": False,
+            "count_push": 3,
+            **kwargs
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    self.api_url,
+                    json=request_data,
+                    headers={"Content-Type": "application/json"}
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                logger.info(f"O!Dengi createInvoice response: {result}")
+                
+                return result
+                
+        except Exception as e:
+            logger.error(f"O!Dengi createInvoice error: {e}")
+            raise
+    
+    async def get_payment_status(self, invoice_id: str, order_id: Optional[str] = None) -> Dict[str, Any]:
+        """Проверка статуса платежа"""
+        
+        request_data = {
+            "method": "statusPayment",
+            "merchant_id": self.merchant_id,
+            "password": self.password,
+            "invoice_id": invoice_id
+        }
+        
+        if order_id:
+            request_data["order_id"] = order_id
+        
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    self.api_url,
+                    json=request_data,
+                    headers={"Content-Type": "application/json"}
+                )
+                response.raise_for_status()
+                
+                result = response.json()
+                logger.info(f"O!Dengi statusPayment response: {result}")
+                
+                return result
+                
+        except Exception as e:
+            logger.error(f"O!Dengi statusPayment error: {e}")
+            raise
+    
+    def verify_webhook_signature(self, payload: bytes, received_signature: str) -> bool:
+        """Верификация подписи webhook"""
+        if not settings.ODENGI_WEBHOOK_SECRET:
+            logger.warning("ODENGI_WEBHOOK_SECRET not configured, skipping signature verification")
+            return True
+        
+        expected_signature = hmac.new(
+            settings.ODENGI_WEBHOOK_SECRET.encode('utf-8'),
+            payload,
+            hashlib.sha256
+        ).hexdigest()
+        
+        # Поддержка формата "sha256=signature"
+        if received_signature.startswith('sha256='):
+            received_signature = received_signature[7:]
+        
+        return hmac.compare_digest(expected_signature, received_signature)
+    
+    @staticmethod
+    def get_status_text(status: int) -> str:
+        """Преобразование статуса O!Dengi в текст"""
+        statuses = {
+            0: "Ожидает оплаты",
+            1: "Оплачено", 
+            2: "Отменено",
+            3: "Возврат",
+            4: "Частичный возврат"
+        }
+        return statuses.get(status, "Неизвестный статус")
+    
+    @staticmethod
+    def can_proceed(status: int) -> bool:
+        """Проверка возможности проведения операции"""
+        return status == 1  # Только если оплачено
+
+class PaymentService:
+    """Сервис для работы с балансом и платежами"""
+    
+    @staticmethod
+    def get_client_balance(db: Session, client_id: str) -> Decimal:
+        """Получение текущего баланса клиента"""
+        result = db.execute(text("""
+            SELECT balance FROM clients WHERE id = :client_id
+        """), {"client_id": client_id})
+        
+        row = result.fetchone()
+        return Decimal(str(row[0])) if row else Decimal('0')
+    
+    @staticmethod
+    def update_client_balance(
+        db: Session, 
+        client_id: str, 
+        amount: Decimal, 
+        operation: str = "add",
+        description: str = ""
+    ) -> Decimal:
+        """Обновление баланса клиента с логированием"""
+        
+        # Получаем текущий баланс
+        current_balance = PaymentService.get_client_balance(db, client_id)
+        
+        # Вычисляем новый баланс
+        if operation == "add":
+            new_balance = current_balance + amount
+        elif operation == "subtract":
+            new_balance = current_balance - amount
+            if new_balance < 0:
+                raise ValueError("Недостаточно средств на балансе")
+        else:
+            raise ValueError("Неподдерживаемая операция")
+        
+        # Обновляем баланс
+        db.execute(text("""
+            UPDATE clients 
+            SET balance = :new_balance, updated_at = NOW() 
+            WHERE id = :client_id
+        """), {"new_balance": new_balance, "client_id": client_id})
+        
+        logger.info(f"Баланс клиента {client_id}: {current_balance} -> {new_balance} ({operation} {amount})")
+        
+        return new_balance
+    
+    @staticmethod
+    def create_payment_transaction(
+        db: Session,
+        client_id: str,
+        transaction_type: str,
+        amount: Decimal,
+        balance_before: Decimal,
+        balance_after: Decimal,
+        description: str = "",
+        **kwargs
+    ) -> int:
+        """Создание записи о транзакции"""
+        
+        insert_data = {
+            "client_id": client_id,
+            "transaction_type": transaction_type,
+            "amount": amount,
+            "balance_before": balance_before,
+            "balance_after": balance_after,
+            "description": description,
+            "balance_topup_id": kwargs.get('balance_topup_id'),
+            "charging_session_id": kwargs.get('charging_session_id')
+        }
+        
+        result = db.execute(text("""
+            INSERT INTO payment_transactions_odengi 
+            (client_id, transaction_type, amount, balance_before, balance_after, 
+             description, balance_topup_id, charging_session_id)
+            VALUES (:client_id, :transaction_type, :amount, :balance_before, :balance_after,
+                    :description, :balance_topup_id, :charging_session_id)
+            RETURNING id
+        """), insert_data)
+        
+        transaction_id = result.fetchone()[0]
+        logger.info(f"Создана транзакция {transaction_id}: {description}")
+        
+        return transaction_id
+    
+    @staticmethod
+    def check_sufficient_balance(db: Session, client_id: str, amount: Decimal) -> bool:
+        """Проверка достаточности средств"""
+        current_balance = PaymentService.get_client_balance(db, client_id)
+        return current_balance >= amount
+
+# Синглтоны для использования в приложении
+odengi_service = ODengiService()
+payment_service = PaymentService() 

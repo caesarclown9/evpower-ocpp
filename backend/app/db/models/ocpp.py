@@ -295,3 +295,134 @@ class OCPPConfiguration(Base):
 
     # Relationships
     station = relationship("Station")
+
+# ============================================================================
+# ПЛАТЕЖНАЯ СИСТЕМА O!DENGI
+# ============================================================================
+
+class PaymentStatus(str, enum.Enum):
+    pending = "pending"           # 0 - Ожидает оплаты
+    paid = "paid"                # 1 - Оплачено  
+    cancelled = "cancelled"      # 2 - Отменено
+    refunded = "refunded"        # 3 - Возврат
+    partial_refund = "partial_refund"  # 4 - Частичный возврат
+
+class PaymentType(str, enum.Enum):
+    balance_topup = "balance_topup"     # Пополнение баланса
+    charging_payment = "charging_payment"  # Прямая оплата зарядки
+
+class BalanceTopup(Base):
+    """Пополнения баланса клиентов через O!Dengi"""
+    __tablename__ = "balance_topups"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # O!Dengi данные
+    invoice_id = Column(String(12), unique=True, index=True)
+    order_id = Column(String(128), unique=True, index=True)
+    merchant_id = Column(String(32))
+    
+    # Клиент и сумма
+    client_id = Column(String, ForeignKey('clients.id'), nullable=False)
+    requested_amount = Column(Numeric, nullable=False)  # Запрошенная сумма
+    paid_amount = Column(Numeric, nullable=True)  # Фактически оплаченная сумма
+    currency = Column(String(3), default="KGS")
+    
+    # Статусы и временные метки
+    status = Column(SqlEnum(PaymentStatus), default=PaymentStatus.pending)
+    odengi_status = Column(Integer, default=0)  # Статус от O!Dengi API
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Дополнительные данные
+    description = Column(Text)
+    qr_code_url = Column(String(500))
+    app_link = Column(String(500))
+    
+    # Webhook данные
+    last_webhook_at = Column(DateTime(timezone=True), nullable=True)
+    webhook_count = Column(Integer, default=0)
+    
+    # Relationships
+    client = relationship("Client")
+
+class ChargingPayment(Base):
+    """Прямые платежи за зарядку через O!Dengi"""
+    __tablename__ = "charging_payments"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # O!Dengi данные
+    invoice_id = Column(String(12), unique=True, index=True)
+    order_id = Column(String(128), unique=True, index=True)
+    merchant_id = Column(String(32))
+    
+    # ЭЗС данные
+    station_id = Column(String, ForeignKey('stations.id'), nullable=False)
+    connector_id = Column(Integer, nullable=False)
+    client_id = Column(String, ForeignKey('clients.id'), nullable=False)
+    charging_session_id = Column(String, ForeignKey('charging_sessions.id'), nullable=True)
+    
+    # Финансовые данные
+    estimated_amount = Column(Numeric, nullable=False)  # Предварительная сумма
+    paid_amount = Column(Numeric, nullable=True)  # Фактически оплачено
+    currency = Column(String(3), default="KGS")
+    
+    # Зарядная сессия
+    estimated_kwh = Column(Numeric)
+    actual_kwh = Column(Numeric, nullable=True)
+    rate_per_kwh = Column(Numeric)
+    
+    # Статусы и временные метки
+    status = Column(SqlEnum(PaymentStatus), default=PaymentStatus.pending)
+    odengi_status = Column(Integer, default=0)  # Статус от O!Dengi API
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    paid_at = Column(DateTime(timezone=True), nullable=True)
+    completed_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Дополнительные данные
+    description = Column(Text)
+    qr_code_url = Column(String(500))
+    app_link = Column(String(500))
+    
+    # Webhook данные
+    last_webhook_at = Column(DateTime(timezone=True), nullable=True)
+    webhook_count = Column(Integer, default=0)
+    
+    # Relationships
+    station = relationship("Station")
+    client = relationship("Client")
+    charging_session = relationship("ChargingSession")
+
+class PaymentTransaction(Base):
+    """Лог всех операций с балансом и платежами"""
+    __tablename__ = "payment_transactions"
+    
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    client_id = Column(String, ForeignKey('clients.id'), nullable=False)
+    transaction_type = Column(SqlEnum(PaymentType), nullable=False)
+    
+    # Суммы
+    amount = Column(Numeric, nullable=False)
+    balance_before = Column(Numeric, nullable=False)
+    balance_after = Column(Numeric, nullable=False)
+    currency = Column(String(3), default="KGS")
+    
+    # Связанные объекты
+    balance_topup_id = Column(Integer, ForeignKey('balance_topups.id'), nullable=True)
+    charging_payment_id = Column(Integer, ForeignKey('charging_payments.id'), nullable=True)
+    charging_session_id = Column(String, ForeignKey('charging_sessions.id'), nullable=True)
+    
+    # Метаданные
+    description = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Relationships
+    client = relationship("Client")
+    balance_topup = relationship("BalanceTopup")
+    charging_payment = relationship("ChargingPayment")
+    charging_session = relationship("ChargingSession")

@@ -1,8 +1,9 @@
 from typing import Optional, List
 from enum import Enum
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime, time, date
 from decimal import Decimal
+from pydantic import validator
 
 # Enums
 class OCPPConnectionStatus(str, Enum):
@@ -242,3 +243,127 @@ class ChargingSession(ChargingSessionBase):
     transaction_id: Optional[str] = None
     created_at: datetime
     model_config = ConfigDict(from_attributes=True)
+
+# ============================================================================
+# СХЕМЫ ДЛЯ ПЛАТЕЖНОЙ СИСТЕМЫ O!DENGI
+# ============================================================================
+
+class PaymentStatus(str, Enum):
+    PENDING = "pending"
+    PAID = "paid"
+    CANCELLED = "cancelled"
+    REFUNDED = "refunded"
+    PARTIAL_REFUND = "partial_refund"
+
+class PaymentType(str, Enum):
+    BALANCE_TOPUP = "balance_topup"
+    CHARGING_PAYMENT = "charging_payment"
+
+# ===== REQUEST SCHEMAS =====
+
+class BalanceTopupRequest(BaseModel):
+    """Запрос на пополнение баланса"""
+    client_id: str = Field(..., min_length=1, description="ID клиента")
+    amount: float = Field(..., gt=0, le=100000, description="Сумма пополнения в сомах")
+    description: Optional[str] = Field(None, description="Описание платежа")
+
+class PaymentWebhookData(BaseModel):
+    """Webhook данные от O!Dengi"""
+    merchant_id: str
+    invoice_id: str
+    order_id: str
+    status: int
+    amount: Optional[int] = None
+    currency: Optional[str] = "KGS"
+    paid_amount: Optional[int] = None
+    commission: Optional[int] = None
+    transaction_id: Optional[str] = None
+    timestamp: Optional[str] = None
+    user_phone: Optional[str] = None
+    description: Optional[str] = None
+
+# ===== RESPONSE SCHEMAS =====
+
+class BalanceTopupResponse(BaseModel):
+    """Ответ на запрос пополнения баланса"""
+    success: bool
+    invoice_id: Optional[str] = None
+    order_id: Optional[str] = None
+    qr_code: Optional[str] = None
+    app_link: Optional[str] = None
+    amount: Optional[float] = None
+    client_id: str
+    current_balance: Optional[float] = None
+    error: Optional[str] = None
+
+class PaymentStatusResponse(BaseModel):
+    """Статус платежа"""
+    success: bool
+    status: int
+    status_text: str
+    amount: Optional[float] = None
+    paid_amount: Optional[float] = None
+    invoice_id: Optional[str] = None
+    can_proceed: bool = False  # Для пополнения - можно ли зачислить на баланс
+    can_start_charging: bool = False  # Для зарядки - можно ли начать зарядку
+    error: Optional[str] = None
+
+class ClientBalanceInfo(BaseModel):
+    """Информация о балансе клиента"""
+    client_id: str
+    balance: float
+    currency: str = "KGS"
+    last_topup_at: Optional[datetime] = None
+    total_spent: Optional[float] = None
+
+class PaymentTransactionInfo(BaseModel):
+    """Информация о транзакции"""
+    id: int
+    client_id: str
+    transaction_type: PaymentType
+    amount: float
+    balance_before: float
+    balance_after: float
+    description: Optional[str] = None
+    created_at: datetime
+    
+    class Config:
+        orm_mode = True
+
+class BalanceTopupInfo(BaseModel):
+    """Информация о пополнении баланса"""
+    id: int
+    invoice_id: str
+    order_id: str
+    client_id: str
+    requested_amount: float
+    paid_amount: Optional[float] = None
+    status: PaymentStatus
+    created_at: datetime
+    paid_at: Optional[datetime] = None
+    qr_code_url: Optional[str] = None
+    app_link: Optional[str] = None
+    
+    class Config:
+        orm_mode = True
+
+class ChargingPaymentInfo(BaseModel):
+    """Информация о платеже за зарядку"""
+    id: int
+    invoice_id: str
+    order_id: str
+    station_id: str
+    connector_id: int
+    client_id: str
+    estimated_amount: float
+    paid_amount: Optional[float] = None
+    status: PaymentStatus
+    estimated_kwh: float
+    rate_per_kwh: float
+    created_at: datetime
+    paid_at: Optional[datetime] = None
+    qr_code_url: Optional[str] = None
+    app_link: Optional[str] = None
+    
+    class Config:
+        orm_mode = True
