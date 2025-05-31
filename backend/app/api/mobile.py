@@ -78,7 +78,7 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
                 "error": "station_unavailable",
                 "message": "Станция недоступна"
             }
-
+        
         # 3. Определяем тариф (из станции или тарифного плана)
         rate_per_kwh = float(station[2])  # price_per_kwh из станции
         
@@ -444,23 +444,31 @@ async def stop_charging(request: ChargingStopRequest, db: Session = Depends(get_
         logger.error(f"Ошибка остановки зарядки: {e}")
         return {
             "success": False,
-            "error": "internal_error",
+            "error": "internal_error", 
             "message": f"Ошибка: {str(e)}"
         }
 
 @router.get("/charging/status/{session_id}")
 async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
-    """📊 Проверить статус зарядки"""
+    """📊 Проверить статус зарядки с полными данными из OCPP"""
     try:
-        # Ищем сессию по ID
-        session_query = """
-            SELECT * FROM charging_sessions 
-            WHERE id = :session_id
-        """
+        # Расширенный запрос с JOIN к OCPP транзакциям
+        session_query = text("""
+            SELECT 
+                cs.id, cs.user_id, cs.station_id, cs.start_time, cs.stop_time,
+                cs.energy, cs.amount, cs.status, cs.transaction_id,
+                cs.limit_type, cs.limit_value,
+                ot.transaction_id as ocpp_transaction_id,
+                ot.meter_start, ot.meter_stop, ot.status as ocpp_status,
+                s.price_per_kwh
+            FROM charging_sessions cs
+            LEFT JOIN ocpp_transactions ot ON cs.id = ot.charging_session_id 
+                OR cs.transaction_id = CAST(ot.transaction_id AS TEXT)
+            LEFT JOIN stations s ON cs.station_id = s.id
+            WHERE cs.id = :session_id
+        """)
         
-        session_result = db.execute(text(session_query), {
-            "session_id": session_id
-        })
+        session_result = db.execute(session_query, {"session_id": session_id})
         session = session_result.fetchone()
         
         if not session:
@@ -470,36 +478,67 @@ async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
                 "message": "Сессия зарядки не найдена"
             }
         
-        # Получаем данные сессии (по структуре реальной таблицы)
-        session_id = session[0]  # id
-        user_id = session[1]  # user_id  
-        station_id = session[2]  # station_id
-        start_time = session[3]  # start_time
-        stop_time = session[4]  # stop_time
-        energy_consumed = session[5] or 0  # energy
-        amount_charged = session[6] or 0  # amount
-        status = session[7]  # status
-        transaction_id = session[8]  # transaction_id
-        limit_type = session[9]  # limit_type
-        limit_value = session[10] or 0  # limit_value
+        # Получаем данные
+        session_id = session[0]
+        user_id = session[1]
+        station_id = session[2]
+        start_time = session[3]
+        stop_time = session[4]
+        energy_consumed = session[5] or 0
+        amount_charged = session[6] or 0
+        status = session[7]
+        transaction_id = session[8]
+        limit_type = session[9]
+        limit_value = session[10] or 0
+        ocpp_transaction_id = session[11]
+        meter_start = session[12]
+        meter_stop = session[13]
+        ocpp_status = session[14]
+        price_per_kwh = session[15] or 6.5
         
-        # Рассчитываем прогресс и оставшееся время
+        # 🆕 УЛУЧШЕНИЕ: Расчет реальных данных из OCPP
+        actual_energy_consumed = float(energy_consumed)
+        actual_cost = float(amount_charged)
+        
+        # Если есть OCPP данные - используем их для более точного расчета
+        if meter_start is not None and meter_stop is not None:
+            # Рассчитываем из OCPP meter values
+            ocpp_energy_wh = float(meter_stop) - float(meter_start)
+            actual_energy_consumed = max(ocpp_energy_wh / 1000.0, actual_energy_consumed)  # Wh → kWh
+            actual_cost = actual_energy_consumed * float(price_per_kwh)
+        elif meter_start is not None and status == 'started':
+            # Активная зарядка - получаем последние показания из meter_values
+            latest_meter_query = text("""
+                SELECT mv.value 
+                FROM ocpp_meter_values mv
+                JOIN ocpp_transactions ot ON mv.transaction_id = ot.id
+                WHERE ot.charging_session_id = :session_id 
+                AND mv.measurand = 'Energy.Active.Import.Register'
+                ORDER BY mv.timestamp DESC LIMIT 1
+            """)
+            latest_result = db.execute(latest_meter_query, {"session_id": session_id})
+            latest_meter = latest_result.fetchone()
+            
+            if latest_meter and latest_meter[0]:
+                current_meter = float(latest_meter[0])
+                ocpp_energy_wh = current_meter - float(meter_start)
+                actual_energy_consumed = max(ocpp_energy_wh / 1000.0, actual_energy_consumed)
+                actual_cost = actual_energy_consumed * float(price_per_kwh)
+        
+        # Рассчитываем прогресс
         progress_percent = 0
-        estimated_completion = None
-        
         if limit_type == "energy" and limit_value > 0:
-            progress_percent = min(100, (float(energy_consumed) / float(limit_value)) * 100)
+            progress_percent = min(100, (actual_energy_consumed / float(limit_value)) * 100)
         elif limit_type == "amount" and limit_value > 0:
-            progress_percent = min(100, (float(amount_charged) / float(limit_value)) * 100)
+            progress_percent = min(100, (actual_cost / float(limit_value)) * 100)
         
         # Длительность в минутах
         duration_minutes = 0
         if start_time:
-            if stop_time:
-                duration_minutes = int((stop_time - start_time).total_seconds() / 60)
-            else:
-                duration_minutes = int((datetime.now(timezone.utc) - start_time).total_seconds() / 60)
+            end_time = stop_time or datetime.now(timezone.utc)
+            duration_minutes = int((end_time - start_time).total_seconds() / 60)
         
+        # 🆕 ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ: energy_consumed и cost как отдельные поля
         return {
             "success": True,
             "session_id": session_id,
@@ -507,19 +546,36 @@ async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
             "start_time": start_time.isoformat() if start_time else None,
             "stop_time": stop_time.isoformat() if stop_time else None,
             "duration_minutes": duration_minutes,
-            "current_energy": round(float(energy_consumed), 2),
-            "current_amount": round(float(amount_charged), 2),
+            
+            # 🆕 Исправленные поля для совместимости с фронтендом
+            "energy_consumed": round(actual_energy_consumed, 3),  # В кВт⋅ч
+            "cost": round(actual_cost, 2),  # В сомах
+            
+            # Дублирующие поля для обратной совместимости
+            "current_energy": round(actual_energy_consumed, 3),
+            "current_amount": round(actual_cost, 2),
+            
+            # Лимиты и прогресс
             "limit_type": limit_type,
             "limit_value": round(float(limit_value), 2),
             "progress_percent": round(progress_percent, 1),
+            
+            # Метаданные
             "transaction_id": transaction_id,
+            "ocpp_transaction_id": ocpp_transaction_id,
             "station_id": station_id,
             "client_id": user_id,
+            "rate_per_kwh": float(price_per_kwh),
+            
+            # OCPP статус для отладки
+            "ocpp_status": ocpp_status,
+            "has_meter_data": meter_start is not None,
+            
             "message": "Зарядка активна" if status == 'started' 
                       else "Зарядка завершена" if status == 'stopped'
                       else "Ошибка зарядки"
         }
-        
+            
     except Exception as e:
         logger.error(f"Ошибка при получении статуса зарядки: {e}")
         return {
@@ -646,7 +702,7 @@ async def get_station_status(station_id: str, db: Session = Depends(get_db)):
                       else "Станция на обслуживании" if station_data[4] == "maintenance"
                       else "Станция недоступна"
         }
-        
+            
     except Exception as e:
         return {
             "success": False,

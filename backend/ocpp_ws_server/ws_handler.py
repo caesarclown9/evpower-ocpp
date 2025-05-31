@@ -272,23 +272,67 @@ class OCPPChargePoint(CP):
                     float(meter_start), datetime.fromisoformat(timestamp.replace('Z', ''))
                 )
                 
-                # 🆕 СВЯЗЫВАНИЕ: Обновляем мобильную сессию transaction_id
+                # 🆕 УЛУЧШЕННОЕ СВЯЗЫВАНИЕ: Двунаправленная привязка OCPP ↔ Mobile
+                charging_session_id = None
                 if id_tag.startswith("CLIENT_"):
                     client_id = id_tag.replace("CLIENT_", "")
-                    update_session_query = text("""
-                        UPDATE charging_sessions 
-                        SET transaction_id = :transaction_id
+                    
+                    # 1. Ищем активную мобильную сессию для клиента
+                    find_session_query = text("""
+                        SELECT id FROM charging_sessions 
                         WHERE station_id = :station_id 
                         AND user_id = :client_id 
                         AND status = 'started' 
                         AND transaction_id IS NULL
+                        ORDER BY start_time DESC LIMIT 1
                     """)
-                    db.execute(update_session_query, {
-                        "transaction_id": str(transaction_id),
+                    session_result = db.execute(find_session_query, {
                         "station_id": self.id,
                         "client_id": client_id
                     })
-                    self.logger.info(f"🔗 Связал OCPP транзакцию {transaction_id} с мобильной сессией для {client_id}")
+                    session_row = session_result.fetchone()
+                    
+                    if session_row:
+                        charging_session_id = session_row[0]
+                        
+                        # 2. Обновляем мобильную сессию с OCPP transaction_id
+                        update_session_query = text("""
+                            UPDATE charging_sessions 
+                            SET transaction_id = :transaction_id
+                            WHERE id = :session_id
+                        """)
+                        db.execute(update_session_query, {
+                            "transaction_id": str(transaction_id),
+                            "session_id": charging_session_id
+                        })
+                        
+                        # 3. Обновляем OCPP транзакцию с charging_session_id
+                        update_ocpp_query = text("""
+                            UPDATE ocpp_transactions 
+                            SET charging_session_id = :charging_session_id
+                            WHERE station_id = :station_id 
+                            AND transaction_id = :transaction_id
+                        """)
+                        db.execute(update_ocpp_query, {
+                            "charging_session_id": charging_session_id,
+                            "station_id": self.id,
+                            "transaction_id": transaction_id
+                        })
+                        
+                        self.logger.info(f"🔗 СВЯЗАЛ: OCPP транзакция {transaction_id} ↔ Мобильная сессия {charging_session_id} для клиента {client_id}")
+                    else:
+                        self.logger.warning(f"⚠️ Активная мобильная сессия для клиента {client_id} не найдена")
+                
+                # Сохраняем в активные сессии с улучшенными данными
+                active_sessions[self.id] = {
+                    'transaction_id': transaction_id,
+                    'charging_session_id': charging_session_id,
+                    'meter_start': meter_start,
+                    'energy_delivered': 0.0,
+                    'connector_id': connector_id,
+                    'id_tag': id_tag,
+                    'client_id': id_tag.replace("CLIENT_", "") if id_tag.startswith("CLIENT_") else None
+                }
                 
                 # 🆕 АВТОМАТИЧЕСКОЕ ОБНОВЛЕНИЕ: Коннектор становится занят
                 update_query = text("""
@@ -298,15 +342,6 @@ class OCPPChargePoint(CP):
                 """)
                 db.execute(update_query, {"station_id": self.id, "connector_id": connector_id})
                 db.commit()
-                
-                # Сохраняем в активные сессии
-                active_sessions[self.id] = {
-                    'transaction_id': transaction_id,
-                    'meter_start': meter_start,
-                    'energy_delivered': 0.0,
-                    'connector_id': connector_id,
-                    'id_tag': id_tag
-                }
                 
             self.logger.info(f"Transaction started: {transaction_id}, connector {connector_id} marked as Occupied")
             return call_result.StartTransaction(
@@ -344,6 +379,76 @@ class OCPPChargePoint(CP):
                     db, self.id, transaction_id, float(meter_stop),
                     datetime.fromisoformat(timestamp.replace('Z', '')), reason
                 )
+                
+                # 🆕 АВТОМАТИЧЕСКОЕ ЗАВЕРШЕНИЕ МОБИЛЬНОЙ СЕССИИ
+                if transaction and transaction.charging_session_id:
+                    session_id = transaction.charging_session_id
+                    try:
+                        # Рассчитываем потребленную энергию
+                        energy_consumed = (float(meter_stop) - float(transaction.meter_start)) / 1000.0  # Wh → kWh
+                        
+                        # Получаем тариф
+                        tariff_query = text("""
+                            SELECT price_per_kwh FROM stations WHERE id = :station_id
+                        """)
+                        tariff_result = db.execute(tariff_query, {"station_id": self.id}).fetchone()
+                        rate_per_kwh = float(tariff_result[0]) if tariff_result and tariff_result[0] else 6.5
+                        
+                        actual_cost = energy_consumed * rate_per_kwh
+                        
+                        # Получаем данные сессии для возврата средств
+                        session_query = text("""
+                            SELECT user_id, amount FROM charging_sessions 
+                            WHERE id = :session_id
+                        """)
+                        session_result = db.execute(session_query, {"session_id": session_id}).fetchone()
+                        
+                        if session_result:
+                            user_id = session_result[0]
+                            reserved_amount = float(session_result[1]) if session_result[1] else 0
+                            refund_amount = max(0, reserved_amount - actual_cost)
+                            
+                            # Обновляем сессию
+                            update_session_query = text("""
+                                UPDATE charging_sessions 
+                                SET stop_time = NOW(), status = 'stopped', 
+                                    energy = :energy_consumed, amount = :actual_cost
+                                WHERE id = :session_id
+                            """)
+                            db.execute(update_session_query, {
+                                "energy_consumed": energy_consumed,
+                                "actual_cost": actual_cost,
+                                "session_id": session_id
+                            })
+                            
+                            # Возвращаем неиспользованные средства
+                            if refund_amount > 0:
+                                from app.crud.ocpp_service import payment_service
+                                from decimal import Decimal
+                                
+                                current_balance_query = text("""
+                                    SELECT balance FROM clients WHERE id = :client_id
+                                """)
+                                balance_result = db.execute(current_balance_query, {"client_id": user_id}).fetchone()
+                                current_balance = Decimal(str(balance_result[0])) if balance_result else Decimal('0')
+                                
+                                new_balance = payment_service.update_client_balance(
+                                    db, user_id, Decimal(str(refund_amount)), "add",
+                                    f"Возврат неиспользованных средств за сессию {session_id}"
+                                )
+                                
+                                payment_service.create_payment_transaction(
+                                    db, user_id, "balance_topup",
+                                    Decimal(str(refund_amount)),
+                                    current_balance, new_balance,
+                                    f"Возврат за сессию {session_id}: потреблено {energy_consumed:.3f} кВт⋅ч",
+                                    charging_session_id=session_id
+                                )
+                            
+                            self.logger.info(f"🏁 АВТОЗАВЕРШЕНИЕ: сессия {session_id}, {energy_consumed:.3f} кВт⋅ч, {actual_cost:.2f} сом, возврат {refund_amount:.2f} сом")
+                    
+                    except Exception as e:
+                        self.logger.error(f"Ошибка автозавершения мобильной сессии {session_id}: {e}")
                 
                 # 🆕 АВТОМАТИЧЕСКОЕ ОБНОВЛЕНИЕ: Коннектор становится свободен
                 if connector_id:
@@ -430,11 +535,12 @@ class OCPPChargePoint(CP):
                                 self.logger.info(f"🔍 ENERGY DEBUG: current={current_energy}, start={meter_start}, delivered={energy_delivered}")
                                 
                                 # 🆕 ОБНОВЛЕНИЕ МОБИЛЬНОЙ СЕССИИ: Записываем энергию в charging_sessions
-                                if session.get('id_tag', '').startswith("CLIENT_"):
-                                    client_id = session['id_tag'].replace("CLIENT_", "")
+                                if session.get('client_id'):
+                                    client_id = session['client_id']
+                                    charging_session_id = session.get('charging_session_id')
                                     energy_kwh = energy_delivered / 1000.0  # Wh → kWh
                                     
-                                    self.logger.info(f"🔍 CLIENT DEBUG: id_tag={session.get('id_tag')}, client_id={client_id}")
+                                    self.logger.info(f"🔍 CLIENT DEBUG: client_id={client_id}, session_id={charging_session_id}")
                                     
                                     # Получаем тариф для расчета стоимости
                                     tariff_query = text("""
@@ -442,33 +548,45 @@ class OCPPChargePoint(CP):
                                         WHERE id = :station_id
                                     """)
                                     tariff_result = db.execute(tariff_query, {"station_id": self.id}).fetchone()
-                                    tariff_som_kwh = float(tariff_result[0]) if tariff_result and tariff_result[0] else 14.95
+                                    tariff_som_kwh = float(tariff_result[0]) if tariff_result and tariff_result[0] else 6.5
                                     
                                     current_amount = energy_kwh * tariff_som_kwh
                                     
                                     self.logger.info(f"🔍 CALC DEBUG: energy_kwh={energy_kwh}, tariff={tariff_som_kwh}, amount={current_amount}")
                                     
-                                    # Обновляем мобильную сессию
-                                    update_mobile_session_query = text("""
-                                        UPDATE charging_sessions 
-                                        SET energy = :energy_kwh, amount = :current_amount
-                                        WHERE station_id = :station_id 
-                                        AND user_id = :client_id 
-                                        AND status = 'started'
-                                        AND transaction_id IS NOT NULL
-                                    """)
-                                    result = db.execute(update_mobile_session_query, {
-                                        "energy_kwh": energy_kwh,
-                                        "current_amount": current_amount,
-                                        "station_id": self.id,
-                                        "client_id": client_id
-                                    })
+                                    # Обновляем мобильную сессию через ID (более надежно)
+                                    if charging_session_id:
+                                        update_mobile_session_query = text("""
+                                            UPDATE charging_sessions 
+                                            SET energy = :energy_kwh, amount = :current_amount
+                                            WHERE id = :session_id AND status = 'started'
+                                        """)
+                                        result = db.execute(update_mobile_session_query, {
+                                            "energy_kwh": energy_kwh,
+                                            "current_amount": current_amount,
+                                            "session_id": charging_session_id
+                                        })
+                                    else:
+                                        # Резервный метод - поиск по клиенту и станции
+                                        update_mobile_session_query = text("""
+                                            UPDATE charging_sessions 
+                                            SET energy = :energy_kwh, amount = :current_amount
+                                            WHERE station_id = :station_id 
+                                            AND user_id = :client_id 
+                                            AND status = 'started'
+                                            AND transaction_id IS NOT NULL
+                                        """)
+                                        result = db.execute(update_mobile_session_query, {
+                                            "energy_kwh": energy_kwh,
+                                            "current_amount": current_amount,
+                                            "station_id": self.id,
+                                            "client_id": client_id
+                                        })
+                                    
                                     db.commit()
                                     
                                     self.logger.info(f"🔍 UPDATE DEBUG: rows affected={result.rowcount}")
-                                    self.logger.info(f"📊 Обновил мобильную сессию: {energy_kwh:.2f} kWh, {current_amount:.2f} сом")
-                                else:
-                                    self.logger.warning(f"🔍 ID_TAG DEBUG: session id_tag={session.get('id_tag')} не начинается с CLIENT_")
+                                    self.logger.info(f"📊 Обновил мобильную сессию: {energy_kwh:.3f} kWh, {current_amount:.2f} сом")
                                 
                                 # Проверка лимитов (если установлены)
                                 energy_limit = session.get('energy_limit')
