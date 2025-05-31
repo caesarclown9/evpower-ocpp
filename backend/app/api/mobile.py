@@ -138,7 +138,7 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
         """), {"client_id": request.client_id})
         
         if active_session_check.fetchone():
-        return {
+            return {
                 "success": False,
                 "error": "session_already_active", 
                 "message": "У вас уже есть активная сессия зарядки"
@@ -539,8 +539,8 @@ async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
             duration_minutes = int((end_time - start_time).total_seconds() / 60)
         
         # 🆕 ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ: energy_consumed и cost как отдельные поля
-                return {
-                    "success": True,
+        return {
+            "success": True,
             "session_id": session_id,
             "status": status,
             "start_time": start_time.isoformat() if start_time else None,
@@ -612,12 +612,12 @@ async def get_station_status(station_id: str, db: Session = Depends(get_db)):
         
         station_data = result.fetchone()
             
-            if not station_data:
-                return {
-                    "success": False,
-                    "error": "station_not_found",
-                    "message": "Станция не найдена"
-                }
+        if not station_data:
+            return {
+                "success": False,
+                "error": "station_not_found",
+                "message": "Станция не найдена"
+            }
             
         # Проверяем подключение станции
         connected_stations = await redis_manager.get_stations()
