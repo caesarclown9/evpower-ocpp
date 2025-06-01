@@ -744,7 +744,7 @@ async def create_balance_topup(
         order_id = odengi_service.generate_secure_order_id("topup", request.client_id)
         
         # 3. Описание платежа
-        description = f"Пополнение баланса клиента {request.client_id} на {request.amount} сом"
+        description = request.description or f"Пополнение баланса клиента {request.client_id} на {request.amount} сом"
         
         # 4. Создание счета в O!Dengi
         amount_kopecks = int(request.amount * 100)

@@ -550,7 +550,7 @@ class ODengiService:
             "cmd": "createInvoice",
             "version": self.api_version,
             "sid": self.merchant_id,
-            "mktime": str(current_time * 1000),
+            "mktime": str(current_time),
             "lang": "ru",
             "data": {
                 "amount": amount_kopecks,
