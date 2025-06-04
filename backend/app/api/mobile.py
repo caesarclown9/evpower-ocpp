@@ -168,9 +168,9 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
         
         if not auth_check.fetchone():
             db.execute(text("""
-                INSERT INTO ocpp_authorization (id_tag, status, parent_id_tag, user_id) 
-                VALUES (:id_tag, 'Accepted', NULL, :user_id)
-            """), {"id_tag": id_tag, "user_id": request.client_id})
+                INSERT INTO ocpp_authorization (id_tag, status, parent_id_tag, client_id) 
+                VALUES (:id_tag, 'Accepted', NULL, :client_id)
+            """), {"id_tag": id_tag, "client_id": request.client_id})
 
         # 10. Создаем сессию зарядки с резервированием средств
         session_insert = db.execute(text("""
@@ -598,7 +598,7 @@ async def get_station_status(station_id: str, db: Session = Depends(get_db)):
     try:
         # Получаем данные станции с локацией через JOIN
         result = db.execute(text("""
-                SELECT 
+            SELECT 
                 s.id,
                 s.serial_number,
                 s.model,
@@ -619,24 +619,24 @@ async def get_station_status(station_id: str, db: Session = Depends(get_db)):
         """), {"station_id": station_id})
         
         station_data = result.fetchone()
-            
+        
         if not station_data:
             return {
                 "success": False,
                 "error": "station_not_found",
                 "message": "Станция не найдена"
             }
-            
+        
         # Проверяем подключение станции
         connected_stations = await redis_manager.get_stations()
         is_online = station_id in connected_stations
         
         # Получаем статус коннекторов
         connectors_result = db.execute(text("""
-                SELECT connector_number, connector_type, power_kw, status, error_code
-                FROM connectors 
+            SELECT connector_number, connector_type, power_kw, status, error_code
+            FROM connectors 
             WHERE station_id = :station_id 
-                ORDER BY connector_number
+            ORDER BY connector_number
         """), {"station_id": station_id})
         
         connectors = []
@@ -644,8 +644,13 @@ async def get_station_status(station_id: str, db: Session = Depends(get_db)):
         occupied_count = 0
         faulted_count = 0
         
-        for conn in connectors_result.fetchall():
+        # Логируем для отладки
+        connector_rows = connectors_result.fetchall()
+        logger.info(f"Station {station_id}: найдено {len(connector_rows)} коннекторов")
+        
+        for conn in connector_rows:
             connector_status = conn[3]  # status
+            logger.info(f"Коннектор {conn[0]}: тип={conn[1]}, мощность={conn[2]}, статус={connector_status}")
             
             # Упрощенные статусы коннекторов (3 основных)
             if connector_status == "available":
@@ -665,58 +670,60 @@ async def get_station_status(station_id: str, db: Session = Depends(get_db)):
                 connector_available = False
                 faulted_count += 1
                 status_text = "Неизвестно"
-                
-                connectors.append({
+            
+            connectors.append({
                 "id": conn[0],  # connector_number
-                    "type": conn[1],  # connector_type
+                "type": conn[1],  # connector_type
                 "status": status_text,
                 "available": connector_available,
-                    "power_kw": conn[2],  # power_kw
+                "power_kw": conn[2],  # power_kw
                 "error": conn[4] if conn[4] and conn[4] != "NoError" else None
-                })
-            
+            })
+        
+        logger.info(f"Обработано коннекторов: {len(connectors)}, доступных: {available_count}, занятых: {occupied_count}")
+        
         # Формируем ответ
-            return {
-                "success": True,
+        return {
+            "success": True,
             "station_id": station_id,
-                "serial_number": station_data[1],
+            "serial_number": station_data[1],
             "model": station_data[2],
             "manufacturer": station_data[3],
-                
+            
             # Статусы
-                "online": is_online,
+            "online": is_online,
             "station_status": station_data[4],  # active/maintenance/inactive
             "location_status": station_data[13],  # active/maintenance/inactive
             "available_for_charging": is_online and station_data[4] == "active" and available_count > 0,
-                
-                # Локация
+            
+            # Локация
             "location_name": station_data[11],
             "location_address": station_data[12],
-                
+            
             # Коннекторы
-                "connectors": connectors,
+            "connectors": connectors,
             "total_connectors": station_data[7],  # connectors_count
             "available_connectors": available_count,
             "occupied_connectors": occupied_count,
             "faulted_connectors": faulted_count,
-                
-                # Тарифы
-            "tariff_rub_kwh": float(station_data[8]) if station_data[8] else 14.95,
+            
+            # Тарифы
+            "tariff_rub_kwh": float(station_data[8]) if station_data[8] else 9.0,
             "session_fee": float(station_data[9]) if station_data[9] else 0.0,
             "currency": station_data[10] or "KGS",
-                "working_hours": "Круглосуточно",
-                
+            "working_hours": "Круглосуточно",
+            
             "message": "Станция работает" if is_online and station_data[4] == "active" 
                       else "Станция на обслуживании" if station_data[4] == "maintenance"
-                          else "Станция недоступна"
-            }
-            
+                      else "Станция недоступна"
+        }
+        
     except Exception as e:
         return {
             "success": False,
             "error": "internal_error",
             "message": f"Ошибка: {str(e)}"
-        } 
+        }
 
 # ============================================================================
 # ПЛАТЕЖНЫЕ ENDPOINTS O!DENGI
