@@ -273,12 +273,6 @@ class OCPPChargePoint(CP):
                 # Генерируем transaction_id
                 transaction_id = int(datetime.utcnow().timestamp())
                 
-                # Создаем транзакцию
-                transaction = OCPPTransactionService.start_transaction(
-                    db, self.id, transaction_id, connector_id, id_tag,
-                    float(meter_start), datetime.fromisoformat(timestamp.replace('Z', ''))
-                )
-                
                 # 🆕 УЛУЧШЕННОЕ СВЯЗЫВАНИЕ: Находим клиента по номеру телефона
                 charging_session_id = None
                 client_id = None
@@ -309,17 +303,6 @@ class OCPPChargePoint(CP):
                         charging_session_id = session_row[0]
                         self.logger.info(f"🔗 НАЙДЕНА АКТИВНАЯ СЕССИЯ: {charging_session_id}")
                         
-                        # Связываем OCPP транзакцию с мобильной сессией
-                        link_query = text("""
-                            UPDATE ocpp_transactions 
-                            SET charging_session_id = :session_id 
-                            WHERE transaction_id = :transaction_id
-                        """)
-                        db.execute(link_query, {
-                            "session_id": charging_session_id,
-                            "transaction_id": transaction_id
-                        })
-                        
                         # Обновляем мобильную сессию с OCPP данными
                         update_session_query = text("""
                             UPDATE charging_sessions 
@@ -327,15 +310,24 @@ class OCPPChargePoint(CP):
                             WHERE id = :session_id
                         """)
                         db.execute(update_session_query, {
-                            "transaction_id": transaction_id,
+                            "transaction_id": str(transaction_id),
                             "session_id": charging_session_id
                         })
                         
-                        self.logger.info(f"✅ СВЯЗЫВАНИЕ ЗАВЕРШЕНО: OCPP {transaction_id} ↔ Mobile {charging_session_id}")
+                        self.logger.info(f"✅ Mobile сессия обновлена: transaction_id={transaction_id}")
                     else:
                         self.logger.warning(f"⚠️ Активная мобильная сессия для клиента {client_id} не найдена")
                 else:
                     self.logger.warning(f"⚠️ Клиент с номером {id_tag} не найден")
+                
+                # Создаем OCPP транзакцию с связкой
+                transaction = OCPPTransactionService.start_transaction(
+                    db, self.id, transaction_id, connector_id, id_tag,
+                    float(meter_start), datetime.fromisoformat(timestamp.replace('Z', '')),
+                    charging_session_id  # Передаем charging_session_id
+                )
+                
+                self.logger.info(f"✅ OCPP транзакция создана: {transaction_id} ↔ {charging_session_id}")
                 
                 # Сохраняем в активные сессии с улучшенными данными
                 active_sessions[self.id] = {
@@ -398,15 +390,15 @@ class OCPPChargePoint(CP):
                 if transaction and transaction.charging_session_id:
                     session_id = transaction.charging_session_id
                     try:
-                        # Рассчитываем потребленную энергию
-                        energy_consumed = (float(meter_stop) - float(transaction.meter_start)) / 1000.0  # Wh → kWh
+                        # Рассчитываем потребленную энергию (Wh → kWh)
+                        energy_consumed = (float(meter_stop) - float(transaction.meter_start)) / 1000.0
                         
                         # Получаем тариф
                         tariff_query = text("""
                             SELECT price_per_kwh FROM stations WHERE id = :station_id
                         """)
                         tariff_result = db.execute(tariff_query, {"station_id": self.id}).fetchone()
-                        rate_per_kwh = float(tariff_result[0]) if tariff_result and tariff_result[0] else 6.5
+                        rate_per_kwh = float(tariff_result[0]) if tariff_result and tariff_result[0] else 12.0
                         
                         actual_cost = energy_consumed * rate_per_kwh
                         
@@ -422,7 +414,7 @@ class OCPPChargePoint(CP):
                             reserved_amount = float(session_result[1]) if session_result[1] else 0
                             refund_amount = max(0, reserved_amount - actual_cost)
                             
-                            # Обновляем сессию
+                            # Обновляем сессию с фактическими данными
                             update_session_query = text("""
                                 UPDATE charging_sessions 
                                 SET stop_time = NOW(), status = 'stopped', 
@@ -435,32 +427,22 @@ class OCPPChargePoint(CP):
                                 "session_id": session_id
                             })
                             
-                            # Возвращаем неиспользованные средства
+                            # Возврат неиспользованных средств
                             if refund_amount > 0:
-                                from app.crud.ocpp_service import payment_service
-                                from decimal import Decimal
-                                
-                                current_balance_query = text("""
-                                    SELECT balance FROM clients WHERE id = :client_id
+                                refund_query = text("""
+                                    UPDATE clients 
+                                    SET balance = balance + :refund_amount 
+                                    WHERE id = :user_id
                                 """)
-                                balance_result = db.execute(current_balance_query, {"client_id": user_id}).fetchone()
-                                current_balance = Decimal(str(balance_result[0])) if balance_result else Decimal('0')
+                                db.execute(refund_query, {
+                                    "refund_amount": refund_amount,
+                                    "user_id": user_id
+                                })
                                 
-                                new_balance = payment_service.update_client_balance(
-                                    db, user_id, Decimal(str(refund_amount)), "add",
-                                    f"Возврат неиспользованных средств за сессию {session_id}"
-                                )
-                                
-                                payment_service.create_payment_transaction(
-                                    db, user_id, "balance_topup",
-                                    Decimal(str(refund_amount)),
-                                    current_balance, new_balance,
-                                    f"Возврат за сессию {session_id}: потреблено {energy_consumed:.3f} кВт⋅ч",
-                                    charging_session_id=session_id
-                                )
+                                self.logger.info(f"💰 Возврат {refund_amount} сом клиенту {user_id}")
                             
-                            self.logger.info(f"🏁 АВТОЗАВЕРШЕНИЕ: сессия {session_id}, {energy_consumed:.3f} кВт⋅ч, {actual_cost:.2f} сом, возврат {refund_amount:.2f} сом")
-                    
+                            self.logger.info(f"✅ Mobile сессия {session_id} завершена: {energy_consumed} кВт⋅ч, {actual_cost} сом")
+                        
                     except Exception as e:
                         self.logger.error(f"Ошибка автозавершения мобильной сессии {session_id}: {e}")
                 
@@ -543,77 +525,28 @@ class OCPPChargePoint(CP):
                             try:
                                 current_energy = float(sample['value'])
                                 meter_start = session.get('meter_start', 0.0)
-                                energy_delivered = current_energy - meter_start
-                                session['energy_delivered'] = energy_delivered
+                                energy_delivered_wh = current_energy - meter_start
+                                energy_delivered_kwh = energy_delivered_wh / 1000.0  # Wh → kWh
                                 
-                                self.logger.info(f"🔍 ENERGY DEBUG: current={current_energy}, start={meter_start}, delivered={energy_delivered}")
+                                session['energy_delivered'] = energy_delivered_kwh
                                 
-                                # 🆕 ОБНОВЛЕНИЕ МОБИЛЬНОЙ СЕССИИ: Записываем энергию в charging_sessions
-                                if session.get('client_id') and session.get('charging_session_id'):
-                                    client_id = session['client_id']
-                                    charging_session_id = session['charging_session_id']
-                                    energy_kwh = energy_delivered / 1000.0  # Wh → kWh
-                                    
-                                    self.logger.info(f"🔄 ОБНОВЛЕНИЕ СЕССИИ: client_id={client_id}, session_id={charging_session_id}, energy={energy_kwh} кВтч")
-                                    
-                                    # Получаем тариф для расчета стоимости
-                                    tariff_query = text("""
-                                        SELECT price_per_kwh FROM stations 
-                                        WHERE id = :station_id
-                                    """)
-                                    tariff_result = db.execute(tariff_query, {"station_id": self.id})
-                                    tariff_row = tariff_result.fetchone()
-                                    tariff_rate = float(tariff_row[0]) if tariff_row else 6.5
-                                    
-                                    # Рассчитываем текущую стоимость
-                                    try:
-                                        current_cost = Decimal(str(energy_kwh)) * Decimal(str(tariff_rate))
-                                        
-                                        # Обновляем мобильную сессию
-                                        update_query = text("""
-                                            UPDATE charging_sessions 
-                                            SET energy = :energy, amount = :cost
-                                            WHERE id = :session_id
-                                        """)
-                                        db.execute(update_query, {
-                                            "energy": energy_kwh,
-                                            "cost": float(current_cost),
-                                            "session_id": charging_session_id
-                                        })
-                                        db.commit()
-                                        
-                                        self.logger.info(f"✅ СЕССИЯ ОБНОВЛЕНА: {energy_kwh} кВт⋅ч, {current_cost} сом")
-                                        
-                                    except Exception as cost_error:
-                                        self.logger.error(f"🔍 COST ERROR: {cost_error}")
-                                        # Обновляем только энергию без стоимости
-                                        update_query = text("""
-                                            UPDATE charging_sessions 
-                                            SET energy = :energy
-                                            WHERE id = :session_id
-                                        """)
-                                        db.execute(update_query, {
-                                            "energy": energy_kwh,
-                                            "session_id": charging_session_id
-                                        })
-                                        db.commit()
+                                # Обновляем энергию в мобильной сессии
+                                update_energy_query = text("""
+                                    UPDATE charging_sessions 
+                                    SET energy = :energy_consumed 
+                                    WHERE id = :session_id AND status = 'started'
+                                """)
+                                db.execute(update_energy_query, {
+                                    "energy_consumed": energy_delivered_kwh,
+                                    "session_id": session['charging_session_id']
+                                })
+                                db.commit()
                                 
-                                # Проверка лимитов (если установлены)
-                                energy_limit = session.get('energy_limit')
-                                if energy_limit and energy_delivered >= energy_limit:
-                                    self.logger.warning(f"Energy limit reached: {energy_delivered} >= {energy_limit}")
-                                    # Отправляем команду через Redis для async обработки
-                                    asyncio.create_task(
-                                        redis_manager.publish_command(
-                                            self.id, {"command": "RemoteStopTransaction"}
-                                        )
-                                    )
+                                self.logger.info(f"⚡ ENERGY UPDATE: {energy_delivered_kwh:.3f} kWh в сессии {session['charging_session_id']}")
                                 
-                                active_sessions[self.id] = session
-                                break
                             except (ValueError, TypeError) as e:
-                                self.logger.error(f"🔍 VALUE ERROR: {e}")
-                                continue
+                                self.logger.warning(f"Ошибка обработки энергии: {e}")
+                                break
                 else:
                     self.logger.warning(f"🔍 NO SESSION DEBUG: session={session}, sampled_values={bool(sampled_values)}")
                 
