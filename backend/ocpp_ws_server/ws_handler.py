@@ -330,6 +330,7 @@ class OCPPChargePoint(CP):
                 self.logger.info(f"✅ OCPP транзакция создана: {transaction_id} ↔ {charging_session_id}")
                 
                 # Сохраняем в активные сессии с улучшенными данными
+                existing_session = active_sessions.get(self.id, {})
                 active_sessions[self.id] = {
                     'transaction_id': transaction_id,
                     'charging_session_id': charging_session_id,
@@ -337,7 +338,10 @@ class OCPPChargePoint(CP):
                     'energy_delivered': 0.0,
                     'connector_id': connector_id,
                     'id_tag': id_tag,
-                    'client_id': client_id
+                    'client_id': client_id,
+                    # 🆕 СОХРАНЯЕМ ЛИМИТЫ из предыдущей сессии
+                    'limit_type': existing_session.get('limit_type'),
+                    'limit_value': existing_session.get('limit_value')
                 }
                 
                 # 🆕 АВТОМАТИЧЕСКОЕ ОБНОВЛЕНИЕ: Коннектор становится занят
@@ -529,6 +533,27 @@ class OCPPChargePoint(CP):
                                 energy_delivered_kwh = energy_delivered_wh / 1000.0  # Wh → kWh
                                 
                                 session['energy_delivered'] = energy_delivered_kwh
+                                
+                                # 🆕 ПРОВЕРКА ЛИМИТОВ ЭНЕРГИИ
+                                limit_type = session.get('limit_type')
+                                limit_value = session.get('limit_value')
+                                
+                                if limit_type == 'energy' and limit_value and energy_delivered_kwh >= limit_value:
+                                    self.logger.warning(f"🛑 ЛИМИТ ПРЕВЫШЕН: {energy_delivered_kwh:.3f} >= {limit_value} кВт⋅ч. Останавливаем зарядку!")
+                                    
+                                    # Инициируем остановку транзакции
+                                    transaction_id = session.get('transaction_id')
+                                    if transaction_id:
+                                        try:
+                                            # Отправляем команду остановки в Redis
+                                            await redis_manager.publish_command(self.id, {
+                                                "action": "RemoteStopTransaction", 
+                                                "transaction_id": transaction_id,
+                                                "reason": "EnergyLimitReached"
+                                            })
+                                            self.logger.info(f"📤 Отправлена команда остановки для transaction_id: {transaction_id}")
+                                        except Exception as stop_error:
+                                            self.logger.error(f"Ошибка отправки команды остановки: {stop_error}")
                                 
                                 # Обновляем энергию в мобильной сессии
                                 update_energy_query = text("""
@@ -1028,6 +1053,20 @@ class OCPPWebSocketHandler:
                 
                 try:
                     if command_type == "RemoteStartTransaction":
+                        # 🆕 СОХРАНЯЕМ ЛИМИТЫ в активную сессию для последующей проверки
+                        session_id = command.get("session_id")
+                        limit_type = command.get("limit_type")
+                        limit_value = command.get("limit_value")
+                        
+                        if session_id and limit_type and limit_value:
+                            active_sessions[self.station_id] = {
+                                'charging_session_id': session_id,
+                                'limit_type': limit_type,
+                                'limit_value': float(limit_value),
+                                'energy_delivered': 0.0
+                            }
+                            self.logger.info(f"📋 Установлен лимит: {limit_type} = {limit_value} для сессии {session_id}")
+                        
                         response = await self.charge_point.call(
                             call.RemoteStartTransaction(
                                 connector_id=command.get("connector_id", 1),
