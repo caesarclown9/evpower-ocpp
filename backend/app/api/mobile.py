@@ -1,7 +1,7 @@
 """
 📱 Mobile API endpoints для FlutterFlow
 """
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import Optional
@@ -11,7 +11,7 @@ from decimal import Decimal
 
 from app.db.session import get_db
 from ocpp_ws_server.redis_manager import redis_manager
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 # ============================================================================
 # ПЛАТЕЖНЫЕ ENDPOINTS O!DENGI
@@ -24,7 +24,6 @@ from app.schemas.ocpp import (
 )
 from app.crud.ocpp_service import odengi_service, payment_service
 from app.core.config import settings
-from fastapi import BackgroundTasks
 
 # Логгер
 logger = logging.getLogger(__name__)
@@ -39,7 +38,7 @@ class ChargingStartRequest(BaseModel):
     client_id: str = Field(..., min_length=1, description="ID клиента")
     station_id: str = Field(..., min_length=1, description="ID станции")
     connector_id: int = Field(..., ge=1, description="Номер коннектора")
-    energy_kwh: float = Field(..., gt=0, le=200, description="Энергия для зарядки в кВт⋅ч")
+    energy_kwh: Optional[float] = Field(None, gt=0, le=200, description="Энергия для зарядки в кВт⋅ч (если не указано - неограниченная зарядка)")
     amount_som: float = Field(..., gt=0, description="Предоплаченная сумма в сомах")
 
 class ChargingStopRequest(BaseModel):
@@ -99,18 +98,25 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
                 rate_per_kwh = float(tariff_rule[0])
 
         # 4. Рассчитываем стоимость зарядки
-        estimated_cost = request.energy_kwh * rate_per_kwh
+        if request.energy_kwh:
+            # Ограниченная зарядка - резервируем точную сумму
+            estimated_cost = request.energy_kwh * rate_per_kwh
+            reservation_amount = estimated_cost
+        else:
+            # Неограниченная зарядка - резервируем указанную пользователем сумму
+            estimated_cost = 0  # Будет рассчитана по факту
+            reservation_amount = request.amount_som
         
         # 5. Проверяем достаточность средств на балансе
         current_balance = Decimal(str(client[1]))
-        if current_balance < Decimal(str(estimated_cost)):
+        if current_balance < Decimal(str(reservation_amount)):
             return {
                 "success": False,
                 "error": "insufficient_balance",
-                "message": f"Недостаточно средств. Баланс: {current_balance} сом, требуется: {estimated_cost} сом",
+                "message": f"Недостаточно средств. Баланс: {current_balance} сом, требуется: {reservation_amount} сом",
                 "current_balance": float(current_balance),
-                "required_amount": estimated_cost,
-                "missing_amount": estimated_cost - float(current_balance)
+                "required_amount": reservation_amount,
+                "missing_amount": reservation_amount - float(current_balance)
             }
 
         # 6. Проверяем коннектор
@@ -149,7 +155,7 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
 
         # 8. РЕЗЕРВИРУЕМ СРЕДСТВА НА БАЛАНСЕ
         new_balance = payment_service.update_client_balance(
-            db, request.client_id, Decimal(str(estimated_cost)), "subtract",
+            db, request.client_id, Decimal(str(reservation_amount)), "subtract",
             f"Резервирование средств для зарядки на станции {request.station_id}"
         )
 
@@ -176,14 +182,15 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
         session_insert = db.execute(text("""
             INSERT INTO charging_sessions 
             (user_id, station_id, start_time, status, limit_type, limit_value, amount)
-            VALUES (:user_id, :station_id, :start_time, 'started', 'energy', :energy_kwh, :amount)
+            VALUES (:user_id, :station_id, :start_time, 'started', :limit_type, :limit_value, :amount)
             RETURNING id
         """), {
             "user_id": request.client_id,
             "station_id": request.station_id,
             "start_time": datetime.now(timezone.utc),
-            "energy_kwh": request.energy_kwh,
-            "amount": estimated_cost
+            "limit_type": 'energy' if request.energy_kwh else None,
+            "limit_value": request.energy_kwh,
+            "amount": reservation_amount
         })
         
         session_id = session_insert.fetchone()[0]
@@ -191,7 +198,7 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
         # 11. Логируем транзакцию резервирования
         payment_service.create_payment_transaction(
             db, request.client_id, "balance_topup",
-            -Decimal(str(estimated_cost)), current_balance, new_balance,
+            -Decimal(str(reservation_amount)), current_balance, new_balance,
             f"Резервирование средств для сессии {session_id}",
             charging_session_id=session_id
         )
@@ -216,14 +223,17 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
                 "action": "RemoteStartTransaction",
                 "connector_id": request.connector_id,
                 "id_tag": id_tag,
-                "session_id": session_id,
-                "limit_type": 'energy',
-                "limit_value": request.energy_kwh
+                "session_id": session_id
             }
+            
+            # Добавляем лимиты только если указаны
+            if request.energy_kwh:
+                command_data["limit_type"] = 'energy'
+                command_data["limit_value"] = request.energy_kwh
             
             await redis_manager.publish_command(request.station_id, command_data)
             
-            logger.info(f"✅ Зарядка запущена: сессия {session_id}, средства зарезервированы {estimated_cost} сом")
+            logger.info(f"✅ Зарядка запущена: сессия {session_id}, средства зарезервированы {reservation_amount} сом")
             
             return {
                 "success": True,
@@ -233,8 +243,8 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
                 "connector_id": request.connector_id,
                 "energy_kwh": request.energy_kwh,
                 "rate_per_kwh": rate_per_kwh,
-                "estimated_cost": estimated_cost,
-                "reserved_amount": estimated_cost,
+                "estimated_cost": reservation_amount,
+                "reserved_amount": reservation_amount,
                 "new_balance": float(new_balance),
                 "message": "Зарядка запущена, средства зарезервированы",
                 "station_online": True
@@ -250,8 +260,8 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
                 "connector_id": request.connector_id,
                 "energy_kwh": request.energy_kwh,
                 "rate_per_kwh": rate_per_kwh,
-                "estimated_cost": estimated_cost,
-                "reserved_amount": estimated_cost,
+                "estimated_cost": reservation_amount,
+                "reserved_amount": reservation_amount,
                 "new_balance": float(new_balance),
                 "message": "Сессия создана, средства зарезервированы. Зарядка начнется при подключении станции.",
                 "station_online": False

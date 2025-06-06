@@ -534,7 +534,7 @@ class OCPPChargePoint(CP):
                                 
                                 session['energy_delivered'] = energy_delivered_kwh
                                 
-                                # 🆕 ПРОВЕРКА ЛИМИТОВ ЭНЕРГИИ
+                                # 🆕 ПРОВЕРКА ЛИМИТОВ ЭНЕРГИИ (только если установлены)
                                 limit_type = session.get('limit_type')
                                 limit_value = session.get('limit_value')
                                 
@@ -554,6 +554,43 @@ class OCPPChargePoint(CP):
                                             self.logger.info(f"📤 Отправлена команда остановки для transaction_id: {transaction_id}")
                                         except Exception as stop_error:
                                             self.logger.error(f"Ошибка отправки команды остановки: {stop_error}")
+                                elif limit_type is None:
+                                    # Неограниченная зарядка - проверяем достаточность средств
+                                    session_id = session.get('charging_session_id')
+                                    if session_id:
+                                        try:
+                                            with next(get_db()) as db:
+                                                # Получаем тариф и проверяем остаток средств
+                                                session_query = text("""
+                                                    SELECT cs.user_id, cs.amount, s.price_per_kwh
+                                                    FROM charging_sessions cs
+                                                    JOIN stations s ON cs.station_id = s.id
+                                                    WHERE cs.id = :session_id
+                                                """)
+                                                session_result = db.execute(session_query, {"session_id": session_id}).fetchone()
+                                                
+                                                if session_result:
+                                                    user_id, reserved_amount, rate_per_kwh = session_result
+                                                    rate_per_kwh = float(rate_per_kwh) if rate_per_kwh else 12.0
+                                                    
+                                                    current_cost = energy_delivered_kwh * rate_per_kwh
+                                                    
+                                                    # Если стоимость приближается к зарезервированной сумме - предупреждаем
+                                                    if current_cost >= float(reserved_amount) * 0.95:  # 95% от резерва
+                                                        self.logger.warning(f"⚠️ СРЕДСТВА ЗАКАНЧИВАЮТСЯ: {current_cost:.2f} из {reserved_amount} сом")
+                                                        
+                                                        # При достижении 100% резерва - останавливаем
+                                                        if current_cost >= float(reserved_amount):
+                                                            transaction_id = session.get('transaction_id')
+                                                            if transaction_id:
+                                                                await redis_manager.publish_command(self.id, {
+                                                                    "action": "RemoteStopTransaction", 
+                                                                    "transaction_id": transaction_id,
+                                                                    "reason": "InsufficientFunds"
+                                                                })
+                                                                self.logger.warning(f"🛑 СРЕДСТВА ИСЧЕРПАНЫ: Останавливаем зарядку!")
+                                        except Exception as fund_check_error:
+                                            self.logger.error(f"Ошибка проверки средств: {fund_check_error}")
                                 
                                 # Обновляем энергию в мобильной сессии
                                 update_energy_query = text("""
