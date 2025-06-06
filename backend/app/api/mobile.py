@@ -97,18 +97,32 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
             if tariff_rule:
                 rate_per_kwh = float(tariff_rule[0])
 
-        # 4. Рассчитываем стоимость зарядки
+        # 4. Рассчитываем стоимость зарядки с финансовой защитой
+        current_balance = Decimal(str(client[1]))
+        
         if request.energy_kwh:
             # Ограниченная зарядка - резервируем точную сумму
             estimated_cost = request.energy_kwh * rate_per_kwh
             reservation_amount = estimated_cost
         else:
-            # Неограниченная зарядка - резервируем указанную пользователем сумму
+            # 🔒 НЕОГРАНИЧЕННАЯ ЗАРЯДКА: Строгие финансовые ограничения
+            # Пользователь не может указать сумму больше своего баланса
+            max_allowed_amount = min(float(current_balance), request.amount_som)
+            
+            if request.amount_som > float(current_balance):
+                return {
+                    "success": False,
+                    "error": "amount_exceeds_balance",
+                    "message": f"Указанная сумма ({request.amount_som} сом) превышает баланс ({current_balance} сом)",
+                    "current_balance": float(current_balance),
+                    "max_allowed_amount": float(current_balance),
+                    "requested_amount": request.amount_som
+                }
+            
             estimated_cost = 0  # Будет рассчитана по факту
-            reservation_amount = request.amount_som
+            reservation_amount = max_allowed_amount
         
         # 5. Проверяем достаточность средств на балансе
-        current_balance = Decimal(str(client[1]))
         if current_balance < Decimal(str(reservation_amount)):
             return {
                 "success": False,
@@ -352,6 +366,12 @@ async def stop_charging(request: ChargingStopRequest, db: Session = Depends(get_
         actual_cost = actual_energy_consumed * rate_per_kwh
         reserved_amount_decimal = Decimal(str(reserved_amount)) if reserved_amount else Decimal('0')
         actual_cost_decimal = Decimal(str(actual_cost))
+        
+        # 🔒 ФИНАНСОВАЯ ЗАЩИТА: Фактическая стоимость не может превышать резерв
+        if actual_cost_decimal > reserved_amount_decimal:
+            logger.warning(f"⚠️ ПРЕВЫШЕНИЕ РЕЗЕРВА в сессии {session_id}: actual_cost={actual_cost_decimal} > reserved={reserved_amount_decimal}. Ограничиваем списание.")
+            actual_cost_decimal = reserved_amount_decimal
+            actual_cost = float(actual_cost_decimal)
         
         # 6. Рассчитываем возврат
         refund_amount = reserved_amount_decimal - actual_cost_decimal

@@ -418,6 +418,13 @@ class OCPPChargePoint(CP):
                             reserved_amount = float(session_result[1]) if session_result[1] else 0
                             refund_amount = max(0, reserved_amount - actual_cost)
                             
+                            # 🔒 ДОПОЛНИТЕЛЬНАЯ ФИНАНСОВАЯ ЗАЩИТА: Проверяем что actual_cost не превышает резерв
+                            if actual_cost > reserved_amount:
+                                # Ограничиваем списание зарезервированной суммой
+                                self.logger.warning(f"⚠️ ПРЕВЫШЕНИЕ РЕЗЕРВА: actual_cost={actual_cost} > reserved={reserved_amount}. Ограничиваем списание.")
+                                actual_cost = reserved_amount
+                                refund_amount = 0
+                            
                             # Обновляем сессию с фактическими данными
                             update_session_query = text("""
                                 UPDATE charging_sessions 
@@ -574,13 +581,17 @@ class OCPPChargePoint(CP):
                                                     rate_per_kwh = float(rate_per_kwh) if rate_per_kwh else 12.0
                                                     
                                                     current_cost = energy_delivered_kwh * rate_per_kwh
+                                                    reserved_amount_float = float(reserved_amount)
                                                     
-                                                    # Если стоимость приближается к зарезервированной сумме - предупреждаем
-                                                    if current_cost >= float(reserved_amount) * 0.95:  # 95% от резерва
-                                                        self.logger.warning(f"⚠️ СРЕДСТВА ЗАКАНЧИВАЮТСЯ: {current_cost:.2f} из {reserved_amount} сом")
+                                                    # 🔒 ФИНАНСОВАЯ ЗАЩИТА: Более агрессивные лимиты
+                                                    warning_threshold = reserved_amount_float * 0.85  # 85% предупреждение
+                                                    stop_threshold = reserved_amount_float * 0.90     # 90% остановка
+                                                    
+                                                    if current_cost >= warning_threshold:
+                                                        self.logger.warning(f"⚠️ СРЕДСТВА ЗАКАНЧИВАЮТСЯ: {current_cost:.2f} из {reserved_amount_float} сом ({(current_cost/reserved_amount_float)*100:.1f}%)")
                                                         
-                                                        # При достижении 100% резерва - останавливаем
-                                                        if current_cost >= float(reserved_amount):
+                                                        # При достижении 90% резерва - ПРИНУДИТЕЛЬНАЯ остановка
+                                                        if current_cost >= stop_threshold:
                                                             transaction_id = session.get('transaction_id')
                                                             if transaction_id:
                                                                 await redis_manager.publish_command(self.id, {
@@ -588,7 +599,7 @@ class OCPPChargePoint(CP):
                                                                     "transaction_id": transaction_id,
                                                                     "reason": "InsufficientFunds"
                                                                 })
-                                                                self.logger.warning(f"🛑 СРЕДСТВА ИСЧЕРПАНЫ: Останавливаем зарядку!")
+                                                                self.logger.warning(f"🛑 СРЕДСТВА ПОЧТИ ИСЧЕРПАНЫ: {current_cost:.2f}/{reserved_amount_float} сом. ОСТАНОВКА!")
                                         except Exception as fund_check_error:
                                             self.logger.error(f"Ошибка проверки средств: {fund_check_error}")
                                 
