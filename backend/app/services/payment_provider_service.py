@@ -259,7 +259,4 @@ def get_payment_provider_service() -> PaymentProviderService:
     global _payment_provider_service
     if _payment_provider_service is None:
         _payment_provider_service = PaymentProviderService()
-    return _payment_provider_service
-
-# Для обратной совместимости - создаем алиас
-payment_provider_service = get_payment_provider_service() 
+    return _payment_provider_service 

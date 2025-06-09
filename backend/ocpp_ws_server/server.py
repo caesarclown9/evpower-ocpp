@@ -8,7 +8,7 @@ from ocpp_ws_server.redis_manager import redis_manager
 import sys
 import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-from app.db.session import SessionLocal
+from app.db.session import get_session_local
 from app.crud.ocpp import get_charging_session, update_charging_session, list_tariffs
 from datetime import datetime
 
@@ -77,6 +77,7 @@ class ChargePoint(CP):
         if session_info and session_info.get('session_id'):
             session_id = session_info['session_id']
             try:
+                SessionLocal = get_session_local()
                 db = SessionLocal()
                 charging_session = get_charging_session(db, session_id)
                 if charging_session:

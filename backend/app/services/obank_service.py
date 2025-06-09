@@ -40,15 +40,56 @@ class OBankService:
     """Сервис для работы с OBANK Payment Link API"""
     
     def __init__(self):
-        self.api_url = settings.current_obank_api_url
-        self.point_id = settings.current_obank_point_id
-        self.service_id = settings.current_obank_service_id
-        self.cert_path = settings.OBANK_CERT_PATH
-        self.cert_password = settings.OBANK_CERT_PASSWORD
-        self.use_production = settings.OBANK_USE_PRODUCTION
-        
-        # SSL контекст будет создан при первом использовании
+        # Инициализация отложенная до первого использования
+        self._api_url = None
+        self._point_id = None
+        self._service_id = None
+        self._cert_path = None
+        self._cert_password = None
+        self._use_production = None
         self._ssl_context = None
+        self._initialized = False
+    
+    def _ensure_initialized(self):
+        """Ленивая инициализация настроек"""
+        if not self._initialized:
+            self._api_url = settings.current_obank_api_url
+            self._point_id = settings.current_obank_point_id
+            self._service_id = settings.current_obank_service_id
+            self._cert_path = settings.OBANK_CERT_PATH
+            self._cert_password = settings.OBANK_CERT_PASSWORD
+            self._use_production = settings.OBANK_USE_PRODUCTION
+            self._initialized = True
+    
+    @property
+    def api_url(self):
+        self._ensure_initialized()
+        return self._api_url
+    
+    @property
+    def point_id(self):
+        self._ensure_initialized()
+        return self._point_id
+    
+    @property
+    def service_id(self):
+        self._ensure_initialized()
+        return self._service_id
+    
+    @property
+    def cert_path(self):
+        self._ensure_initialized()
+        return self._cert_path
+    
+    @property
+    def cert_password(self):
+        self._ensure_initialized()
+        return self._cert_password
+    
+    @property
+    def use_production(self):
+        self._ensure_initialized()
+        return self._use_production
     
     @property
     def ssl_context(self) -> ssl.SSLContext:

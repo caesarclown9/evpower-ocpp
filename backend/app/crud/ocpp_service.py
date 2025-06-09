@@ -447,26 +447,58 @@ class ODengiService:
     """Сервис для работы с O!Dengi JSON API"""
     
     def __init__(self):
-        self.api_url = (
-            settings.ODENGI_PRODUCTION_API_URL 
-            if settings.ODENGI_USE_PRODUCTION 
-            else settings.ODENGI_API_URL
-        )
-        
-        # Выбираем правильные креды в зависимости от окружения
-        if settings.ODENGI_USE_PRODUCTION:
-            self.merchant_id = settings.ODENGI_PROD_MERCHANT_ID or settings.ODENGI_MERCHANT_ID
-            self.password = settings.ODENGI_PROD_PASSWORD or settings.ODENGI_PASSWORD
-        else:
-            self.merchant_id = settings.ODENGI_MERCHANT_ID
-            self.password = settings.ODENGI_PASSWORD
-            
-        self.use_production = settings.ODENGI_USE_PRODUCTION
+        # Инициализация отложенная до первого использования
+        self._api_url = None
+        self._merchant_id = None
+        self._password = None
+        self._use_production = None
         self.api_version = 1005  # Версия API из документации
-        
-        # Проверка production конфигурации
-        if self.use_production and (not self.merchant_id or not self.password):
-            logger.warning("⚠️ Production режим включен, но отсутствуют production креды O!Dengi!")
+        self._initialized = False
+    
+    def _ensure_initialized(self):
+        """Ленивая инициализация настроек"""
+        if not self._initialized:
+            self._api_url = (
+                settings.ODENGI_PRODUCTION_API_URL 
+                if settings.ODENGI_USE_PRODUCTION 
+                else settings.ODENGI_API_URL
+            )
+            
+            # Выбираем правильные креды в зависимости от окружения
+            if settings.ODENGI_USE_PRODUCTION:
+                self._merchant_id = settings.ODENGI_PROD_MERCHANT_ID or settings.ODENGI_MERCHANT_ID
+                self._password = settings.ODENGI_PROD_PASSWORD or settings.ODENGI_PASSWORD
+            else:
+                self._merchant_id = settings.ODENGI_MERCHANT_ID
+                self._password = settings.ODENGI_PASSWORD
+                
+            self._use_production = settings.ODENGI_USE_PRODUCTION
+            
+            # Проверка production конфигурации
+            if self._use_production and (not self._merchant_id or not self._password):
+                logger.warning("⚠️ Production режим включен, но отсутствуют production креды O!Dengi!")
+            
+            self._initialized = True
+    
+    @property
+    def api_url(self):
+        self._ensure_initialized()
+        return self._api_url
+    
+    @property
+    def merchant_id(self):
+        self._ensure_initialized()
+        return self._merchant_id
+    
+    @property
+    def password(self):
+        self._ensure_initialized()
+        return self._password
+    
+    @property
+    def use_production(self):
+        self._ensure_initialized()
+        return self._use_production
     
     def generate_secure_order_id(self, payment_type: str, client_id: str, **kwargs) -> str:
         """Генерация безопасного order_id"""

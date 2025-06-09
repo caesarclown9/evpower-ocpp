@@ -23,7 +23,7 @@ from app.schemas.ocpp import (
     ClientBalanceInfo, BalanceTopupInfo, PaymentTransactionInfo
 )
 from app.crud.ocpp_service import payment_service, payment_lifecycle_service
-from app.services.payment_provider_service import payment_provider_service
+from app.services.payment_provider_service import get_payment_provider_service
 from app.core.config import settings
 
 # Логгер
@@ -802,7 +802,7 @@ async def create_balance_topup(
         notify_url = f"{settings.API_V1_STR}/payment/webhook"
         redirect_url = f"{settings.API_V1_STR}/payment/success"
         
-        payment_response = await payment_provider_service.create_payment(
+        payment_response = await get_payment_provider_service().create_payment(
             amount=Decimal(str(request.amount)),
             order_id=order_id,
             email=request.client_id + "@evpower.local",  # Временный email для OBANK
@@ -836,7 +836,7 @@ async def create_balance_topup(
         """), {
             "invoice_id": payment_response.get("invoice_id", payment_response.get("auth_key")),
             "order_id": order_id,
-            "merchant_id": payment_provider_service.get_provider_name(),
+            "merchant_id": get_payment_provider_service().get_provider_name(),
             "client_id": request.client_id,
             "requested_amount": request.amount,
             "currency": settings.DEFAULT_CURRENCY,
@@ -845,13 +845,13 @@ async def create_balance_topup(
             "app_link": payment_response.get("payment_url"),
             "qr_expires_at": qr_expires_at,
             "invoice_expires_at": invoice_expires_at,
-            "payment_provider": payment_provider_service.get_provider_name()
+            "payment_provider": get_payment_provider_service().get_provider_name()
         })
         
         db.commit()
         
         invoice_id = payment_response.get("invoice_id", payment_response.get("auth_key"))
-        logger.info(f"🕐 Пополнение создано: {order_id}, invoice_id: {invoice_id}, провайдер: {payment_provider_service.get_provider_name()}, QR истекает: {qr_expires_at}, Invoice истекает: {invoice_expires_at}")
+        logger.info(f"🕐 Пополнение создано: {order_id}, invoice_id: {invoice_id}, провайдер: {get_payment_provider_service().get_provider_name()}, QR истекает: {qr_expires_at}, Invoice истекает: {invoice_expires_at}")
         
         return BalanceTopupResponse(
             success=True,
@@ -928,7 +928,7 @@ async def get_payment_status(
 
         # 3. Запрос статуса через унифицированный сервис (только если не истек)
         if not invoice_expired:
-            provider_response = await payment_provider_service.check_payment_status(
+            provider_response = await get_payment_provider_service().check_payment_status(
                 invoice_id=invoice_id,
                 order_id=topup[2]  # order_id
             )
@@ -1082,7 +1082,7 @@ async def handle_payment_webhook(
         payload = await request.body()
         
         # 2. Определяем провайдера и верифицируем подпись
-        provider_name = payment_provider_service.get_provider_name()
+        provider_name = get_payment_provider_service().get_provider_name()
         
         if provider_name == "OBANK":
             # OBANK использует SSL сертификаты для аутентификации
@@ -1090,7 +1090,7 @@ async def handle_payment_webhook(
             is_valid = True
         else:  # O!Dengi
             webhook_signature = request.headers.get('X-O-Dengi-Signature', '')
-            is_valid = payment_provider_service.verify_webhook(payload, webhook_signature)
+            is_valid = get_payment_provider_service().verify_webhook(payload, webhook_signature)
         
         if not is_valid:
             logger.warning(f"Invalid webhook signature from {request.client.host} for provider {provider_name}")
