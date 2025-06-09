@@ -1,74 +1,66 @@
 #!/usr/bin/env python3
+"""
+Диагностический скрипт для проверки переменных окружения
+"""
 import os
+from pathlib import Path
 
-def load_env_file(env_path='.env'):
-    """Простая загрузка .env файла без внешних зависимостей"""
-    env_vars = {}
-    if os.path.exists(env_path):
-        with open(env_path, 'r') as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, value = line.split('=', 1)
-                    env_vars[key.strip()] = value.strip()
-                    # Устанавливаем в os.environ если еще не установлено
-                    if key.strip() not in os.environ:
-                        os.environ[key.strip()] = value.strip()
-    return env_vars
+print("=== ДИАГНОСТИКА ПЕРЕМЕННЫХ ОКРУЖЕНИЯ ===")
 
-print("=== DEBUG ENVIRONMENT VARIABLES ===")
+# Проверяем наличие .env файла
+env_path = Path(__file__).parent / '.env'
+print(f"Путь к .env файлу: {env_path}")
+print(f".env файл существует: {env_path.exists()}")
 
-# Проверяем .env файл
-print(f"Current directory: {os.getcwd()}")
-print(f".env file exists: {os.path.exists('.env')}")
+if env_path.exists():
+    print(f"Размер .env файла: {env_path.stat().st_size} байт")
 
-# Загружаем .env
-env_vars = load_env_file()
-print(f"Loaded {len(env_vars)} variables from .env")
+# Проверяем ключевые переменные
+key_vars = [
+    'DATABASE_URL',
+    'SUPABASE_URL', 
+    'SUPABASE_KEY',
+    'PAYMENT_PROVIDER',
+    'OBANK_USE_PRODUCTION',
+    'ODENGI_USE_PRODUCTION'
+]
 
-print("\n=== ENVIRONMENT VARIABLES ===")
-print(f"DATABASE_URL: {os.getenv('DATABASE_URL', 'NOT SET')}")
-print(f"PAYMENT_PROVIDER: {os.getenv('PAYMENT_PROVIDER', 'NOT SET')}")
-secret_key = os.getenv('SECRET_KEY', 'NOT SET')
-print(f"SECRET_KEY (first 10 chars): {secret_key[:10] if secret_key != 'NOT SET' else 'NOT SET'}...")
-print(f"REDIS_URL: {os.getenv('REDIS_URL', 'NOT SET')}")
+print("\n=== ПЕРЕМЕННЫЕ ОКРУЖЕНИЯ ===")
+for var in key_vars:
+    value = os.getenv(var)
+    if value:
+        # Маскируем чувствительные данные
+        if 'URL' in var or 'KEY' in var or 'PASSWORD' in var:
+            masked_value = value[:10] + "..." + value[-10:] if len(value) > 20 else value[:5] + "..."
+            print(f"{var}: {masked_value}")
+        else:
+            print(f"{var}: {value}")
+    else:
+        print(f"{var}: НЕ УСТАНОВЛЕНА")
 
-# Проверяем содержимое .env файла
-if os.path.exists('.env'):
-    print("\n=== .ENV FILE CONTENT (first 20 lines) ===")
-    with open('.env', 'r') as f:
-        lines = f.readlines()[:20]
-        for i, line in enumerate(lines, 1):
-            line = line.strip()
-            if not line or line.startswith('#'):
-                print(f"{i:2d}: {line}")
-                continue
-                
-            # Скрываем пароли и секреты
-            if any(keyword in line.lower() for keyword in ['password', 'secret', 'key']):
-                parts = line.split('=', 1)
-                if len(parts) >= 2:
-                    print(f"{i:2d}: {parts[0]}=***HIDDEN***")
-                else:
-                    print(f"{i:2d}: {line}")
-            else:
-                print(f"{i:2d}: {line}")
+print(f"\nВсего переменных окружения: {len(os.environ)}")
 
-# Проверяем что DATABASE_URL не содержит localhost
-database_url = os.getenv('DATABASE_URL', '')
-if 'localhost' in database_url.lower():
-    print("\n⚠️  WARNING: DATABASE_URL contains 'localhost' - this should be Supabase URL!")
-elif 'supabase.co' in database_url.lower():
-    print("\n✅ DATABASE_URL looks like Supabase URL")
-elif database_url:
-    print("\n❓ DATABASE_URL is set but doesn't look like Supabase or localhost")
-else:
-    print("\n❌ DATABASE_URL is not set!")
+# Проверяем могут ли мы импортировать settings
+try:
+    from app.core.config import settings
+    print(f"\n✅ Settings импортированы успешно")
+    print(f"DATABASE_URL из settings: {settings.DATABASE_URL[:20]}..." if settings.DATABASE_URL else "НЕ УСТАНОВЛЕН")
+    print(f"PAYMENT_PROVIDER: {settings.PAYMENT_PROVIDER}")
+except Exception as e:
+    print(f"\n❌ Ошибка импорта settings: {e}")
 
-print("\n=== TROUBLESHOOTING TIPS ===")
-if not database_url:
-    print("1. Add DATABASE_URL to .env file")
-    print("2. Format: DATABASE_URL=postgresql://postgres:PASSWORD@db.PROJECT_REF.supabase.co:5432/postgres")
-elif 'localhost' in database_url:
-    print("1. Replace localhost with your Supabase URL")
-    print("2. Check .env file for correct DATABASE_URL") 
+# Попробуем создать database connection
+try:
+    from app.db.session import get_session_local
+    SessionLocal = get_session_local()
+    print(f"\n✅ SessionLocal создан успешно")
+    
+    db = SessionLocal()
+    print(f"✅ Database connection создан")
+    db.close()
+    print(f"✅ Database connection закрыт")
+    
+except Exception as e:
+    print(f"\n❌ Ошибка создания database connection: {e}")
+
+print("\n=== ДИАГНОСТИКА ЗАВЕРШЕНА ===") 

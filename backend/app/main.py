@@ -29,8 +29,6 @@ from app.core.config import settings
 from ocpp_ws_server.ws_handler import OCPPWebSocketHandler
 from ocpp_ws_server.redis_manager import redis_manager
 from app.api import mobile  # Импорт mobile API
-from app.crud.ocpp_service import payment_lifecycle_service
-from app.db.session import get_db
 
 # Настройка логирования
 logging.basicConfig(
@@ -45,12 +43,20 @@ logger = logging.getLogger(__name__)
 
 async def payment_status_checker():
     """Background task для периодической проверки статусов платежей"""
+    # Ждем 10 секунд перед первым запуском для полной инициализации
+    await asyncio.sleep(10)
+    
     while True:
         try:
             logger.info("🔍 Запуск проверки статусов платежей...")
             
-            # Получаем активные платежи для проверки
-            with next(get_db()) as db:
+            # Получаем активные платежи для проверки  
+            try:
+                # Создаем connection только в момент использования
+                from app.db.session import get_session_local
+                SessionLocal = get_session_local()
+                db = SessionLocal()
+                
                 # Проверяем пополнения баланса
                 try:
                     pending_topups = db.execute(text("""
@@ -66,6 +72,7 @@ async def payment_status_checker():
                 
                 for (invoice_id,) in pending_topups:
                     try:
+                        from app.crud.ocpp_service import payment_lifecycle_service
                         await payment_lifecycle_service.perform_status_check(
                             db, "balance_topups", invoice_id
                         )
@@ -88,6 +95,7 @@ async def payment_status_checker():
                 
                 for (invoice_id,) in pending_charging:
                     try:
+                        from app.crud.ocpp_service import payment_lifecycle_service
                         await payment_lifecycle_service.perform_status_check(
                             db, "charging_payments", invoice_id
                         )
@@ -96,6 +104,14 @@ async def payment_status_checker():
                         logger.error(f"Status check failed for charging {invoice_id}: {e}")
                 
                 logger.info(f"✅ Проверка завершена: {len(pending_topups)} пополнений, {len(pending_charging)} платежей за зарядку")
+                
+            except Exception as e:
+                logger.error(f"Failed to create database connection: {e}")
+            finally:
+                try:
+                    db.close()
+                except:
+                    pass
         
         except Exception as e:
             logger.error(f"Payment status checker error: {e}")
@@ -105,14 +121,31 @@ async def payment_status_checker():
 
 async def payment_cleanup_task():
     """Background task для очистки просроченных платежей"""
+    # Ждем 15 секунд перед первым запуском для полной инициализации
+    await asyncio.sleep(15)
+    
     while True:
         try:
             logger.info("🧹 Запуск очистки просроченных платежей...")
             
-            with next(get_db()) as db:
+            try:
+                # Создаем connection только в момент использования
+                from app.db.session import get_session_local
+                SessionLocal = get_session_local()
+                db = SessionLocal()
+                
+                from app.crud.ocpp_service import payment_lifecycle_service
                 result = await payment_lifecycle_service.cleanup_expired_payments(db)
                 if result.get("success"):
                     logger.info(f"✅ Очистка завершена: отменено {result.get('cancelled_topups', 0)} пополнений, {result.get('cancelled_charging_payments', 0)} платежей за зарядку")
+                    
+            except Exception as e:
+                logger.error(f"Failed to create database connection for cleanup: {e}")
+            finally:
+                try:
+                    db.close()
+                except:
+                    pass
         
         except Exception as e:
             logger.error(f"Payment cleanup error: {e}")
