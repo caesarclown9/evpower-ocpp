@@ -779,10 +779,10 @@ async def create_balance_topup(
                 client_id=request.client_id
             )
 
-        # 2. Проверяем существующие pending платежи (защита от дублирования)
+        # 2. Проверяем существующие processing платежи (защита от дублирования)
         existing_pending = db.execute(text("""
             SELECT invoice_id FROM balance_topups 
-            WHERE client_id = :client_id AND status = 'pending' 
+            WHERE client_id = :client_id AND status = 'processing' 
             AND invoice_expires_at > NOW()
         """), {"client_id": request.client_id}).fetchone()
         
@@ -831,7 +831,7 @@ async def create_balance_topup(
              currency, description, qr_code_url, app_link, status, odengi_status,
              qr_expires_at, invoice_expires_at, needs_status_check, payment_provider)
             VALUES (:invoice_id, :order_id, :merchant_id, :client_id, :requested_amount,
-                    :currency, :description, :qr_code_url, :app_link, 'pending', 0,
+                    :currency, :description, :qr_code_url, :app_link, 'processing', 0,
                     :qr_expires_at, :invoice_expires_at, true, :payment_provider)
             RETURNING id
         """), {
@@ -911,17 +911,17 @@ async def get_payment_status(
         invoice_expired = payment_lifecycle_service.is_invoice_expired(invoice_expires_at)
         
         # Если invoice истек - автоматически отменяем
-        if invoice_expired and topup[5] == "pending":
+        if invoice_expired and topup[5] == "processing":
             db.execute(text("""
                 UPDATE balance_topups 
-                SET status = 'cancelled', completed_at = NOW(), needs_status_check = false
+                SET status = 'canceled', completed_at = NOW(), needs_status_check = false
                 WHERE invoice_id = :invoice_id
             """), {"invoice_id": invoice_id})
             db.commit()
             
             return PaymentStatusResponse(
                 success=True,
-                status=2,  # cancelled
+                status=2,  # canceled
                 status_text="Платеж отменен - время истекло",
                 amount=float(topup[4]),
                 invoice_id=invoice_id,
@@ -946,9 +946,9 @@ async def get_payment_status(
         
         # 4. Обновление локального статуса
         status_mapping = {
-            0: "pending",
-            1: "paid",
-            2: "cancelled", 
+            0: "processing",
+            1: "approved",
+            2: "canceled", 
             3: "refunded",
             4: "partial_refund"
         }
@@ -972,8 +972,8 @@ async def get_payment_status(
             db.commit()
         
         # 5. Определение возможности операций и нужны ли callback проверки
-        can_proceed = odengi_service.can_proceed(odengi_status)
-        needs_callback_check = (new_status == "pending" and 
+        can_proceed = odengi_service.can_proceed(provider_status)
+        needs_callback_check = (new_status == "processing" and 
                                not invoice_expired and 
                                payment_lifecycle_service.should_status_check(
                                    topup[10], topup[9], 0, new_status))  # created_at, last_check_at
@@ -982,8 +982,8 @@ async def get_payment_status(
         
         return PaymentStatusResponse(
             success=True,
-            status=odengi_status,
-            status_text=odengi_service.get_status_text(odengi_status),
+            status=provider_status,
+            status_text=odengi_service.get_status_text(provider_status),
             amount=float(topup[4]),  # requested_amount
             paid_amount=paid_amount,
             invoice_id=invoice_id,
@@ -1043,7 +1043,7 @@ async def force_payment_status_check(
             }
         
         # 3. Проверяем статус (не проверяем завершенные)
-        if status in ['paid', 'cancelled', 'refunded']:
+        if status in ['approved', 'canceled', 'refunded']:
             return {
                 "success": False,
                 "error": "payment_completed",
@@ -1141,7 +1141,7 @@ async def handle_payment_webhook(
             return {"status": "provider_mismatch"}
         
         # 6. Обработка пополнения баланса
-        if numeric_status == 1 and topup[3] != "paid":  # Оплачено
+        if numeric_status == 1 and topup[3] != "approved":  # Оплачено
             background_tasks.add_task(
                 process_balance_topup,
                 topup[0],  # topup_id
@@ -1173,7 +1173,7 @@ async def get_client_balance(client_id: str, db: Session = Depends(get_db)) -> C
         # Получаем дату последнего пополнения
         last_topup = db.execute(text("""
             SELECT paid_at FROM balance_topups 
-            WHERE client_id = :client_id AND status = 'paid'
+            WHERE client_id = :client_id AND status = 'approved'
             ORDER BY paid_at DESC LIMIT 1
         """), {"client_id": client_id})
         
@@ -1229,7 +1229,7 @@ async def process_balance_topup(topup_id: int, client_id: str, amount: float, in
             # Обновляем статус пополнения
             db.execute(text("""
                 UPDATE balance_topups 
-                SET status = 'paid', paid_at = NOW(), paid_amount = :amount
+                SET status = 'approved', paid_at = NOW(), paid_amount = :amount
                 WHERE id = :topup_id
             """), {"amount": amount, "topup_id": topup_id})
             

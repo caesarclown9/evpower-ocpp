@@ -90,12 +90,23 @@ class PaymentProviderService:
                 amount_kopecks=amount_kopecks
             )
             
+            # O!Dengi может вернуть данные в разных полях в зависимости от версии API
+            invoice_id = (response.get('invoice_id') or 
+                         response.get('id') or 
+                         response.get('data', {}).get('invoice_id') or
+                         order_id)  # fallback к order_id если API не вернул ID
+            
+            payment_url = (response.get('url') or 
+                          response.get('pay_url') or
+                          response.get('data', {}).get('url') or '')
+            
             return {
                 "success": True,
-                "payment_url": response.get('url', ''),
-                "invoice_id": response.get('id', ''),
+                "payment_url": payment_url,
+                "invoice_id": invoice_id,
                 "provider": "ODENGI",
-                "status": "pending"
+                "status": "processing",
+                "raw_response": response  # Для дебага
             }
     
     async def check_payment_status(
@@ -121,18 +132,18 @@ class PaymentProviderService:
             data = response.get('data', {})
             obank_status = data.get('status', 'processing')
             
-            # Маппинг статусов OBANK
+            # Маппинг статусов OBANK (обновлённые)
             status_mapping = {
-                'processing': {"status": "pending", "numeric": 0},
-                'completed': {"status": "paid", "numeric": 1},
-                'failed': {"status": "cancelled", "numeric": 2},
-                'cancelled': {"status": "cancelled", "numeric": 2}
+                'processing': {"status": "processing", "numeric": 0},
+                'completed': {"status": "approved", "numeric": 1},
+                'failed': {"status": "canceled", "numeric": 2},
+                'cancelled': {"status": "canceled", "numeric": 2}
             }
             
-            mapped = status_mapping.get(obank_status, {"status": "pending", "numeric": 0})
+            mapped = status_mapping.get(obank_status, {"status": "processing", "numeric": 0})
             paid_amount = None
             
-            if mapped["status"] == "paid":
+            if mapped["status"] == "approved":
                 # Конвертируем из тыйынов в сомы
                 paid_amount = float(data.get('sum', 0)) / 1000
             
@@ -158,18 +169,18 @@ class PaymentProviderService:
                 # Конвертируем из копеек в сомы
                 paid_amount = response.get('amount', 0) / 100
             
-            # Маппинг статусов O!Dengi
+            # Маппинг статусов O!Dengi (обновлённые)
             status_mapping = {
-                0: "pending",
-                1: "paid", 
-                2: "cancelled",
+                0: "processing",
+                1: "approved", 
+                2: "canceled",
                 3: "refunded",
                 4: "partial_refund"
             }
             
             return {
                 "success": True,
-                "status": status_mapping.get(status, "pending"),
+                "status": status_mapping.get(status, "processing"),
                 "numeric_status": status,
                 "paid_amount": paid_amount,
                 "provider": "ODENGI",

@@ -867,14 +867,14 @@ class PaymentLifecycleService:
                 obank_status = api_response.get('data', {}).get('status', 'processing')
                 # Маппинг статусов OBANK: processing, completed, failed, cancelled
                 status_mapping = {
-                    'processing': "pending",
-                    'completed': "paid", 
-                    'failed': "cancelled",
-                    'cancelled': "cancelled"
+                    'processing': "processing",
+                    'completed': "approved", 
+                    'failed': "canceled",
+                    'cancelled': "canceled"
                 }
-                mapped_status = status_mapping.get(obank_status, "pending")
-                new_status = 1 if mapped_status == "paid" else 0 if mapped_status == "pending" else 2
-                paid_amount = float(api_response.get('data', {}).get('sum', 0)) / 1000 if mapped_status == "paid" else None
+                mapped_status = status_mapping.get(obank_status, "processing")
+                new_status = 1 if mapped_status == "approved" else 0 if mapped_status == "processing" else 2
+                paid_amount = float(api_response.get('data', {}).get('sum', 0)) / 1000 if mapped_status == "approved" else None
                 
             else:  # O!Dengi (Legacy)
                 # Вызываем O!Dengi API
@@ -902,7 +902,7 @@ class PaymentLifecycleService:
             """)
             
             # Определяем нужны ли дальнейшие проверки
-            needs_further_checks = mapped_status == "pending" and check_count < PaymentLifecycleService.MAX_STATUS_CHECKS
+            needs_further_checks = mapped_status == "processing" and check_count < PaymentLifecycleService.MAX_STATUS_CHECKS
             
             db.execute(update_query, {
                 "odengi_status": new_status,
@@ -913,7 +913,7 @@ class PaymentLifecycleService:
             })
             
             # Если платеж оплачен - обрабатываем
-            if new_status == 1 and current_status != "paid":
+            if new_status == 1 and current_status != "approved":
                 if payment_table == "balance_topups":
                     # Обрабатываем пополнение баланса
                     current_balance = payment_service.get_client_balance(db, client_id)
@@ -933,7 +933,7 @@ class PaymentLifecycleService:
                     # Обновляем статус пополнения
                     db.execute(text("""
                         UPDATE balance_topups 
-                        SET status = 'paid', paid_at = NOW(), paid_amount = :amount
+                        SET status = 'approved', paid_at = NOW(), paid_amount = :amount
                         WHERE id = :topup_id
                     """), {"amount": paid_amount or 0, "topup_id": payment_id})
                     
@@ -968,10 +968,10 @@ class PaymentLifecycleService:
             try:
                 topup_update = text("""
                     UPDATE balance_topups 
-                    SET status = 'cancelled', 
+                    SET status = 'canceled', 
                         needs_status_check = false,
                         completed_at = NOW()
-                    WHERE status = 'pending' 
+                    WHERE status = 'processing' 
                       AND invoice_expires_at < :current_time
                       AND needs_status_check = true
                 """)
@@ -985,10 +985,10 @@ class PaymentLifecycleService:
             try:
                 charging_update = text("""
                     UPDATE charging_payments 
-                    SET status = 'cancelled',
+                    SET status = 'canceled',
                         needs_status_check = false, 
                         completed_at = NOW()
-                    WHERE status = 'pending'
+                    WHERE status = 'processing'
                       AND invoice_expires_at < :current_time
                       AND needs_status_check = true
                 """)
