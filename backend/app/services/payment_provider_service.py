@@ -251,5 +251,15 @@ class PaymentProviderService:
         else:
             return "KGS"  # Для O!Dengi
 
-# Создаем глобальный экземпляр
-payment_provider_service = PaymentProviderService() 
+# Ленивая инициализация - создаем экземпляр только при первом обращении
+_payment_provider_service = None
+
+def get_payment_provider_service() -> PaymentProviderService:
+    """Возвращает экземпляр PaymentProviderService с ленивой инициализацией"""
+    global _payment_provider_service
+    if _payment_provider_service is None:
+        _payment_provider_service = PaymentProviderService()
+    return _payment_provider_service
+
+# Для обратной совместимости - создаем алиас
+payment_provider_service = get_payment_provider_service() 
