@@ -301,10 +301,10 @@ class OCPPConfiguration(Base):
 # ============================================================================
 
 class PaymentStatus(str, enum.Enum):
-    pending = "pending"           # 0 - Ожидает оплаты
-    paid = "paid"                # 1 - Оплачено  
-    cancelled = "cancelled"      # 2 - Отменено
-    refunded = "refunded"        # 3 - Возврат
+    processing = "processing"     # 0 - В процессе оплаты
+    approved = "approved"         # 1 - Платеж зачислен/оплачен
+    canceled = "canceled"         # 2 - Закончилось время жизни счета или плательщик отменил
+    refunded = "refunded"         # 3 - Возврат
     partial_refund = "partial_refund"  # 4 - Частичный возврат
 
 class PaymentType(str, enum.Enum):
@@ -329,7 +329,7 @@ class BalanceTopup(Base):
     currency = Column(String(3), default="KGS")
     
     # Статусы и временные метки
-    status = Column(SqlEnum(PaymentStatus), default=PaymentStatus.pending)
+    status = Column(SqlEnum(PaymentStatus), default=PaymentStatus.processing)
     odengi_status = Column(Integer, default=0)  # Статус от O!Dengi API
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -385,7 +385,7 @@ class ChargingPayment(Base):
     rate_per_kwh = Column(Numeric)
     
     # Статусы и временные метки
-    status = Column(SqlEnum(PaymentStatus), default=PaymentStatus.pending)
+    status = Column(SqlEnum(PaymentStatus), default=PaymentStatus.processing)
     odengi_status = Column(Integer, default=0)  # Статус от O!Dengi API
     
     created_at = Column(DateTime(timezone=True), server_default=func.now())

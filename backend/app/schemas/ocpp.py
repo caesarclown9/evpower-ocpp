@@ -249,9 +249,9 @@ class ChargingSession(ChargingSessionBase):
 # ============================================================================
 
 class PaymentStatus(str, Enum):
-    PENDING = "pending"
-    PAID = "paid"
-    CANCELLED = "cancelled"
+    PROCESSING = "processing"
+    APPROVED = "approved"
+    CANCELED = "canceled"
     REFUNDED = "refunded"
     PARTIAL_REFUND = "partial_refund"
 

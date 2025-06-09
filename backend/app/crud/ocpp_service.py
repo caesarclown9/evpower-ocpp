@@ -886,8 +886,8 @@ class PaymentLifecycleService:
                 new_status = odengi_response.get('status', 0)
                 paid_amount = odengi_response.get('amount', 0) / 100 if odengi_response.get('amount') else None
                 # Обновляем статус в базе
-                status_mapping = {0: "pending", 1: "paid", 2: "cancelled", 3: "refunded", 4: "partial_refund"}
-                mapped_status = status_mapping.get(new_status, "pending")
+                status_mapping = {0: "processing", 1: "approved", 2: "canceled", 3: "refunded", 4: "partial_refund"}
+                mapped_status = status_mapping.get(new_status, "processing")
             
             # Обновляем статус в базе
             update_query = text(f"""
