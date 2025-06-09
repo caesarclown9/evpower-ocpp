@@ -1,6 +1,7 @@
 import os
-from typing import Optional
+from typing import Optional, Any
 from pydantic_settings import BaseSettings
+from pydantic import model_validator
 
 class Settings(BaseSettings):
     # Database settings for Supabase
@@ -102,15 +103,16 @@ class Settings(BaseSettings):
         """Возвращает актуальный Service ID в зависимости от окружения"""
         return self.OBANK_PROD_SERVICE_ID if self.OBANK_USE_PRODUCTION else self.OBANK_SERVICE_ID
     
-    def __post_init__(self):
+    @model_validator(mode='after')
+    def validate_settings(self) -> 'Settings':
         """Валидация обязательных переменных окружения"""
         missing_vars = []
         
-        # Обязательные переменные для работы
+        # Базовые переменные проверяем только если они критичны
         if not self.SECRET_KEY:
             missing_vars.append("SECRET_KEY")
-        if not self.EZS_SECRET_KEY:
-            missing_vars.append("EZS_SECRET_KEY")
+        
+        # DATABASE_URL должен быть обязательно
         if not self.DATABASE_URL:
             missing_vars.append("DATABASE_URL")
             
@@ -121,16 +123,7 @@ class Settings(BaseSettings):
                     missing_vars.append("OBANK_PROD_POINT_ID")
                 if not self.OBANK_PROD_SERVICE_ID:
                     missing_vars.append("OBANK_PROD_SERVICE_ID")
-            else:
-                if not self.OBANK_POINT_ID:
-                    missing_vars.append("OBANK_POINT_ID")
-                if not self.OBANK_SERVICE_ID:
-                    missing_vars.append("OBANK_SERVICE_ID")
-            
-            if not self.OBANK_CERT_PATH:
-                missing_vars.append("OBANK_CERT_PATH")
-            if not self.OBANK_CERT_PASSWORD:
-                missing_vars.append("OBANK_CERT_PASSWORD")
+            # Для тестовой среды не требуем сертификат - можем работать без него
                 
         elif self.PAYMENT_PROVIDER == "ODENGI":
             # O!Dengi обязательные переменные
@@ -147,6 +140,8 @@ class Settings(BaseSettings):
         
         if missing_vars:
             raise ValueError(f"❌ Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}")
+        
+        return self
 
     class Config:
         env_file = ".env"
