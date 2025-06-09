@@ -41,92 +41,76 @@ logger = logging.getLogger(__name__)
 # BACKGROUND TASKS ДЛЯ ПЛАТЕЖНОЙ СИСТЕМЫ
 # ============================================================================
 
-async def payment_status_checker():
-    """Background task для периодической проверки статусов платежей"""
-    # Ждем 10 секунд перед первым запуском для полной инициализации
-    await asyncio.sleep(10)
+async def check_payment_status(payment_table: str, invoice_id: str, max_checks: int = 15):
+    """
+    Проверяет статус конкретного платежа до его завершения
     
-    while True:
+    Args:
+        payment_table: "balance_topups" или "charging_payments"
+        invoice_id: ID платежа для проверки
+        max_checks: Максимальное количество проверок (по умолчанию 15)
+    """
+    logger.info(f"🔍 Запуск мониторинга платежа {invoice_id} (таблица: {payment_table})")
+    
+    for check_number in range(1, max_checks + 1):
         try:
-            logger.info("🔍 Запуск проверки статусов платежей...")
+            # Ждем 1 минуту перед каждой проверкой
+            await asyncio.sleep(60)
             
-            # Получаем активные платежи для проверки  
+            # Проверяем статус платежа
             try:
-                # Создаем connection только в момент использования
                 from app.db.session import get_session_local
+                from app.crud.ocpp_service import payment_lifecycle_service
+                
                 SessionLocal = get_session_local()
                 db = SessionLocal()
                 
-                # Проверяем пополнения баланса
-                try:
-                    pending_topups = db.execute(text("""
-                        SELECT invoice_id FROM balance_topups 
-                        WHERE status = 'pending' 
-                        AND needs_status_check = true 
-                        AND invoice_expires_at > NOW()
-                        LIMIT 50
-                    """)).fetchall()
-                except UnicodeDecodeError as e:
-                    logger.error(f"Unicode error in topups query, skipping: {e}")
-                    pending_topups = []
+                result = await payment_lifecycle_service.perform_status_check(
+                    db, payment_table, invoice_id
+                )
                 
-                for (invoice_id,) in pending_topups:
-                    try:
-                        from app.crud.ocpp_service import payment_lifecycle_service
-                        await payment_lifecycle_service.perform_status_check(
-                            db, "balance_topups", invoice_id
-                        )
-                        await asyncio.sleep(0.5)  # Пауза между запросами к O!Dengi
-                    except Exception as e:
-                        logger.error(f"Status check failed for topup {invoice_id}: {e}")
+                db.close()
                 
-                # Проверяем платежи за зарядку
-                try:
-                    pending_charging = db.execute(text("""
-                        SELECT invoice_id FROM charging_payments 
-                        WHERE status = 'pending' 
-                        AND needs_status_check = true 
-                        AND invoice_expires_at > NOW()
-                        LIMIT 50
-                    """)).fetchall()
-                except UnicodeDecodeError as e:
-                    logger.error(f"Unicode error in charging query, skipping: {e}")
-                    pending_charging = []
-                
-                for (invoice_id,) in pending_charging:
-                    try:
-                        from app.crud.ocpp_service import payment_lifecycle_service
-                        await payment_lifecycle_service.perform_status_check(
-                            db, "charging_payments", invoice_id
-                        )
-                        await asyncio.sleep(0.5)  # Пауза между запросами к O!Dengi
-                    except Exception as e:
-                        logger.error(f"Status check failed for charging {invoice_id}: {e}")
-                
-                logger.info(f"✅ Проверка завершена: {len(pending_topups)} пополнений, {len(pending_charging)} платежей за зарядку")
-                
+                if result.get("success"):
+                    new_status = result.get("new_status")
+                    logger.info(f"🔍 Платеж {invoice_id}: проверка {check_number}/{max_checks}, статус: {new_status}")
+                    
+                    # Если платеж завершен - прекращаем мониторинг
+                    if new_status in ['paid', 'cancelled', 'refunded']:
+                        logger.info(f"✅ Мониторинг платежа {invoice_id} завершен: {new_status}")
+                        return
+                else:
+                    logger.warning(f"⚠️ Платеж {invoice_id}: ошибка проверки статуса")
+                    
             except Exception as e:
-                logger.error(f"Failed to create database connection: {e}")
-            finally:
-                try:
-                    db.close()
-                except:
-                    pass
-        
+                logger.error(f"❌ Ошибка проверки платежа {invoice_id}: {e}")
+                
         except Exception as e:
-            logger.error(f"Payment status checker error: {e}")
-        
-        # Ждем 60 секунд до следующей проверки
-        await asyncio.sleep(60)
+            logger.error(f"❌ Критическая ошибка мониторинга платежа {invoice_id}: {e}")
+            break
+    
+    logger.warning(f"⏰ Мониторинг платежа {invoice_id} завершен по таймауту ({max_checks} проверок)")
+
+def start_payment_monitoring(payment_table: str, invoice_id: str, max_checks: int = 15):
+    """
+    Удобная функция для запуска мониторинга платежа из API endpoints
+    
+    Args:
+        payment_table: "balance_topups" или "charging_payments"  
+        invoice_id: ID платежа для проверки
+        max_checks: Максимальное количество проверок
+    """
+    asyncio.create_task(check_payment_status(payment_table, invoice_id, max_checks))
+    logger.info(f"🔍 Запущен мониторинг платежа {invoice_id} (таблица: {payment_table})")
 
 async def payment_cleanup_task():
-    """Background task для очистки просроченных платежей"""
-    # Ждем 15 секунд перед первым запуском для полной инициализации
-    await asyncio.sleep(15)
+    """Background task для периодической очистки просроченных платежей"""
+    # Ждем 30 минут перед первым запуском
+    await asyncio.sleep(1800)
     
     while True:
         try:
-            logger.info("🧹 Запуск очистки просроченных платежей...")
+            logger.info("🧹 Запуск периодической очистки просроченных платежей...")
             
             try:
                 # Создаем connection только в момент использования
@@ -137,8 +121,13 @@ async def payment_cleanup_task():
                 from app.crud.ocpp_service import payment_lifecycle_service
                 result = await payment_lifecycle_service.cleanup_expired_payments(db)
                 if result.get("success"):
-                    logger.info(f"✅ Очистка завершена: отменено {result.get('cancelled_topups', 0)} пополнений, {result.get('cancelled_charging_payments', 0)} платежей за зарядку")
-                    
+                    cancelled_topups = result.get('cancelled_topups', 0)
+                    cancelled_charging = result.get('cancelled_charging_payments', 0)
+                    if cancelled_topups > 0 or cancelled_charging > 0:
+                        logger.info(f"✅ Очистка завершена: отменено {cancelled_topups} пополнений, {cancelled_charging} платежей за зарядку")
+                    else:
+                        logger.info("✅ Очистка завершена: просроченных платежей не найдено")
+                        
             except Exception as e:
                 logger.error(f"Failed to create database connection for cleanup: {e}")
             finally:
@@ -150,8 +139,8 @@ async def payment_cleanup_task():
         except Exception as e:
             logger.error(f"Payment cleanup error: {e}")
         
-        # Ждем 5 минут до следующей очистки
-        await asyncio.sleep(300)
+        # Ждем 1 час до следующей очистки
+        await asyncio.sleep(3600)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -159,16 +148,14 @@ async def lifespan(app: FastAPI):
     logger.info("🚀 Starting OCPP WebSocket Server...")
     logger.info("✅ Redis manager initialized")
     
-    # Запуск background tasks для платежной системы
-    payment_checker_task = asyncio.create_task(payment_status_checker())
+    # Запуск только cleanup задачи (проверка статусов платежей теперь по событию)
     payment_cleanup_task_ref = asyncio.create_task(payment_cleanup_task())
-    logger.info("🔍 Payment status checker started")
-    logger.info("🧹 Payment cleanup task started")
+    logger.info("🧹 Payment cleanup task started (1 час между проверками)")
+    logger.info("🔍 Payment status checks будут запускаться при создании платежей")
     
     yield
     
     # Отмена background tasks при остановке
-    payment_checker_task.cancel()
     payment_cleanup_task_ref.cancel()
     logger.info("🛑 Shutting down OCPP WebSocket Server...")
     logger.info("✅ Application shutdown complete")

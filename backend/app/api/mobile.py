@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from typing import Optional
+import asyncio
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -852,6 +853,10 @@ async def create_balance_topup(
         
         invoice_id = payment_response.get("invoice_id", payment_response.get("auth_key"))
         logger.info(f"🕐 Пополнение создано: {order_id}, invoice_id: {invoice_id}, провайдер: {get_payment_provider_service().get_provider_name()}, QR истекает: {qr_expires_at}, Invoice истекает: {invoice_expires_at}")
+        
+        # Запускаем мониторинг статуса платежа в фоновом режиме
+        from app.main import start_payment_monitoring
+        start_payment_monitoring("balance_topups", invoice_id)
         
         return BalanceTopupResponse(
             success=True,
