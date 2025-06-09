@@ -336,6 +336,10 @@ class BalanceTopup(Base):
     paid_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
     
+    # 🕐 Время жизни платежа
+    qr_expires_at = Column(DateTime(timezone=True), nullable=False)  # QR код истекает через 5 минут
+    invoice_expires_at = Column(DateTime(timezone=True), nullable=False)  # Invoice истекает через 10 минут
+    
     # Дополнительные данные
     description = Column(Text)
     qr_code_url = Column(String(500))
@@ -344,6 +348,11 @@ class BalanceTopup(Base):
     # Webhook данные
     last_webhook_at = Column(DateTime(timezone=True), nullable=True)
     webhook_count = Column(Integer, default=0)
+    
+    # Status check данные
+    last_status_check_at = Column(DateTime(timezone=True), nullable=True)
+    status_check_count = Column(Integer, default=0)
+    needs_status_check = Column(Boolean, default=True)  # Флаг для фоновой проверки
     
     # Relationships
     client = relationship("Client")
@@ -383,6 +392,10 @@ class ChargingPayment(Base):
     paid_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)
     
+    # 🕐 Время жизни платежа
+    qr_expires_at = Column(DateTime(timezone=True), nullable=False)  # QR код истекает через 5 минут
+    invoice_expires_at = Column(DateTime(timezone=True), nullable=False)  # Invoice истекает через 10 минут
+    
     # Дополнительные данные
     description = Column(Text)
     qr_code_url = Column(String(500))
@@ -391,6 +404,11 @@ class ChargingPayment(Base):
     # Webhook данные
     last_webhook_at = Column(DateTime(timezone=True), nullable=True)
     webhook_count = Column(Integer, default=0)
+    
+    # Status check данные
+    last_status_check_at = Column(DateTime(timezone=True), nullable=True)
+    status_check_count = Column(Integer, default=0)
+    needs_status_check = Column(Boolean, default=True)  # Флаг для фоновой проверки
     
     # Relationships
     station = relationship("Station")

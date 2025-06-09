@@ -37,7 +37,20 @@ class Settings(BaseSettings):
         "http://localhost:3000,http://localhost:8180,https://app.flutterflow.io"
     )
     
-    # O!Dengi API Configuration
+    # OBANK Payment API Configuration
+    OBANK_API_URL: str = os.getenv("OBANK_API_URL", "https://test-rakhmet.dengi.kg:4431/external/extended-cert")
+    OBANK_PRODUCTION_API_URL: str = os.getenv("OBANK_PRODUCTION_API_URL", "https://rakhmet.dengi.kg:4431/external/extended-cert")
+    OBANK_POINT_ID: str = os.getenv("OBANK_POINT_ID", "4354")  # Terminal ID
+    OBANK_SERVICE_ID: str = os.getenv("OBANK_SERVICE_ID", "1331")  # Service ID
+    OBANK_CERT_PATH: str = os.getenv("OBANK_CERT_PATH", "")  # Path to PKCS12 certificate
+    OBANK_CERT_PASSWORD: str = os.getenv("OBANK_CERT_PASSWORD", "")  # Certificate password
+    OBANK_USE_PRODUCTION: bool = os.getenv("OBANK_USE_PRODUCTION", "false").lower() == "true"
+    
+    # OBANK Production настройки
+    OBANK_PROD_POINT_ID: str = os.getenv("OBANK_PROD_POINT_ID", "")
+    OBANK_PROD_SERVICE_ID: str = os.getenv("OBANK_PROD_SERVICE_ID", "")
+    
+    # O!Dengi API Configuration (Legacy support)
     ODENGI_API_URL: str = os.getenv("ODENGI_API_URL", "https://mw-api-test.dengi.kg/api/json/json.php")
     ODENGI_PRODUCTION_API_URL: str = os.getenv("ODENGI_PRODUCTION_API_URL", "https://mw-api.dengi.kg/api/json/json.php")
     ODENGI_MERCHANT_ID: str = os.getenv("ODENGI_MERCHANT_ID", "")
@@ -49,10 +62,19 @@ class Settings(BaseSettings):
     ODENGI_PROD_MERCHANT_ID: str = os.getenv("ODENGI_PROD_MERCHANT_ID", "")
     ODENGI_PROD_PASSWORD: str = os.getenv("ODENGI_PROD_PASSWORD", "")
     
+    # Payment Provider Selection
+    PAYMENT_PROVIDER: str = os.getenv("PAYMENT_PROVIDER", "OBANK")  # OBANK or ODENGI
+    
     # EZS Payment Settings
     EZS_SECRET_KEY: str = os.getenv("EZS_SECRET_KEY", "")
     DEFAULT_CURRENCY: str = os.getenv("DEFAULT_CURRENCY", "KGS")
     PAYMENT_TIMEOUT_MINUTES: int = int(os.getenv("PAYMENT_TIMEOUT_MINUTES", "30"))
+    
+    # Payment Lifecycle Settings
+    QR_CODE_LIFETIME_MINUTES: int = int(os.getenv("QR_CODE_LIFETIME_MINUTES", "5"))
+    INVOICE_LIFETIME_MINUTES: int = int(os.getenv("INVOICE_LIFETIME_MINUTES", "10"))
+    STATUS_CHECK_INTERVAL_SECONDS: int = int(os.getenv("STATUS_CHECK_INTERVAL_SECONDS", "60"))
+    CLEANUP_INTERVAL_MINUTES: int = int(os.getenv("CLEANUP_INTERVAL_MINUTES", "5"))
     
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
@@ -64,6 +86,21 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return self.APP_ENV == "production"
+    
+    @property
+    def current_obank_api_url(self) -> str:
+        """Возвращает актуальный URL OBANK API в зависимости от окружения"""
+        return self.OBANK_PRODUCTION_API_URL if self.OBANK_USE_PRODUCTION else self.OBANK_API_URL
+    
+    @property
+    def current_obank_point_id(self) -> str:
+        """Возвращает актуальный Point ID в зависимости от окружения"""
+        return self.OBANK_PROD_POINT_ID if self.OBANK_USE_PRODUCTION else self.OBANK_POINT_ID
+    
+    @property
+    def current_obank_service_id(self) -> str:
+        """Возвращает актуальный Service ID в зависимости от окружения"""
+        return self.OBANK_PROD_SERVICE_ID if self.OBANK_USE_PRODUCTION else self.OBANK_SERVICE_ID
     
     def __post_init__(self):
         """Валидация обязательных переменных окружения"""
@@ -77,17 +114,36 @@ class Settings(BaseSettings):
         if not self.DATABASE_URL:
             missing_vars.append("DATABASE_URL")
             
-        # O!Dengi обязательные переменные
-        if self.ODENGI_USE_PRODUCTION:
-            if not self.ODENGI_PROD_MERCHANT_ID:
-                missing_vars.append("ODENGI_PROD_MERCHANT_ID")
-            if not self.ODENGI_PROD_PASSWORD:
-                missing_vars.append("ODENGI_PROD_PASSWORD")
-        else:
-            if not self.ODENGI_MERCHANT_ID:
-                missing_vars.append("ODENGI_MERCHANT_ID")
-            if not self.ODENGI_PASSWORD:
-                missing_vars.append("ODENGI_PASSWORD")
+        # Проверяем переменные в зависимости от выбранного провайдера
+        if self.PAYMENT_PROVIDER == "OBANK":
+            if self.OBANK_USE_PRODUCTION:
+                if not self.OBANK_PROD_POINT_ID:
+                    missing_vars.append("OBANK_PROD_POINT_ID")
+                if not self.OBANK_PROD_SERVICE_ID:
+                    missing_vars.append("OBANK_PROD_SERVICE_ID")
+            else:
+                if not self.OBANK_POINT_ID:
+                    missing_vars.append("OBANK_POINT_ID")
+                if not self.OBANK_SERVICE_ID:
+                    missing_vars.append("OBANK_SERVICE_ID")
+            
+            if not self.OBANK_CERT_PATH:
+                missing_vars.append("OBANK_CERT_PATH")
+            if not self.OBANK_CERT_PASSWORD:
+                missing_vars.append("OBANK_CERT_PASSWORD")
+                
+        elif self.PAYMENT_PROVIDER == "ODENGI":
+            # O!Dengi обязательные переменные
+            if self.ODENGI_USE_PRODUCTION:
+                if not self.ODENGI_PROD_MERCHANT_ID:
+                    missing_vars.append("ODENGI_PROD_MERCHANT_ID")
+                if not self.ODENGI_PROD_PASSWORD:
+                    missing_vars.append("ODENGI_PROD_PASSWORD")
+            else:
+                if not self.ODENGI_MERCHANT_ID:
+                    missing_vars.append("ODENGI_MERCHANT_ID")
+                if not self.ODENGI_PASSWORD:
+                    missing_vars.append("ODENGI_PASSWORD")
         
         if missing_vars:
             raise ValueError(f"❌ Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}")

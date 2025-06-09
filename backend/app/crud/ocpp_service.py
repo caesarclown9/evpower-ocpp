@@ -748,4 +748,238 @@ class PaymentService:
 
 # Синглтоны для использования в приложении
 odengi_service = ODengiService()
-payment_service = PaymentService() 
+payment_service = PaymentService()
+
+class PaymentLifecycleService:
+    """Сервис для управления временем жизни платежей и status check"""
+    
+    QR_LIFETIME_MINUTES = 5  # QR код живет 5 минут
+    INVOICE_LIFETIME_MINUTES = 10  # Invoice живет 10 минут
+    STATUS_CHECK_INTERVAL_MINUTES = 1  # Проверка статуса каждую минуту
+    MAX_STATUS_CHECKS = 15  # Максимум 15 проверок (15 минут)
+    
+    @staticmethod
+    def calculate_expiry_times(created_at: datetime) -> tuple[datetime, datetime]:
+        """Рассчитывает время истечения QR кода и invoice"""
+        qr_expires_at = created_at + timedelta(minutes=PaymentLifecycleService.QR_LIFETIME_MINUTES)
+        invoice_expires_at = created_at + timedelta(minutes=PaymentLifecycleService.INVOICE_LIFETIME_MINUTES)
+        return qr_expires_at, invoice_expires_at
+    
+    @staticmethod
+    def is_qr_expired(qr_expires_at: datetime) -> bool:
+        """Проверяет истек ли QR код"""
+        return datetime.utcnow() > qr_expires_at
+    
+    @staticmethod
+    def is_invoice_expired(invoice_expires_at: datetime) -> bool:
+        """Проверяет истек ли invoice"""
+        return datetime.utcnow() > invoice_expires_at
+    
+    @staticmethod
+    def should_status_check(payment_created_at: datetime, last_check_at: Optional[datetime], 
+                           check_count: int, payment_status: str) -> bool:
+        """Определяет нужна ли проверка статуса"""
+        # Не проверяем завершенные платежи
+        if payment_status in ['paid', 'cancelled', 'refunded']:
+            return False
+        
+        # Превышен лимит проверок
+        if check_count >= PaymentLifecycleService.MAX_STATUS_CHECKS:
+            return False
+        
+        # Invoice истек
+        _, invoice_expires_at = PaymentLifecycleService.calculate_expiry_times(payment_created_at)
+        if PaymentLifecycleService.is_invoice_expired(invoice_expires_at):
+            return False
+        
+        # Первая проверка или прошло достаточно времени
+        if last_check_at is None:
+            return True
+        
+        next_check_time = last_check_at + timedelta(minutes=PaymentLifecycleService.STATUS_CHECK_INTERVAL_MINUTES)
+        return datetime.utcnow() >= next_check_time
+    
+    @staticmethod
+    async def perform_status_check(db: Session, payment_table: str, invoice_id: str) -> dict:
+        """Выполняет проверку статуса платежа через выбранный платежный провайдер"""
+        try:
+            # Получаем данные платежа
+            if payment_table == "balance_topups":
+                query = text("""
+                    SELECT id, order_id, client_id, status, status_check_count, created_at
+                    FROM balance_topups WHERE invoice_id = :invoice_id
+                """)
+            else:  # charging_payments
+                query = text("""
+                    SELECT id, order_id, client_id, status, status_check_count, created_at
+                    FROM charging_payments WHERE invoice_id = :invoice_id
+                """)
+            
+            result = db.execute(query, {"invoice_id": invoice_id}).fetchone()
+            if not result:
+                return {"success": False, "error": "payment_not_found"}
+            
+            payment_id, order_id, client_id, current_status, check_count, created_at = result
+            
+            # Проверяем нужна ли проверка
+            if not PaymentLifecycleService.should_status_check(created_at, None, check_count, current_status):
+                return {"success": False, "error": "status_check_not_needed"}
+            
+            # Выбираем провайдера и вызываем соответствующий API
+            if settings.PAYMENT_PROVIDER == "OBANK":
+                # Для OBANK используем auth_key из order_id
+                from app.services.obank_service import obank_service
+                api_response = await obank_service.check_payment_status(auth_key=invoice_id)
+                
+                # Парсим ответ OBANK
+                obank_status = api_response.get('data', {}).get('status', 'processing')
+                # Маппинг статусов OBANK: processing, completed, failed, cancelled
+                status_mapping = {
+                    'processing': "pending",
+                    'completed': "paid", 
+                    'failed': "cancelled",
+                    'cancelled': "cancelled"
+                }
+                mapped_status = status_mapping.get(obank_status, "pending")
+                new_status = 1 if mapped_status == "paid" else 0 if mapped_status == "pending" else 2
+                paid_amount = float(api_response.get('data', {}).get('sum', 0)) / 1000 if mapped_status == "paid" else None
+                
+            else:  # O!Dengi (Legacy)
+                # Вызываем O!Dengi API
+                odengi_response = await odengi_service.get_payment_status(
+                    invoice_id=invoice_id,
+                    order_id=order_id
+                )
+                
+                new_status = odengi_response.get('status', 0)
+                paid_amount = odengi_response.get('amount', 0) / 100 if odengi_response.get('amount') else None
+                # Обновляем статус в базе
+                status_mapping = {0: "pending", 1: "paid", 2: "cancelled", 3: "refunded", 4: "partial_refund"}
+                mapped_status = status_mapping.get(new_status, "pending")
+            
+            # Обновляем статус в базе
+            update_query = text(f"""
+                UPDATE {payment_table} 
+                SET last_status_check_at = NOW(), 
+                    status_check_count = status_check_count + 1,
+                    odengi_status = :odengi_status,
+                    status = :status,
+                    paid_amount = :paid_amount,
+                    needs_status_check = :needs_check
+                WHERE invoice_id = :invoice_id
+            """)
+            
+            # Определяем нужны ли дальнейшие проверки
+            needs_further_checks = mapped_status == "pending" and check_count < PaymentLifecycleService.MAX_STATUS_CHECKS
+            
+            db.execute(update_query, {
+                "odengi_status": new_status,
+                "status": mapped_status,
+                "paid_amount": paid_amount,
+                "needs_check": needs_further_checks,
+                "invoice_id": invoice_id
+            })
+            
+            # Если платеж оплачен - обрабатываем
+            if new_status == 1 and current_status != "paid":
+                if payment_table == "balance_topups":
+                    # Обрабатываем пополнение баланса
+                    current_balance = payment_service.get_client_balance(db, client_id)
+                    new_balance = payment_service.update_client_balance(
+                        db, client_id, Decimal(str(paid_amount or 0)), "add",
+                        f"Пополнение баланса через O!Dengi (invoice: {invoice_id})"
+                    )
+                    
+                    # Создаем транзакцию
+                    payment_service.create_payment_transaction(
+                        db, client_id, "balance_topup", 
+                        Decimal(str(paid_amount or 0)), current_balance, new_balance,
+                        f"Пополнение баланса через O!Dengi",
+                        balance_topup_id=payment_id
+                    )
+                    
+                    # Обновляем статус пополнения
+                    db.execute(text("""
+                        UPDATE balance_topups 
+                        SET status = 'paid', paid_at = NOW(), paid_amount = :amount
+                        WHERE id = :topup_id
+                    """), {"amount": paid_amount or 0, "topup_id": payment_id})
+                    
+                    logger.info(f"✅ Баланс пополнен автоматически: клиент {client_id}, сумма {paid_amount}, новый баланс {new_balance}")
+                # Для charging_payments логика обработки отдельно
+            
+            db.commit()
+            
+            logger.info(f"Status check completed for {invoice_id}: {current_status} -> {mapped_status}")
+            
+            return {
+                "success": True,
+                "old_status": current_status,
+                "new_status": mapped_status,
+                "odengi_status": new_status,
+                "paid_amount": paid_amount,
+                "needs_further_checks": needs_further_checks
+            }
+            
+        except Exception as e:
+            logger.error(f"Status check failed for {invoice_id}: {e}")
+            db.rollback()
+            return {"success": False, "error": str(e)}
+    
+    @staticmethod
+    async def cleanup_expired_payments(db: Session) -> dict:
+        """Очищает просроченные платежи и устанавливает статус cancelled"""
+        try:
+            current_time = datetime.utcnow()
+            
+            # Отменяем просроченные пополнения баланса
+            try:
+                topup_update = text("""
+                    UPDATE balance_topups 
+                    SET status = 'cancelled', 
+                        needs_status_check = false,
+                        completed_at = NOW()
+                    WHERE status = 'pending' 
+                      AND invoice_expires_at < :current_time
+                      AND needs_status_check = true
+                """)
+                
+                topup_result = db.execute(topup_update, {"current_time": current_time})
+            except UnicodeDecodeError as e:
+                logger.error(f"Unicode error in cleanup topups, skipping: {e}")
+                topup_result = type('MockResult', (), {'rowcount': 0})()
+            
+            # Отменяем просроченные платежи за зарядку
+            try:
+                charging_update = text("""
+                    UPDATE charging_payments 
+                    SET status = 'cancelled',
+                        needs_status_check = false, 
+                        completed_at = NOW()
+                    WHERE status = 'pending'
+                      AND invoice_expires_at < :current_time
+                      AND needs_status_check = true
+                """)
+                
+                charging_result = db.execute(charging_update, {"current_time": current_time})
+            except UnicodeDecodeError as e:
+                logger.error(f"Unicode error in cleanup charging, skipping: {e}")
+                charging_result = type('MockResult', (), {'rowcount': 0})()
+            
+            db.commit()
+            
+            logger.info(f"Expired payments cleanup: {topup_result.rowcount} topups, {charging_result.rowcount} charging payments cancelled")
+            
+            return {
+                "success": True,
+                "cancelled_topups": topup_result.rowcount,
+                "cancelled_charging_payments": charging_result.rowcount
+            }
+            
+        except Exception as e:
+            logger.error(f"Cleanup expired payments failed: {e}")
+            db.rollback()
+            return {"success": False, "error": str(e)}
+
+# Создаем экземпляр сервиса
+payment_lifecycle_service = PaymentLifecycleService() 

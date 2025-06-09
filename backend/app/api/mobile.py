@@ -22,7 +22,8 @@ from app.schemas.ocpp import (
     PaymentStatusResponse, PaymentWebhookData,
     ClientBalanceInfo, BalanceTopupInfo, PaymentTransactionInfo
 )
-from app.crud.ocpp_service import odengi_service, payment_service
+from app.crud.ocpp_service import payment_service, payment_lifecycle_service
+from app.services.payment_provider_service import payment_provider_service
 from app.core.config import settings
 
 # Логгер
@@ -764,7 +765,7 @@ async def create_balance_topup(
     request: BalanceTopupRequest, 
     db: Session = Depends(get_db)
 ) -> BalanceTopupResponse:
-    """💰 Создание платежа для пополнения баланса"""
+    """💰 Создание платежа для пополнения баланса с временем жизни"""
     try:
         # 1. Проверяем существование клиента
         client_check = db.execute(text("SELECT id, balance FROM clients WHERE id = :client_id"), 
@@ -777,62 +778,92 @@ async def create_balance_topup(
                 client_id=request.client_id
             )
 
-        # 2. Генерация безопасного order_id
-        order_id = odengi_service.generate_secure_order_id("topup", request.client_id)
+        # 2. Проверяем существующие pending платежи (защита от дублирования)
+        existing_pending = db.execute(text("""
+            SELECT invoice_id FROM balance_topups 
+            WHERE client_id = :client_id AND status = 'pending' 
+            AND invoice_expires_at > NOW()
+        """), {"client_id": request.client_id}).fetchone()
         
-        # 3. Описание платежа
-        description = request.description or f"Пополнение баланса клиента {request.client_id} на {request.amount} сом"
-        
-        # 4. Создание счета в O!Dengi
-        amount_kopecks = int(request.amount * 100)
-        odengi_response = await odengi_service.create_invoice(
-            order_id=order_id,
-            description=description,
-            amount_kopecks=amount_kopecks
-        )
-        
-        # Исправляем доступ к данным из ответа O!Dengi
-        odengi_data = odengi_response.get("data", {})
-        if not odengi_data.get("invoice_id"):
+        if existing_pending:
             return BalanceTopupResponse(
                 success=False,
-                error="odengi_error",
+                error="pending_payment_exists",
                 client_id=request.client_id
             )
 
-        # 5. Сохранение в базу данных
+        # 3. Генерация безопасного order_id
+        order_id = f"topup_{request.client_id}_{int(datetime.utcnow().timestamp())}"
+        
+        # 4. Описание платежа
+        description = request.description or f"Пополнение баланса клиента {request.client_id} на {request.amount} сом"
+        
+        # 5. Создание платежа через унифицированный сервис
+        notify_url = f"{settings.API_V1_STR}/payment/webhook"
+        redirect_url = f"{settings.API_V1_STR}/payment/success"
+        
+        payment_response = await payment_provider_service.create_payment(
+            amount=Decimal(str(request.amount)),
+            order_id=order_id,
+            email=request.client_id + "@evpower.local",  # Временный email для OBANK
+            notify_url=notify_url,
+            redirect_url=redirect_url,
+            description=description,
+            client_id=request.client_id
+        )
+        
+        if not payment_response.get("success"):
+            return BalanceTopupResponse(
+                success=False,
+                error="payment_provider_error",
+                client_id=request.client_id
+            )
+
+        # 6. 🕐 Рассчитываем время жизни платежа
+        created_at = datetime.utcnow()
+        qr_expires_at, invoice_expires_at = payment_lifecycle_service.calculate_expiry_times(created_at)
+
+        # 7. Сохранение в базу данных с временем жизни
         topup_insert = db.execute(text("""
             INSERT INTO balance_topups 
             (invoice_id, order_id, merchant_id, client_id, requested_amount, 
-             currency, description, qr_code_url, app_link, status, odengi_status)
+             currency, description, qr_code_url, app_link, status, odengi_status,
+             qr_expires_at, invoice_expires_at, needs_status_check, payment_provider)
             VALUES (:invoice_id, :order_id, :merchant_id, :client_id, :requested_amount,
-                    :currency, :description, :qr_code_url, :app_link, 'pending', 0)
+                    :currency, :description, :qr_code_url, :app_link, 'pending', 0,
+                    :qr_expires_at, :invoice_expires_at, true, :payment_provider)
             RETURNING id
         """), {
-            "invoice_id": odengi_data["invoice_id"],
+            "invoice_id": payment_response.get("invoice_id", payment_response.get("auth_key")),
             "order_id": order_id,
-            "merchant_id": settings.ODENGI_MERCHANT_ID,
+            "merchant_id": payment_provider_service.get_provider_name(),
             "client_id": request.client_id,
             "requested_amount": request.amount,
             "currency": settings.DEFAULT_CURRENCY,
             "description": description,
-            "qr_code_url": odengi_data.get("qr"),
-            "app_link": odengi_data.get("link_app")
+            "qr_code_url": payment_response.get("payment_url"),
+            "app_link": payment_response.get("payment_url"),
+            "qr_expires_at": qr_expires_at,
+            "invoice_expires_at": invoice_expires_at,
+            "payment_provider": payment_provider_service.get_provider_name()
         })
         
         db.commit()
         
-        logger.info(f"Пополнение создано: {order_id}, invoice_id: {odengi_data['invoice_id']}")
+        invoice_id = payment_response.get("invoice_id", payment_response.get("auth_key"))
+        logger.info(f"🕐 Пополнение создано: {order_id}, invoice_id: {invoice_id}, провайдер: {payment_provider_service.get_provider_name()}, QR истекает: {qr_expires_at}, Invoice истекает: {invoice_expires_at}")
         
         return BalanceTopupResponse(
             success=True,
-            invoice_id=odengi_data["invoice_id"],
+            invoice_id=invoice_id,
             order_id=order_id,
-            qr_code=odengi_data.get("qr"),
-            app_link=odengi_data.get("link_app"),
+            qr_code=payment_response.get("payment_url"),
+            app_link=payment_response.get("payment_url"),
             amount=request.amount,
             client_id=request.client_id,
-            current_balance=float(client[1])  # Текущий баланс
+            current_balance=float(client[1]),
+            qr_expires_at=qr_expires_at,
+            invoice_expires_at=invoice_expires_at
         )
         
     except Exception as e:
@@ -849,11 +880,12 @@ async def get_payment_status(
     invoice_id: str,
     db: Session = Depends(get_db)
 ) -> PaymentStatusResponse:
-    """📊 Проверка статуса платежа (пополнение или зарядка)"""
+    """📊 Проверка статуса платежа с учетом времени жизни"""
     try:
         # 1. Ищем платеж в таблице пополнений баланса
         topup_check = db.execute(text("""
-            SELECT id, invoice_id, order_id, client_id, requested_amount, status, odengi_status
+            SELECT id, invoice_id, order_id, client_id, requested_amount, status, odengi_status,
+                   qr_expires_at, invoice_expires_at, last_status_check_at, created_at
             FROM balance_topups WHERE invoice_id = :invoice_id
         """), {"invoice_id": invoice_id})
         
@@ -867,16 +899,47 @@ async def get_payment_status(
                 error="payment_not_found"
             )
 
-        # 2. Запрос статуса из O!Dengi
-        odengi_response = await odengi_service.get_payment_status(
-            invoice_id=invoice_id,
-            order_id=topup[2]  # order_id
-        )
+        # 2. 🕐 Проверяем время жизни
+        qr_expires_at = topup[7]
+        invoice_expires_at = topup[8]
+        qr_expired = payment_lifecycle_service.is_qr_expired(qr_expires_at)
+        invoice_expired = payment_lifecycle_service.is_invoice_expired(invoice_expires_at)
         
-        odengi_status = odengi_response.get('status', 0)
-        paid_amount = odengi_response.get('amount', 0) / 100 if odengi_response.get('amount') else None
+        # Если invoice истек - автоматически отменяем
+        if invoice_expired and topup[5] == "pending":
+            db.execute(text("""
+                UPDATE balance_topups 
+                SET status = 'cancelled', completed_at = NOW(), needs_status_check = false
+                WHERE invoice_id = :invoice_id
+            """), {"invoice_id": invoice_id})
+            db.commit()
+            
+            return PaymentStatusResponse(
+                success=True,
+                status=2,  # cancelled
+                status_text="Платеж отменен - время истекло",
+                amount=float(topup[4]),
+                invoice_id=invoice_id,
+                qr_expired=True,
+                invoice_expired=True,
+                qr_expires_at=qr_expires_at,
+                invoice_expires_at=invoice_expires_at
+            )
+
+        # 3. Запрос статуса через унифицированный сервис (только если не истек)
+        if not invoice_expired:
+            provider_response = await payment_provider_service.check_payment_status(
+                invoice_id=invoice_id,
+                order_id=topup[2]  # order_id
+            )
+            
+            provider_status = provider_response.get('numeric_status', 0)
+            paid_amount = provider_response.get('paid_amount')
+        else:
+            provider_status = 2  # cancelled
+            paid_amount = None
         
-        # 3. Обновление локального статуса
+        # 4. Обновление локального статуса
         status_mapping = {
             0: "pending",
             1: "paid",
@@ -885,28 +948,32 @@ async def get_payment_status(
             4: "partial_refund"
         }
         
-        new_status = status_mapping.get(odengi_status, "pending")
+        new_status = status_mapping.get(provider_status, "pending")
         
-        # Обновляем статус в базе
-        if topup[5] != new_status:  # Если статус изменился
+        # Обновляем статус в базе если изменился
+        if topup[5] != new_status:
             db.execute(text("""
                 UPDATE balance_topups 
-                SET status = :new_status, odengi_status = :odengi_status,
-                    paid_amount = :paid_amount, updated_at = NOW()
+                SET status = :new_status, odengi_status = :provider_status,
+                    paid_amount = :paid_amount, last_status_check_at = NOW()
                 WHERE invoice_id = :invoice_id
             """), {
                 "new_status": new_status,
-                "odengi_status": odengi_status,
+                "provider_status": provider_status,
                 "paid_amount": paid_amount,
                 "invoice_id": invoice_id
             })
             
             db.commit()
         
-        # 4. Определение возможности операций
+        # 5. Определение возможности операций и нужны ли callback проверки
         can_proceed = odengi_service.can_proceed(odengi_status)
+        needs_callback_check = (new_status == "pending" and 
+                               not invoice_expired and 
+                               payment_lifecycle_service.should_status_check(
+                                   topup[10], topup[9], 0, new_status))  # created_at, last_check_at
         
-        logger.info(f"Статус платежа {invoice_id}: {new_status} (O!Dengi: {odengi_status})")
+        logger.info(f"🕐 Статус платежа {invoice_id}: {new_status}, QR истек: {qr_expired}, Invoice истек: {invoice_expired}")
         
         return PaymentStatusResponse(
             success=True,
@@ -916,7 +983,13 @@ async def get_payment_status(
             paid_amount=paid_amount,
             invoice_id=invoice_id,
             can_proceed=can_proceed,
-            can_start_charging=False  # Пополнение баланса не дает прямого доступа к зарядке
+            can_start_charging=False,
+            qr_expired=qr_expired,
+            invoice_expired=invoice_expired,
+            qr_expires_at=qr_expires_at,
+            invoice_expires_at=invoice_expires_at,
+            last_status_check_at=topup[9],
+            needs_callback_check=needs_callback_check
         )
         
     except Exception as e:
@@ -928,54 +1001,152 @@ async def get_payment_status(
             error=f"internal_error: {str(e)}"
         )
 
+@router.post("/payment/status-check/{invoice_id}")
+async def force_payment_status_check(
+    invoice_id: str,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db)
+):
+    """🔍 Принудительная проверка статуса платежа через O!Dengi API"""
+    try:
+        # 1. Проверяем существование платежа
+        payment_check = db.execute(text("""
+            SELECT 'balance_topups' as table_name, invoice_id, status, created_at, invoice_expires_at
+            FROM balance_topups WHERE invoice_id = :invoice_id
+            UNION ALL
+            SELECT 'charging_payments' as table_name, invoice_id, status, created_at, invoice_expires_at  
+            FROM charging_payments WHERE invoice_id = :invoice_id
+        """), {"invoice_id": invoice_id})
+        
+        payment = payment_check.fetchone()
+        if not payment:
+            return {
+                "success": False,
+                "error": "payment_not_found",
+                "message": "Платеж не найден"
+            }
+        
+        table_name, _, status, created_at, invoice_expires_at = payment
+        
+        # 2. Проверяем время жизни
+        if payment_lifecycle_service.is_invoice_expired(invoice_expires_at):
+            return {
+                "success": False,
+                "error": "payment_expired",
+                "message": "Платеж истек, проверка невозможна",
+                "invoice_expires_at": invoice_expires_at.isoformat()
+            }
+        
+        # 3. Проверяем статус (не проверяем завершенные)
+        if status in ['paid', 'cancelled', 'refunded']:
+            return {
+                "success": False,
+                "error": "payment_completed",
+                "message": f"Платеж уже завершен со статусом: {status}",
+                "current_status": status
+            }
+        
+        # 4. Запускаем проверку в фоне
+        background_tasks.add_task(
+            payment_lifecycle_service.perform_status_check,
+            db, table_name, invoice_id
+        )
+        
+        logger.info(f"🔍 Запущена принудительная проверка статуса для {invoice_id}")
+        
+        return {
+            "success": True,
+            "message": "Проверка статуса запущена",
+            "invoice_id": invoice_id,
+            "check_type": "manual",
+            "estimated_completion_seconds": 5
+        }
+        
+    except Exception as e:
+        logger.error(f"Ошибка запуска проверки статуса {invoice_id}: {e}")
+        return {
+            "success": False,
+            "error": "internal_error",
+            "message": f"Ошибка запуска проверки: {str(e)}"
+        }
+
 @router.post("/payment/webhook")
 async def handle_payment_webhook(
     request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
-    """🔔 Обработка webhook уведомлений от O!Dengi"""
+    """🔔 Обработка webhook уведомлений от платежных провайдеров"""
     try:
         # 1. Получение сырых данных и подписи
         payload = await request.body()
-        webhook_signature = request.headers.get('X-O-Dengi-Signature', '')
         
-        # 2. Верификация подписи
-        if not odengi_service.verify_webhook_signature(payload, webhook_signature):
-            logger.warning(f"Invalid webhook signature from {request.client.host}")
+        # 2. Определяем провайдера и верифицируем подпись
+        provider_name = payment_provider_service.get_provider_name()
+        
+        if provider_name == "OBANK":
+            # OBANK использует SSL сертификаты для аутентификации
+            # Дополнительная верификация не требуется
+            is_valid = True
+        else:  # O!Dengi
+            webhook_signature = request.headers.get('X-O-Dengi-Signature', '')
+            is_valid = payment_provider_service.verify_webhook(payload, webhook_signature)
+        
+        if not is_valid:
+            logger.warning(f"Invalid webhook signature from {request.client.host} for provider {provider_name}")
             raise HTTPException(status_code=401, detail="Invalid signature")
         
-        # 3. Парсинг JSON данных
-        webhook_data = PaymentWebhookData.parse_raw(payload)
+        # 3. Парсинг данных в зависимости от провайдера
+        if provider_name == "OBANK":
+            # Для OBANK парсим XML
+            import xml.etree.ElementTree as ET
+            root = ET.fromstring(payload.decode('utf-8'))
+            
+            # Извлекаем данные из XML
+            invoice_id = root.find('.//invoice_id').text if root.find('.//invoice_id') is not None else None
+            status = root.find('.//status').text if root.find('.//status') is not None else None
+            amount = root.find('.//sum').text if root.find('.//sum') is not None else None
+            
+            # Преобразуем статус OBANK в числовой формат
+            status_mapping = {"completed": 1, "failed": 2, "cancelled": 2}
+            numeric_status = status_mapping.get(status, 0)
+            paid_amount = float(amount) / 1000 if amount and status == "completed" else None
+            
+        else:  # O!Dengi
+            webhook_data = PaymentWebhookData.parse_raw(payload)
+            invoice_id = webhook_data.invoice_id
+            numeric_status = webhook_data.status
+            paid_amount = webhook_data.paid_amount / 100 if webhook_data.paid_amount else None
         
-        # 4. Валидация order_id
-        if not odengi_service.validate_order_id(webhook_data.order_id):
-            logger.warning(f"Invalid order_id in webhook: {webhook_data.order_id}")
-            raise HTTPException(status_code=400, detail="Invalid order_id")
-        
-        # 5. Поиск платежа в базе
+        # 4. Поиск платежа в базе
         topup_check = db.execute(text("""
-            SELECT id, client_id, requested_amount, status FROM balance_topups 
+            SELECT id, client_id, requested_amount, status, payment_provider FROM balance_topups 
             WHERE invoice_id = :invoice_id
-        """), {"invoice_id": webhook_data.invoice_id})
+        """), {"invoice_id": invoice_id})
         
         topup = topup_check.fetchone()
         
         if not topup:
-            logger.warning(f"Payment not found for webhook: {webhook_data.invoice_id}")
+            logger.warning(f"Payment not found for webhook: {invoice_id}")
             return {"status": "payment_not_found"}
         
+        # 5. Проверяем что провайдер соответствует записи в БД
+        if topup[4] != provider_name:
+            logger.warning(f"Provider mismatch for payment {invoice_id}: expected {topup[4]}, got {provider_name}")
+            return {"status": "provider_mismatch"}
+        
         # 6. Обработка пополнения баланса
-        if topup and webhook_data.status == 1:  # Оплачено
+        if numeric_status == 1 and topup[3] != "paid":  # Оплачено
             background_tasks.add_task(
                 process_balance_topup,
                 topup[0],  # topup_id
                 topup[1],  # client_id
-                webhook_data.paid_amount / 100 if webhook_data.paid_amount else topup[2],  # amount
-                webhook_data.invoice_id
+                paid_amount if paid_amount else topup[2],  # amount
+                invoice_id,
+                provider_name
             )
         
-        return {"status": "received", "invoice_id": webhook_data.invoice_id}
+        return {"status": "received", "invoice_id": invoice_id, "provider": provider_name}
         
     except Exception as e:
         logger.error(f"Webhook processing error: {e}")
@@ -1029,7 +1200,7 @@ async def get_client_balance(client_id: str, db: Session = Depends(get_db)) -> C
 # BACKGROUND TASKS ДЛЯ ОБРАБОТКИ ПЛАТЕЖЕЙ
 # ============================================================================
 
-async def process_balance_topup(topup_id: int, client_id: str, amount: float, invoice_id: str):
+async def process_balance_topup(topup_id: int, client_id: str, amount: float, invoice_id: str, provider: str = "ODENGI"):
     """Обработка успешного пополнения баланса"""
     try:
         with next(get_db()) as db:
@@ -1039,14 +1210,14 @@ async def process_balance_topup(topup_id: int, client_id: str, amount: float, in
             # Пополняем баланс
             new_balance = payment_service.update_client_balance(
                 db, client_id, Decimal(str(amount)), "add",
-                f"Пополнение баланса через O!Dengi (invoice: {invoice_id})"
+                f"Пополнение баланса через {provider} (invoice: {invoice_id})"
             )
             
             # Создаем транзакцию
             payment_service.create_payment_transaction(
                 db, client_id, "balance_topup", 
                 Decimal(str(amount)), current_balance, new_balance,
-                f"Пополнение баланса через O!Dengi",
+                f"Пополнение баланса через {provider}",
                 balance_topup_id=topup_id
             )
             

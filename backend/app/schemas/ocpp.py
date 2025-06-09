@@ -294,6 +294,13 @@ class BalanceTopupResponse(BaseModel):
     amount: Optional[float] = None
     client_id: str
     current_balance: Optional[float] = None
+    
+    # 🕐 Время жизни платежа
+    qr_expires_at: Optional[datetime] = None  # Когда истекает QR код
+    invoice_expires_at: Optional[datetime] = None  # Когда истекает invoice
+    qr_lifetime_seconds: int = 300  # 5 минут для QR
+    invoice_lifetime_seconds: int = 600  # 10 минут для invoice
+    
     error: Optional[str] = None
 
 class PaymentStatusResponse(BaseModel):
@@ -306,6 +313,15 @@ class PaymentStatusResponse(BaseModel):
     invoice_id: Optional[str] = None
     can_proceed: bool = False  # Для пополнения - можно ли зачислить на баланс
     can_start_charging: bool = False  # Для зарядки - можно ли начать зарядку
+    
+    # 🕐 Время жизни и проверки
+    qr_expired: bool = False  # QR код истек
+    invoice_expired: bool = False  # Invoice истек
+    qr_expires_at: Optional[datetime] = None
+    invoice_expires_at: Optional[datetime] = None
+    last_status_check_at: Optional[datetime] = None
+    needs_callback_check: bool = False  # Требуется callback проверка
+    
     error: Optional[str] = None
 
 class ClientBalanceInfo(BaseModel):
