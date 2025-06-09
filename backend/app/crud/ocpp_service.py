@@ -786,9 +786,9 @@ class PaymentLifecycleService:
     """Сервис для управления временем жизни платежей и status check"""
     
     QR_LIFETIME_MINUTES = 5  # QR код живет 5 минут
-    INVOICE_LIFETIME_MINUTES = 10  # Invoice живет 10 минут
-    STATUS_CHECK_INTERVAL_MINUTES = 1  # Проверка статуса каждую минуту
-    MAX_STATUS_CHECKS = 15  # Максимум 15 проверок (15 минут)
+    INVOICE_LIFETIME_MINUTES = 5  # Invoice живет 5 минут
+    STATUS_CHECK_INTERVAL_SECONDS = 15  # Проверка статуса каждые 15 секунд
+    MAX_STATUS_CHECKS = 20  # Максимум 20 проверок (5 минут)
     
     @staticmethod
     def calculate_expiry_times(created_at: datetime) -> tuple[datetime, datetime]:

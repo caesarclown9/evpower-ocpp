@@ -73,7 +73,7 @@ class Settings(BaseSettings):
     
     # Payment Lifecycle Settings
     QR_CODE_LIFETIME_MINUTES: int = int(os.getenv("QR_CODE_LIFETIME_MINUTES", "5"))
-    INVOICE_LIFETIME_MINUTES: int = int(os.getenv("INVOICE_LIFETIME_MINUTES", "10"))
+    INVOICE_LIFETIME_MINUTES: int = int(os.getenv("INVOICE_LIFETIME_MINUTES", "5"))
     STATUS_CHECK_INTERVAL_SECONDS: int = int(os.getenv("STATUS_CHECK_INTERVAL_SECONDS", "60"))
     CLEANUP_INTERVAL_MINUTES: int = int(os.getenv("CLEANUP_INTERVAL_MINUTES", "5"))
     

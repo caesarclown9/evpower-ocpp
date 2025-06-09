@@ -41,21 +41,21 @@ logger = logging.getLogger(__name__)
 # BACKGROUND TASKS ДЛЯ ПЛАТЕЖНОЙ СИСТЕМЫ
 # ============================================================================
 
-async def check_payment_status(payment_table: str, invoice_id: str, max_checks: int = 15):
+async def check_payment_status(payment_table: str, invoice_id: str, max_checks: int = 20):
     """
     Проверяет статус конкретного платежа до его завершения
     
     Args:
         payment_table: "balance_topups" или "charging_payments"
         invoice_id: ID платежа для проверки
-        max_checks: Максимальное количество проверок (по умолчанию 15)
+        max_checks: Максимальное количество проверок (по умолчанию 20)
     """
     logger.info(f"🔍 Запуск мониторинга платежа {invoice_id} (таблица: {payment_table})")
     
     for check_number in range(1, max_checks + 1):
         try:
-            # Ждем 1 минуту перед каждой проверкой
-            await asyncio.sleep(60)
+            # Ждем 15 секунд перед каждой проверкой
+            await asyncio.sleep(15)
             
             # Проверяем статус платежа
             try:
@@ -91,7 +91,7 @@ async def check_payment_status(payment_table: str, invoice_id: str, max_checks: 
     
     logger.warning(f"⏰ Мониторинг платежа {invoice_id} завершен по таймауту ({max_checks} проверок)")
 
-def start_payment_monitoring(payment_table: str, invoice_id: str, max_checks: int = 15):
+def start_payment_monitoring(payment_table: str, invoice_id: str, max_checks: int = 20):
     """
     Удобная функция для запуска мониторинга платежа из API endpoints
     
