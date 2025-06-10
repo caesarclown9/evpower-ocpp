@@ -818,7 +818,7 @@ class PaymentLifecycleService:
                            check_count: int, payment_status: str) -> bool:
         """Определяет нужна ли проверка статуса"""
         # Не проверяем завершенные платежи
-        if payment_status in ['paid', 'cancelled', 'refunded']:
+        if payment_status in ['approved', 'canceled', 'refunded']:
             return False
         
         # Превышен лимит проверок

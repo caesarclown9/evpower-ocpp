@@ -76,7 +76,7 @@ async def check_payment_status(payment_table: str, invoice_id: str, max_checks: 
                     logger.info(f"🔍 Платеж {invoice_id}: проверка {check_number}/{max_checks}, статус: {new_status}")
                     
                     # Если платеж завершен - прекращаем мониторинг
-                    if new_status in ['paid', 'cancelled', 'refunded']:
+                    if new_status in ['approved', 'canceled', 'refunded']:
                         logger.info(f"✅ Мониторинг платежа {invoice_id} завершен: {new_status}")
                         return
                 else:
