@@ -42,6 +42,13 @@ class ChargingStartRequest(BaseModel):
     connector_id: int = Field(..., ge=1, description="Номер коннектора")
     energy_kwh: Optional[float] = Field(None, gt=0, le=200, description="Энергия для зарядки в кВт⋅ч (если не указано - неограниченная зарядка)")
     amount_som: float = Field(..., gt=0, description="Предоплаченная сумма в сомах")
+    
+    @validator('amount_som', 'energy_kwh')
+    def validate_limits(cls, v, values):
+        """Валидация лимитов зарядки"""
+        # Если указана энергия, amount_som - это максимальная сумма
+        # Если энергия не указана, amount_som - это точная предоплата
+        return v
 
 class ChargingStopRequest(BaseModel):
     """⏹️ Запрос на остановку зарядки"""
@@ -195,6 +202,16 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
             """), {"id_tag": id_tag, "client_id": request.client_id})
 
         # 10. Создаем сессию зарядки с резервированием средств
+        # 🔧 ИСПРАВЛЕНИЕ: Правильная логика для лимитов
+        if request.energy_kwh:
+            # Лимитированная зарядка по энергии
+            limit_type = 'energy'
+            limit_value = request.energy_kwh
+        else:
+            # Безлимитная зарядка (ограничена только суммой предоплаты)
+            limit_type = 'amount' 
+            limit_value = request.amount_som
+        
         session_insert = db.execute(text("""
             INSERT INTO charging_sessions 
             (user_id, station_id, start_time, status, limit_type, limit_value, amount)
@@ -204,8 +221,8 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
             "user_id": request.client_id,
             "station_id": request.station_id,
             "start_time": datetime.now(timezone.utc),
-            "limit_type": 'energy' if request.energy_kwh else None,
-            "limit_value": request.energy_kwh,
+            "limit_type": limit_type,
+            "limit_value": limit_value,
             "amount": reservation_amount
         })
         
@@ -242,10 +259,9 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
                 "session_id": session_id
             }
             
-            # Добавляем лимиты только если указаны
-            if request.energy_kwh:
-                command_data["limit_type"] = 'energy'
-                command_data["limit_value"] = request.energy_kwh
+            # Добавляем лимиты в Redis команду
+            command_data["limit_type"] = limit_type
+            command_data["limit_value"] = limit_value
             
             await redis_manager.publish_command(request.station_id, command_data)
             
