@@ -834,7 +834,7 @@ class PaymentLifecycleService:
         if last_check_at is None:
             return True
         
-        next_check_time = last_check_at + timedelta(minutes=PaymentLifecycleService.STATUS_CHECK_INTERVAL_MINUTES)
+        next_check_time = last_check_at + timedelta(seconds=PaymentLifecycleService.STATUS_CHECK_INTERVAL_SECONDS)
         now = datetime.now(timezone.utc)
         if next_check_time.tzinfo is None:
             next_check_time = next_check_time.replace(tzinfo=timezone.utc)
