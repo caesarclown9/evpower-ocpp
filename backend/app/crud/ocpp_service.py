@@ -997,7 +997,13 @@ class PaymentLifecycleService:
                 """)
             
             # Определяем нужны ли дальнейшие проверки
-            needs_further_checks = mapped_status == "processing" and check_count < PaymentLifecycleService.MAX_STATUS_CHECKS
+            # Для approved/canceled статусов проверки НЕ нужны
+            if mapped_status in ["approved", "canceled"]:
+                needs_further_checks = False
+            elif mapped_status == "processing":
+                needs_further_checks = check_count < PaymentLifecycleService.MAX_STATUS_CHECKS
+            else:
+                needs_further_checks = False
             
             # Логируем параметры для SQL запроса
             sql_params = {
