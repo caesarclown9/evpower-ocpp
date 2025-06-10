@@ -820,11 +820,17 @@ async def create_balance_topup(
                 client_id=request.client_id
             )
 
-        # 6. 🕐 Рассчитываем время жизни платежа
+        # 6. Получаем QR код и app link из O!Dengi ответа ПЕРЕД сохранением в базу
+        raw_response = payment_response.get("raw_response", {})
+        qr_data = raw_response.get("data", {})
+        qr_code_url = qr_data.get("qr_url") or qr_data.get("qr") or payment_response.get("payment_url")
+        app_link_url = qr_data.get("link_app") or payment_response.get("payment_url")
+        
+        # 7. 🕐 Рассчитываем время жизни платежа
         created_at = datetime.now(timezone.utc)
         qr_expires_at, invoice_expires_at = payment_lifecycle_service.calculate_expiry_times(created_at)
 
-        # 7. Сохранение в базу данных с временем жизни
+        # 8. Сохранение в базу данных с временем жизни
         topup_insert = db.execute(text("""
             INSERT INTO balance_topups 
             (invoice_id, order_id, merchant_id, client_id, requested_amount, 
@@ -857,12 +863,6 @@ async def create_balance_topup(
         # Запускаем мониторинг статуса платежа в фоновом режиме
         from app.main import start_payment_monitoring
         start_payment_monitoring("balance_topups", invoice_id)
-        
-        # Получаем QR код и app link из O!Dengi ответа
-        raw_response = payment_response.get("raw_response", {})
-        qr_data = raw_response.get("data", {})
-        qr_code_url = qr_data.get("qr_url") or qr_data.get("qr") or payment_response.get("payment_url")
-        app_link_url = qr_data.get("link_app") or payment_response.get("payment_url")
         
         return BalanceTopupResponse(
             success=True,
