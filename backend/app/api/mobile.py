@@ -842,8 +842,8 @@ async def create_balance_topup(
             "requested_amount": request.amount,
             "currency": settings.DEFAULT_CURRENCY,
             "description": description,
-            "qr_code_url": payment_response.get("payment_url"),
-            "app_link": payment_response.get("payment_url"),
+            "qr_code_url": qr_code_url,
+            "app_link": app_link_url,
             "qr_expires_at": qr_expires_at,
             "invoice_expires_at": invoice_expires_at,
             "payment_provider": get_payment_provider_service().get_provider_name()
@@ -858,12 +858,18 @@ async def create_balance_topup(
         from app.main import start_payment_monitoring
         start_payment_monitoring("balance_topups", invoice_id)
         
+        # Получаем QR код и app link из O!Dengi ответа
+        raw_response = payment_response.get("raw_response", {})
+        qr_data = raw_response.get("data", {})
+        qr_code_url = qr_data.get("qr_url") or qr_data.get("qr") or payment_response.get("payment_url")
+        app_link_url = qr_data.get("link_app") or payment_response.get("payment_url")
+        
         return BalanceTopupResponse(
             success=True,
             invoice_id=invoice_id,
             order_id=order_id,
-            qr_code=payment_response.get("payment_url"),
-            app_link=payment_response.get("payment_url"),
+            qr_code=qr_code_url,
+            app_link=app_link_url,
             amount=request.amount,
             client_id=request.client_id,
             current_balance=float(client[1]),
@@ -972,19 +978,28 @@ async def get_payment_status(
             db.commit()
         
         # 5. Определение возможности операций и нужны ли callback проверки
-        payment_provider = get_payment_provider_service()
-        can_proceed = payment_provider.can_proceed(provider_status)
+        can_proceed = (provider_status == 1)  # Только для approved платежей
         needs_callback_check = (new_status == "processing" and 
                                not invoice_expired and 
                                payment_lifecycle_service.should_status_check(
                                    topup[10], topup[9], 0, new_status))  # created_at, last_check_at
+        
+        # Текст статуса
+        status_texts = {
+            0: "В обработке",
+            1: "Оплачено", 
+            2: "Отменен",
+            3: "Возвращен",
+            4: "Частичный возврат"
+        }
+        status_text = status_texts.get(provider_status, "Неизвестный статус")
         
         logger.info(f"🕐 Статус платежа {invoice_id}: {new_status}, QR истек: {qr_expired}, Invoice истек: {invoice_expired}")
         
         return PaymentStatusResponse(
             success=True,
             status=provider_status,
-            status_text=payment_provider.get_status_text(provider_status),
+            status_text=status_text,
             amount=float(topup[4]),  # requested_amount
             paid_amount=paid_amount,
             invoice_id=invoice_id,
