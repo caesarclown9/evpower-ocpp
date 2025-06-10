@@ -1160,52 +1160,35 @@ async def get_payment_status(
                 invoice_expires_at=invoice_expires_at
             )
 
-        # 3. Запрос статуса через унифицированный сервис (только если не истек)
-        if not invoice_expired:
-            provider_response = await get_payment_provider_service().check_payment_status(
-                invoice_id=invoice_id,
-                order_id=topup[2]  # order_id
-            )
-            
-            provider_status = provider_response.get('numeric_status', 0)
-            paid_amount = provider_response.get('paid_amount')
-        else:
-            provider_status = 2  # cancelled
-            paid_amount = None
+        # 3. Читаем актуальный статус из базы данных (обновленный background task)
+        fresh_topup_check = db.execute(text("""
+            SELECT status, odengi_status, paid_amount, last_status_check_at
+            FROM balance_topups WHERE invoice_id = :invoice_id
+        """), {"invoice_id": invoice_id})
         
-        # 4. Обновление локального статуса
+        fresh_topup = fresh_topup_check.fetchone()
+        if fresh_topup:
+            db_status, db_odengi_status, db_paid_amount, db_last_check = fresh_topup
+        else:
+            db_status, db_odengi_status, db_paid_amount, db_last_check = topup[5], topup[6], None, topup[9]
+        
+        # 4. Маппинг статусов из базы данных
         status_mapping = {
-            0: "processing",
-            1: "approved",
-            2: "canceled", 
-            3: "refunded",
-            4: "partial_refund"
+            "processing": 0,
+            "approved": 1,
+            "canceled": 2, 
+            "refunded": 3,
+            "partial_refund": 4
         }
         
-        new_status = status_mapping.get(provider_status, "pending")
-        
-        # Обновляем статус в базе если изменился
-        if topup[5] != new_status:
-            db.execute(text("""
-                UPDATE balance_topups 
-                SET status = :new_status, odengi_status = :provider_status,
-                    paid_amount = :paid_amount, last_status_check_at = NOW()
-                WHERE invoice_id = :invoice_id
-            """), {
-                "new_status": new_status,
-                "provider_status": provider_status,
-                "paid_amount": paid_amount,
-                "invoice_id": invoice_id
-            })
-            
-            db.commit()
+        numeric_status = status_mapping.get(db_status, 0)
         
         # 5. Определение возможности операций и нужны ли callback проверки
-        can_proceed = (provider_status == 1)  # Только для approved платежей
-        needs_callback_check = (new_status == "processing" and 
+        can_proceed = (numeric_status == 1)  # Только для approved платежей
+        needs_callback_check = (db_status == "processing" and 
                                not invoice_expired and 
                                payment_lifecycle_service.should_status_check(
-                                   topup[10], topup[9], 0, new_status))  # created_at, last_check_at
+                                   topup[10], db_last_check, 0, db_status))  # created_at, last_check_at
         
         # Текст статуса
         status_texts = {
@@ -1215,16 +1198,16 @@ async def get_payment_status(
             3: "Возвращен",
             4: "Частичный возврат"
         }
-        status_text = status_texts.get(provider_status, "Неизвестный статус")
+        status_text = status_texts.get(numeric_status, "Неизвестный статус")
         
-        logger.info(f"🕐 Статус платежа {invoice_id}: {new_status}, QR истек: {qr_expired}, Invoice истек: {invoice_expired}")
+        logger.info(f"🕐 Статус платежа {invoice_id}: {db_status} (numeric: {numeric_status}), QR истек: {qr_expired}, Invoice истек: {invoice_expired}")
         
         return PaymentStatusResponse(
             success=True,
-            status=provider_status,
+            status=numeric_status,
             status_text=status_text,
             amount=float(topup[4]),  # requested_amount
-            paid_amount=paid_amount,
+            paid_amount=float(db_paid_amount) if db_paid_amount else None,
             invoice_id=invoice_id,
             can_proceed=can_proceed,
             can_start_charging=False,
@@ -1232,7 +1215,7 @@ async def get_payment_status(
             invoice_expired=invoice_expired,
             qr_expires_at=qr_expires_at,
             invoice_expires_at=invoice_expires_at,
-            last_status_check_at=topup[9],
+            last_status_check_at=db_last_check,
             needs_callback_check=needs_callback_check
         )
         
