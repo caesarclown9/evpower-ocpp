@@ -791,7 +791,10 @@ async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
             
             # ⚡ ЭНЕРГЕТИЧЕСКИЕ ДАННЫЕ
             "energy_consumed": round(actual_energy_consumed, 3),  # кВт⋅ч
+            "energy_consumed_kwh": round(actual_energy_consumed, 3),  # кВт⋅ч (для совместимости)
             "cost": round(actual_cost, 2),  # сом
+            "final_amount_som": round(actual_cost, 2),  # сом (для совместимости)
+            "amount_charged_som": round(actual_cost, 2),  # сом (для совместимости)
             "limit_value": round(float(limit_value), 2),  # лимит
             "progress_percent": round(progress_percent, 1),  # % выполнения
             
