@@ -140,9 +140,10 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
             
         else:
             # РЕЖИМ 4: 🚀 ПОЛНОСТЬЮ БЕЗЛИМИТНАЯ ЗАРЯДКА
-            # Резервируем весь доступный баланс
+            # 🆕 ИСПРАВЛЕНИЕ: Резервируем 200 сом или весь баланс если он меньше
             estimated_cost = 0  # Будет рассчитана по факту
-            reservation_amount = float(current_balance)
+            max_reservation = 200.0  # Максимальный резерв для безлимитной зарядки
+            reservation_amount = min(float(current_balance), max_reservation)
             
             if current_balance <= 0:
                 return {
@@ -150,6 +151,17 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
                     "error": "zero_balance",
                     "message": "Недостаточно средств для безлимитной зарядки",
                     "current_balance": float(current_balance)
+                }
+            
+            # Дополнительная проверка минимального резерва
+            min_reservation = 10.0  # Минимум 10 сом для старта
+            if reservation_amount < min_reservation:
+                return {
+                    "success": False,
+                    "error": "insufficient_balance",
+                    "message": f"Минимальный резерв для безлимитной зарядки: {min_reservation} сом. Баланс: {current_balance} сом",
+                    "current_balance": float(current_balance),
+                    "required_amount": min_reservation
                 }
         
         # 5. Проверяем достаточность средств на балансе
@@ -414,18 +426,51 @@ async def stop_charging(request: ChargingStopRequest, db: Session = Depends(get_
         reserved_amount_decimal = Decimal(str(reserved_amount)) if reserved_amount else Decimal('0')
         actual_cost_decimal = Decimal(str(actual_cost))
         
-        # 🔒 ФИНАНСОВАЯ ЗАЩИТА: Фактическая стоимость не может превышать резерв
+        # 🆕 НОВАЯ ЛОГИКА: Дополнительное списание при превышении резерва
+        additional_charge = Decimal('0')
         if actual_cost_decimal > reserved_amount_decimal:
-            logger.warning(f"⚠️ ПРЕВЫШЕНИЕ РЕЗЕРВА в сессии {session_id}: actual_cost={actual_cost_decimal} > reserved={reserved_amount_decimal}. Ограничиваем списание.")
-            actual_cost_decimal = reserved_amount_decimal
-            actual_cost = float(actual_cost_decimal)
+            # Фактическая стоимость превышает резерв - нужно доплатить
+            additional_charge = actual_cost_decimal - reserved_amount_decimal
+            
+            # Проверяем достаточность средств для дополнительного списания
+            current_balance = payment_service.get_client_balance(db, user_id)
+            if current_balance < additional_charge:
+                # Недостаточно средств - ограничиваем списание доступным балансом
+                logger.warning(f"⚠️ НЕДОСТАТОК СРЕДСТВ для доплаты в сессии {session_id}: "
+                              f"требуется {additional_charge}, доступно {current_balance}. "
+                              f"Ограничиваем списание.")
+                additional_charge = current_balance
+                actual_cost_decimal = reserved_amount_decimal + additional_charge
+                actual_cost = float(actual_cost_decimal)
+            else:
+                # Средств достаточно - списываем дополнительную сумму
+                payment_service.update_client_balance(
+                    db, user_id, additional_charge, "subtract",
+                    f"Дополнительное списание за превышение резерва в сессии {session_id}"
+                )
+                
+                # Логируем дополнительную транзакцию
+                balance_after_additional = payment_service.get_client_balance(db, user_id)
+                payment_service.create_payment_transaction(
+                    db, user_id, "charging_payment",
+                    -additional_charge,  # Отрицательная сумма для списания
+                    current_balance, balance_after_additional,
+                    f"Доплата за сессию {session_id}: превышение резерва на {additional_charge} сом",
+                    charging_session_id=session_id
+                )
+                
+                logger.info(f"💳 ДОПОЛНИТЕЛЬНОЕ СПИСАНИЕ в сессии {session_id}: "
+                           f"{additional_charge} сом (превышение резерва)")
         
-        # 6. Рассчитываем возврат
-        refund_amount = reserved_amount_decimal - actual_cost_decimal
-        if refund_amount < 0:
-            refund_amount = Decimal('0')
+        # 6. Рассчитываем возврат (только если нет дополнительного списания)
+        if additional_charge > 0:
+            refund_amount = Decimal('0')  # Нет возврата при доплате
+        else:
+            refund_amount = reserved_amount_decimal - actual_cost_decimal
+            if refund_amount < 0:
+                refund_amount = Decimal('0')
 
-        # 7. Получаем текущий баланс клиента
+        # 7. Получаем актуальный баланс для возврата
         current_balance = payment_service.get_client_balance(db, user_id)
 
         # 8. Возвращаем неиспользованные средства
