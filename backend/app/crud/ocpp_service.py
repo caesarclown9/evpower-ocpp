@@ -844,15 +844,15 @@ class PaymentLifecycleService:
     async def perform_status_check(db: Session, payment_table: str, invoice_id: str) -> dict:
         """Выполняет проверку статуса платежа через выбранный платежный провайдер"""
         try:
-            # Получаем данные платежа
+            # Получаем данные платежа (включая paid_amount для проверки дублирования)
             if payment_table == "balance_topups":
                 query = text("""
-                    SELECT id, order_id, client_id, status, status_check_count, created_at
+                    SELECT id, order_id, client_id, status, status_check_count, created_at, paid_amount
                     FROM balance_topups WHERE invoice_id = :invoice_id
                 """)
             else:  # charging_payments
                 query = text("""
-                    SELECT id, order_id, client_id, status, status_check_count, created_at
+                    SELECT id, order_id, client_id, status, status_check_count, created_at, paid_amount
                     FROM charging_payments WHERE invoice_id = :invoice_id
                 """)
             
@@ -860,7 +860,7 @@ class PaymentLifecycleService:
             if not result:
                 return {"success": False, "error": "payment_not_found"}
             
-            payment_id, order_id, client_id, current_status, check_count, created_at = result
+            payment_id, order_id, client_id, current_status, check_count, created_at, existing_paid_amount = result
             
             # Проверяем нужна ли проверка
             if not PaymentLifecycleService.should_status_check(created_at, None, check_count, current_status):
@@ -925,7 +925,8 @@ class PaymentLifecycleService:
             
             # Если платеж оплачен - обрабатываем ПЕРЕД обновлением статуса
             payment_processed = False
-            if new_status == 1 and current_status != "approved":
+            if new_status == 1 and current_status != "approved" and existing_paid_amount is None:
+                # КРИТИЧЕСКИ ВАЖНО: Проверяем что платеж еще не был обработан
                 if payment_table == "balance_topups":
                     # Обрабатываем пополнение баланса
                     current_balance = payment_service.get_client_balance(db, client_id)
@@ -945,6 +946,10 @@ class PaymentLifecycleService:
                     payment_processed = True
                     logger.info(f"✅ Баланс пополнен автоматически: клиент {client_id}, сумма {paid_amount}, новый баланс {new_balance}")
                 # Для charging_payments логика обработки отдельно
+            elif new_status == 1 and existing_paid_amount is not None:
+                # Платеж уже был обработан ранее
+                logger.info(f"⚠️ Платеж {invoice_id} уже был обработан ранее (paid_amount: {existing_paid_amount})")
+                payment_processed = False
             
             # Обновляем статус в базе (включая paid_at если платеж обработан)
             if payment_processed and payment_table == "balance_topups":
