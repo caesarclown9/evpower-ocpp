@@ -1,6 +1,6 @@
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from app.db.models.ocpp import (
     OCPPStationStatus, 
     OCPPTransaction, 
@@ -800,12 +800,18 @@ class PaymentLifecycleService:
     @staticmethod
     def is_qr_expired(qr_expires_at: datetime) -> bool:
         """Проверяет истек ли QR код"""
-        return datetime.utcnow() > qr_expires_at
+        now = datetime.now(timezone.utc)
+        if qr_expires_at.tzinfo is None:
+            qr_expires_at = qr_expires_at.replace(tzinfo=timezone.utc)
+        return now > qr_expires_at
     
     @staticmethod
     def is_invoice_expired(invoice_expires_at: datetime) -> bool:
         """Проверяет истек ли invoice"""
-        return datetime.utcnow() > invoice_expires_at
+        now = datetime.now(timezone.utc)
+        if invoice_expires_at.tzinfo is None:
+            invoice_expires_at = invoice_expires_at.replace(tzinfo=timezone.utc)
+        return now > invoice_expires_at
     
     @staticmethod
     def should_status_check(payment_created_at: datetime, last_check_at: Optional[datetime], 
@@ -829,7 +835,10 @@ class PaymentLifecycleService:
             return True
         
         next_check_time = last_check_at + timedelta(minutes=PaymentLifecycleService.STATUS_CHECK_INTERVAL_MINUTES)
-        return datetime.utcnow() >= next_check_time
+        now = datetime.now(timezone.utc)
+        if next_check_time.tzinfo is None:
+            next_check_time = next_check_time.replace(tzinfo=timezone.utc)
+        return now >= next_check_time
     
     @staticmethod
     async def perform_status_check(db: Session, payment_table: str, invoice_id: str) -> dict:
@@ -962,7 +971,7 @@ class PaymentLifecycleService:
     async def cleanup_expired_payments(db: Session) -> dict:
         """Очищает просроченные платежи и устанавливает статус cancelled"""
         try:
-            current_time = datetime.utcnow()
+            current_time = datetime.now(timezone.utc)
             
             # Отменяем просроченные пополнения баланса
             try:

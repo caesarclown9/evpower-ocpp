@@ -794,7 +794,7 @@ async def create_balance_topup(
             )
 
         # 3. Генерация безопасного order_id
-        order_id = f"topup_{request.client_id}_{int(datetime.utcnow().timestamp())}"
+        order_id = f"topup_{request.client_id}_{int(datetime.now(timezone.utc).timestamp())}"
         
         # 4. Описание платежа
         description = request.description or f"Пополнение баланса клиента {request.client_id} на {request.amount} сом"
@@ -821,7 +821,7 @@ async def create_balance_topup(
             )
 
         # 6. 🕐 Рассчитываем время жизни платежа
-        created_at = datetime.utcnow()
+        created_at = datetime.now(timezone.utc)
         qr_expires_at, invoice_expires_at = payment_lifecycle_service.calculate_expiry_times(created_at)
 
         # 7. Сохранение в базу данных с временем жизни
