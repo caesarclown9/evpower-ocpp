@@ -432,14 +432,38 @@ class OCPPChargePoint(CP):
                         if session_result:
                             user_id = session_result[0]
                             reserved_amount = float(session_result[1]) if session_result[1] else 0
-                            refund_amount = max(0, reserved_amount - actual_cost)
                             
-                            # 🔒 ДОПОЛНИТЕЛЬНАЯ ФИНАНСОВАЯ ЗАЩИТА: Проверяем что actual_cost не превышает резерв
+                            # 💳 ДОПОЛНИТЕЛЬНОЕ СПИСАНИЕ: Если actual_cost превышает резерв - списываем дополнительно
                             if actual_cost > reserved_amount:
-                                # Ограничиваем списание зарезервированной суммой
-                                self.logger.warning(f"⚠️ ПРЕВЫШЕНИЕ РЕЗЕРВА: actual_cost={actual_cost} > reserved={reserved_amount}. Ограничиваем списание.")
-                                actual_cost = reserved_amount
-                                refund_amount = 0
+                                additional_charge = actual_cost - reserved_amount
+                                self.logger.warning(f"⚠️ ПРЕВЫШЕНИЕ РЕЗЕРВА: actual_cost={actual_cost} > reserved={reserved_amount}. Дополнительное списание: {additional_charge} сом")
+                                
+                                # Списываем дополнительную сумму с баланса клиента
+                                additional_charge_query = text("""
+                                    UPDATE clients 
+                                    SET balance = balance - :additional_charge 
+                                    WHERE id = :user_id
+                                """)
+                                db.execute(additional_charge_query, {
+                                    "additional_charge": additional_charge,
+                                    "user_id": user_id
+                                })
+                                
+                                # Создаем запись о дополнительной транзакции
+                                additional_transaction_query = text("""
+                                    INSERT INTO payment_transactions_odengi (client_id, transaction_type, amount, description)
+                                    VALUES (:client_id, 'balance_topup', :amount, :description)
+                                """)
+                                db.execute(additional_transaction_query, {
+                                    "client_id": user_id,
+                                    "amount": f"-{additional_charge:.2f}",
+                                    "description": f"Дополнительное списание для сессии {session_id} (превышение резерва)"
+                                })
+                                
+                                self.logger.info(f"💳 Дополнительно списано {additional_charge} сом с клиента {user_id}")
+                                refund_amount = 0  # Возврата нет, так как все потрачено
+                            else:
+                                refund_amount = reserved_amount - actual_cost
                             
                             # Обновляем сессию с фактическими данными
                             update_session_query = text("""
