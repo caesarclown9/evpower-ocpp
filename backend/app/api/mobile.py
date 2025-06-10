@@ -788,7 +788,7 @@ async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
             "message": "Зарядка активна" if status == 'started' 
                       else "Зарядка завершена" if status == 'stopped'
                       else "Ошибка зарядки"
-        }
+            }
             
     except Exception as e:
         logger.error(f"Ошибка при получении статуса зарядки: {e}")
