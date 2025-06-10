@@ -964,9 +964,20 @@ class PaymentLifecycleService:
                         needs_status_check = :needs_check
                     WHERE invoice_id = :invoice_id
                 """)
-            else:
-                update_query = text(f"""
-                    UPDATE {payment_table} 
+            elif payment_table == "balance_topups":
+                update_query = text("""
+                    UPDATE balance_topups 
+                    SET last_status_check_at = NOW(), 
+                        status_check_count = status_check_count + 1,
+                        odengi_status = :odengi_status,
+                        status = :status,
+                        paid_amount = :paid_amount,
+                        needs_status_check = :needs_check
+                    WHERE invoice_id = :invoice_id
+                """)
+            else:  # charging_payments
+                update_query = text("""
+                    UPDATE charging_payments 
                     SET last_status_check_at = NOW(), 
                         status_check_count = status_check_count + 1,
                         odengi_status = :odengi_status,
