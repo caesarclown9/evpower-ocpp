@@ -40,14 +40,16 @@ class ChargingStartRequest(BaseModel):
     client_id: str = Field(..., min_length=1, description="ID клиента")
     station_id: str = Field(..., min_length=1, description="ID станции")
     connector_id: int = Field(..., ge=1, description="Номер коннектора")
-    energy_kwh: Optional[float] = Field(None, gt=0, le=200, description="Энергия для зарядки в кВт⋅ч (если не указано - неограниченная зарядка)")
-    amount_som: float = Field(..., gt=0, description="Предоплаченная сумма в сомах")
+    energy_kwh: Optional[float] = Field(None, gt=0, le=200, description="Энергия для зарядки в кВт⋅ч")
+    amount_som: Optional[float] = Field(None, gt=0, description="Предоплаченная сумма в сомах")
     
     @validator('amount_som', 'energy_kwh')
     def validate_limits(cls, v, values):
         """Валидация лимитов зарядки"""
-        # Если указана энергия, amount_som - это максимальная сумма
-        # Если энергия не указана, amount_som - это точная предоплата
+        # Поддерживаем 3 режима:
+        # 1. energy_kwh + amount_som - лимит по энергии с максимальной суммой
+        # 2. Только amount_som - лимит по сумме
+        # 3. Ничего не указано - полностью безлимитная зарядка
         return v
 
 class ChargingStopRequest(BaseModel):
@@ -109,13 +111,13 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
         # 4. Рассчитываем стоимость зарядки с финансовой защитой
         current_balance = Decimal(str(client[1]))
         
-        if request.energy_kwh:
-            # Ограниченная зарядка - резервируем точную сумму
+        if request.energy_kwh and request.amount_som:
+            # РЕЖИМ 1: Лимит по энергии + максимальная сумма
             estimated_cost = request.energy_kwh * rate_per_kwh
-            reservation_amount = estimated_cost
-        else:
-            # 🔒 НЕОГРАНИЧЕННАЯ ЗАРЯДКА: Строгие финансовые ограничения
-            # Пользователь не может указать сумму больше своего баланса
+            reservation_amount = min(estimated_cost, request.amount_som)
+            
+        elif request.amount_som:
+            # РЕЖИМ 2: Лимит только по сумме
             max_allowed_amount = min(float(current_balance), request.amount_som)
             
             if request.amount_som > float(current_balance):
@@ -130,6 +132,25 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
             
             estimated_cost = 0  # Будет рассчитана по факту
             reservation_amount = max_allowed_amount
+            
+        elif request.energy_kwh:
+            # РЕЖИМ 3: Лимит только по энергии (резервируем расчетную стоимость)
+            estimated_cost = request.energy_kwh * rate_per_kwh
+            reservation_amount = estimated_cost
+            
+        else:
+            # РЕЖИМ 4: 🚀 ПОЛНОСТЬЮ БЕЗЛИМИТНАЯ ЗАРЯДКА
+            # Резервируем весь доступный баланс
+            estimated_cost = 0  # Будет рассчитана по факту
+            reservation_amount = float(current_balance)
+            
+            if current_balance <= 0:
+                return {
+                    "success": False,
+                    "error": "zero_balance",
+                    "message": "Недостаточно средств для безлимитной зарядки",
+                    "current_balance": float(current_balance)
+                }
         
         # 5. Проверяем достаточность средств на балансе
         if current_balance < Decimal(str(reservation_amount)):
@@ -202,15 +223,23 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
             """), {"id_tag": id_tag, "client_id": request.client_id})
 
         # 10. Создаем сессию зарядки с резервированием средств
-        # 🔧 ИСПРАВЛЕНИЕ: Правильная логика для лимитов
-        if request.energy_kwh:
-            # Лимитированная зарядка по энергии
+        # 🔧 ЛОГИКА ЛИМИТОВ для базы данных
+        if request.energy_kwh and request.amount_som:
+            # РЕЖИМ 1: Энергия + сумма
+            limit_type = 'energy'
+            limit_value = request.energy_kwh
+        elif request.amount_som:
+            # РЕЖИМ 2: Только сумма
+            limit_type = 'amount' 
+            limit_value = request.amount_som
+        elif request.energy_kwh:
+            # РЕЖИМ 3: Только энергия
             limit_type = 'energy'
             limit_value = request.energy_kwh
         else:
-            # Безлимитная зарядка (ограничена только суммой предоплаты)
-            limit_type = 'amount' 
-            limit_value = request.amount_som
+            # РЕЖИМ 4: Полностью безлимитная
+            limit_type = 'none'
+            limit_value = 0
         
         session_insert = db.execute(text("""
             INSERT INTO charging_sessions 
