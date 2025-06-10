@@ -329,7 +329,21 @@ class OCPPChargePoint(CP):
                 
                 self.logger.info(f"✅ OCPP транзакция создана: {transaction_id} ↔ {charging_session_id}")
                 
-                # Сохраняем в активные сессии с улучшенными данными
+                # 🔍 ЗАГРУЖАЕМ ЛИМИТЫ ИЗ БАЗЫ ДАННЫХ для текущей сессии
+                session_limits_query = text("""
+                    SELECT limit_type, limit_value 
+                    FROM charging_sessions 
+                    WHERE id = :session_id
+                """)
+                limits_result = db.execute(session_limits_query, {"session_id": charging_session_id}).fetchone()
+                
+                session_limit_type = None
+                session_limit_value = None
+                if limits_result:
+                    session_limit_type = limits_result[0]
+                    session_limit_value = float(limits_result[1]) if limits_result[1] else None
+                
+                # Сохраняем в активные сессии с лимитами из базы данных
                 existing_session = active_sessions.get(self.id, {})
                 active_sessions[self.id] = {
                     'transaction_id': transaction_id,
@@ -339,10 +353,12 @@ class OCPPChargePoint(CP):
                     'connector_id': connector_id,
                     'id_tag': id_tag,
                     'client_id': client_id,
-                    # 🆕 СОХРАНЯЕМ ЛИМИТЫ из предыдущей сессии
-                    'limit_type': existing_session.get('limit_type'),
-                    'limit_value': existing_session.get('limit_value')
+                    # ✅ ПРАВИЛЬНЫЕ ЛИМИТЫ из базы данных
+                    'limit_type': session_limit_type,
+                    'limit_value': session_limit_value
                 }
+                
+                self.logger.info(f"📋 Загружены лимиты: {session_limit_type} = {session_limit_value} для сессии {charging_session_id}")
                 
                 # 🆕 АВТОМАТИЧЕСКОЕ ОБНОВЛЕНИЕ: Коннектор становится занят
                 update_query = text("""
