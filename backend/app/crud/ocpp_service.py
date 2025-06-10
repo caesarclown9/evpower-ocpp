@@ -923,30 +923,8 @@ class PaymentLifecycleService:
                         mapped_status = "canceled"
                         paid_amount = None
             
-            # Обновляем статус в базе
-            update_query = text(f"""
-                UPDATE {payment_table} 
-                SET last_status_check_at = NOW(), 
-                    status_check_count = status_check_count + 1,
-                    odengi_status = :odengi_status,
-                    status = :status,
-                    paid_amount = :paid_amount,
-                    needs_status_check = :needs_check
-                WHERE invoice_id = :invoice_id
-            """)
-            
-            # Определяем нужны ли дальнейшие проверки
-            needs_further_checks = mapped_status == "processing" and check_count < PaymentLifecycleService.MAX_STATUS_CHECKS
-            
-            db.execute(update_query, {
-                "odengi_status": new_status,
-                "status": mapped_status,
-                "paid_amount": paid_amount,
-                "needs_check": needs_further_checks,
-                "invoice_id": invoice_id
-            })
-            
-            # Если платеж оплачен - обрабатываем
+            # Если платеж оплачен - обрабатываем ПЕРЕД обновлением статуса
+            payment_processed = False
             if new_status == 1 and current_status != "approved":
                 if payment_table == "balance_topups":
                     # Обрабатываем пополнение баланса
@@ -964,15 +942,45 @@ class PaymentLifecycleService:
                         balance_topup_id=payment_id
                     )
                     
-                    # Обновляем статус пополнения
-                    db.execute(text("""
-                        UPDATE balance_topups 
-                        SET status = 'approved', paid_at = NOW(), paid_amount = :amount
-                        WHERE id = :topup_id
-                    """), {"amount": paid_amount or 0, "topup_id": payment_id})
-                    
+                    payment_processed = True
                     logger.info(f"✅ Баланс пополнен автоматически: клиент {client_id}, сумма {paid_amount}, новый баланс {new_balance}")
                 # Для charging_payments логика обработки отдельно
+            
+            # Обновляем статус в базе (включая paid_at если платеж обработан)
+            if payment_processed and payment_table == "balance_topups":
+                update_query = text("""
+                    UPDATE balance_topups 
+                    SET last_status_check_at = NOW(), 
+                        status_check_count = status_check_count + 1,
+                        odengi_status = :odengi_status,
+                        status = :status,
+                        paid_amount = :paid_amount,
+                        paid_at = NOW(),
+                        needs_status_check = :needs_check
+                    WHERE invoice_id = :invoice_id
+                """)
+            else:
+                update_query = text(f"""
+                    UPDATE {payment_table} 
+                    SET last_status_check_at = NOW(), 
+                        status_check_count = status_check_count + 1,
+                        odengi_status = :odengi_status,
+                        status = :status,
+                        paid_amount = :paid_amount,
+                        needs_status_check = :needs_check
+                    WHERE invoice_id = :invoice_id
+                """)
+            
+            # Определяем нужны ли дальнейшие проверки
+            needs_further_checks = mapped_status == "processing" and check_count < PaymentLifecycleService.MAX_STATUS_CHECKS
+            
+            db.execute(update_query, {
+                "odengi_status": new_status,
+                "status": mapped_status,
+                "paid_amount": paid_amount,
+                "needs_check": needs_further_checks,
+                "invoice_id": invoice_id
+            })
             
             db.commit()
             
