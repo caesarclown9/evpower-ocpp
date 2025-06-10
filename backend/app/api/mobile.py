@@ -972,7 +972,8 @@ async def get_payment_status(
             db.commit()
         
         # 5. Определение возможности операций и нужны ли callback проверки
-        can_proceed = odengi_service.can_proceed(provider_status)
+        payment_provider = get_payment_provider_service()
+        can_proceed = payment_provider.can_proceed(provider_status)
         needs_callback_check = (new_status == "processing" and 
                                not invoice_expired and 
                                payment_lifecycle_service.should_status_check(
@@ -983,7 +984,7 @@ async def get_payment_status(
         return PaymentStatusResponse(
             success=True,
             status=provider_status,
-            status_text=odengi_service.get_status_text(provider_status),
+            status_text=payment_provider.get_status_text(provider_status),
             amount=float(topup[4]),  # requested_amount
             paid_amount=paid_amount,
             invoice_id=invoice_id,
