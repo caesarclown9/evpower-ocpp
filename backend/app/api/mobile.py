@@ -823,7 +823,8 @@ async def create_balance_topup(
         # 6. Получаем QR код и app link из O!Dengi ответа ПЕРЕД сохранением в базу
         raw_response = payment_response.get("raw_response", {})
         qr_data = raw_response.get("data", {})
-        qr_code_url = qr_data.get("qr_url") or qr_data.get("qr") or payment_response.get("payment_url")
+        # Используем qr (картинка QR) для отображения, qr_url для браузера, link_app для приложения
+        qr_code_url = qr_data.get("qr") or qr_data.get("qr_url") or payment_response.get("payment_url")
         app_link_url = qr_data.get("link_app") or payment_response.get("payment_url")
         
         # 7. 🕐 Рассчитываем время жизни платежа
