@@ -927,6 +927,8 @@ class PaymentLifecycleService:
             payment_processed = False
             if new_status == 1 and current_status != "approved" and existing_paid_amount is None:
                 # КРИТИЧЕСКИ ВАЖНО: Проверяем что платеж еще не был обработан
+                logger.info(f"🔍 Платеж {invoice_id} готов к обработке: new_status={new_status}, current_status={current_status}, existing_paid_amount={existing_paid_amount}")
+                
                 if payment_table == "balance_topups":
                     # Обрабатываем пополнение баланса
                     current_balance = payment_service.get_client_balance(db, client_id)
@@ -950,6 +952,13 @@ class PaymentLifecycleService:
                 # Платеж уже был обработан ранее
                 logger.info(f"⚠️ Платеж {invoice_id} уже был обработан ранее (paid_amount: {existing_paid_amount})")
                 payment_processed = False
+            elif new_status == 1 and current_status == "approved":
+                # Платеж уже approved в базе
+                logger.info(f"⚠️ Платеж {invoice_id} уже имеет статус approved в базе")
+                payment_processed = False
+            else:
+                # Другие случаи
+                logger.info(f"🔍 Платеж {invoice_id} НЕ обрабатывается: new_status={new_status}, current_status={current_status}, existing_paid_amount={existing_paid_amount}")
             
             # Обновляем статус в базе (включая paid_at если платеж обработан)
             if payment_processed and payment_table == "balance_topups":
@@ -990,15 +999,31 @@ class PaymentLifecycleService:
             # Определяем нужны ли дальнейшие проверки
             needs_further_checks = mapped_status == "processing" and check_count < PaymentLifecycleService.MAX_STATUS_CHECKS
             
-            db.execute(update_query, {
+            # Логируем параметры для SQL запроса
+            sql_params = {
                 "odengi_status": new_status,
                 "status": mapped_status,
                 "paid_amount": paid_amount,
                 "needs_check": needs_further_checks,
                 "invoice_id": invoice_id
-            })
+            }
+            logger.info(f"🔍 SQL UPDATE для {invoice_id}: {sql_params}")
+            
+            db.execute(update_query, sql_params)
             
             db.commit()
+            
+            # Проверяем что статус действительно обновился
+            verification_query = text("""
+                SELECT status, paid_amount FROM balance_topups WHERE invoice_id = :invoice_id
+            """) if payment_table == "balance_topups" else text("""
+                SELECT status, paid_amount FROM charging_payments WHERE invoice_id = :invoice_id
+            """)
+            
+            verification_result = db.execute(verification_query, {"invoice_id": invoice_id}).fetchone()
+            if verification_result:
+                actual_status, actual_paid_amount = verification_result
+                logger.info(f"🔍 Проверка после UPDATE {invoice_id}: status={actual_status}, paid_amount={actual_paid_amount}")
             
             logger.info(f"Status check completed for {invoice_id}: {current_status} -> {mapped_status}")
             
