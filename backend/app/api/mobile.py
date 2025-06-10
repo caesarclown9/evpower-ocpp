@@ -21,7 +21,10 @@ from pydantic import BaseModel, Field, validator
 from app.schemas.ocpp import (
     BalanceTopupRequest, BalanceTopupResponse, 
     PaymentStatusResponse, PaymentWebhookData,
-    ClientBalanceInfo, BalanceTopupInfo, PaymentTransactionInfo
+    ClientBalanceInfo, BalanceTopupInfo, PaymentTransactionInfo,
+    H2HPaymentRequest, H2HPaymentResponse,
+    TokenPaymentRequest, TokenPaymentResponse,
+    CreateTokenRequest, CreateTokenResponse
 )
 from app.crud.ocpp_service import payment_service, payment_lifecycle_service
 from app.services.payment_provider_service import get_payment_provider_service
@@ -1422,6 +1425,292 @@ async def get_client_balance(client_id: str, db: Session = Depends(get_db)) -> C
     except Exception as e:
         logger.error(f"Ошибка получения баланса клиента {client_id}: {e}")
         raise HTTPException(status_code=500, detail="Ошибка получения баланса")
+
+# ============================================================================
+# H2H И ТОКЕН-ПЛАТЕЖИ OBANK
+# ============================================================================
+
+@router.post("/balance/h2h-payment", response_model=H2HPaymentResponse)
+async def create_h2h_payment(
+    request: H2HPaymentRequest,
+    db: Session = Depends(get_db)
+) -> H2HPaymentResponse:
+    """💳 Host2Host платеж картой (прямой ввод данных карты)"""
+    try:
+        # Проверяем что используется OBANK
+        if settings.PAYMENT_PROVIDER != "OBANK":
+            return H2HPaymentResponse(
+                success=False,
+                client_id=request.client_id,
+                error="h2h_not_supported",
+                message="H2H платежи поддерживаются только через OBANK"
+            )
+
+        # 1. Проверяем существование клиента
+        client_check = db.execute(text("SELECT id, balance FROM clients WHERE id = :client_id"), 
+                                {"client_id": request.client_id})
+        client = client_check.fetchone()
+        if not client:
+            return H2HPaymentResponse(
+                success=False,
+                client_id=request.client_id,
+                error="client_not_found"
+            )
+
+        # 2. Проверяем существующие processing платежи
+        existing_pending = db.execute(text("""
+            SELECT invoice_id FROM balance_topups 
+            WHERE client_id = :client_id AND status = 'processing' 
+            AND invoice_expires_at > NOW()
+        """), {"client_id": request.client_id}).fetchone()
+        
+        if existing_pending:
+            return H2HPaymentResponse(
+                success=False,
+                client_id=request.client_id,
+                error="pending_payment_exists"
+            )
+
+        # 3. Генерируем уникальный transaction ID
+        transaction_id = f"h2h_{request.client_id}_{int(datetime.now(timezone.utc).timestamp())}"
+        
+        # 4. Описание платежа
+        description = request.description or f"H2H пополнение баланса клиента {request.client_id} на {request.amount} сом"
+        
+        # 5. Создаем H2H платеж через OBANK
+        from app.services.obank_service import obank_service
+        
+        notify_url = f"{settings.API_V1_STR}/payment/webhook"
+        redirect_url = f"{settings.API_V1_STR}/payment/success"
+        
+        h2h_response = await obank_service.create_h2h_payment(
+            amount=Decimal(str(request.amount)),
+            transaction_id=transaction_id,
+            account=request.card_pan[-4:],  # Последние 4 цифры карты как account
+            email=request.email,
+            notify_url=notify_url,
+            redirect_url=redirect_url,
+            card_pan=request.card_pan,
+            card_name=request.card_name,
+            card_cvv=request.card_cvv,
+            card_year=request.card_year,
+            card_month=request.card_month,
+            phone_number=request.phone_number
+        )
+        
+        if h2h_response.get("code") != "0":
+            return H2HPaymentResponse(
+                success=False,
+                client_id=request.client_id,
+                error="h2h_payment_failed",
+                message=h2h_response.get("message", "Ошибка H2H платежа")
+            )
+
+        # 6. Сохраняем в базу данных
+        auth_key = h2h_response.get("data", {}).get("auth-key", transaction_id)
+        created_at = datetime.now(timezone.utc)
+        qr_expires_at, invoice_expires_at = payment_lifecycle_service.calculate_expiry_times(created_at)
+
+        db.execute(text("""
+            INSERT INTO balance_topups 
+            (invoice_id, order_id, merchant_id, client_id, requested_amount, 
+             currency, description, status, odengi_status,
+             qr_expires_at, invoice_expires_at, needs_status_check, payment_provider)
+            VALUES (:invoice_id, :order_id, :merchant_id, :client_id, :requested_amount,
+                    :currency, :description, 'processing', 0,
+                    :qr_expires_at, :invoice_expires_at, true, 'OBANK')
+        """), {
+            "invoice_id": auth_key,
+            "order_id": transaction_id,
+            "merchant_id": "OBANK",
+            "client_id": request.client_id,
+            "requested_amount": request.amount,
+            "currency": settings.DEFAULT_CURRENCY,
+            "description": description,
+            "qr_expires_at": qr_expires_at,
+            "invoice_expires_at": invoice_expires_at
+        })
+        
+        db.commit()
+        
+        logger.info(f"💳 H2H платеж создан: {transaction_id}, auth_key: {auth_key}")
+        
+        # Запускаем мониторинг статуса платежа
+        from app.main import start_payment_monitoring
+        start_payment_monitoring("balance_topups", auth_key)
+        
+        return H2HPaymentResponse(
+            success=True,
+            transaction_id=transaction_id,
+            auth_key=auth_key,
+            status="processing",
+            message="H2H платеж создан успешно",
+            client_id=request.client_id,
+            current_balance=float(client[1])
+        )
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Ошибка создания H2H платежа: {e}")
+        return H2HPaymentResponse(
+            success=False,
+            client_id=request.client_id,
+            error=f"internal_error: {str(e)}"
+        )
+
+@router.post("/balance/token-payment", response_model=TokenPaymentResponse)
+async def create_token_payment(
+    request: TokenPaymentRequest,
+    db: Session = Depends(get_db)
+) -> TokenPaymentResponse:
+    """🔐 Платеж по токену сохраненной карты"""
+    try:
+        # Проверяем что используется OBANK
+        if settings.PAYMENT_PROVIDER != "OBANK":
+            return TokenPaymentResponse(
+                success=False,
+                client_id=request.client_id,
+                error="token_payment_not_supported",
+                message="Токен-платежи поддерживаются только через OBANK"
+            )
+
+        # 1. Проверяем существование клиента
+        client_check = db.execute(text("SELECT id, balance FROM clients WHERE id = :client_id"), 
+                                {"client_id": request.client_id})
+        client = client_check.fetchone()
+        if not client:
+            return TokenPaymentResponse(
+                success=False,
+                client_id=request.client_id,
+                error="client_not_found"
+            )
+
+        # 2. Генерируем уникальный transaction ID
+        transaction_id = f"token_{request.client_id}_{int(datetime.now(timezone.utc).timestamp())}"
+        
+        # 3. Описание платежа
+        description = request.description or f"Токен-пополнение баланса клиента {request.client_id} на {request.amount} сом"
+        
+        # 4. Создаем токен-платеж через OBANK
+        from app.services.obank_service import obank_service
+        
+        notify_url = f"{settings.API_V1_STR}/payment/webhook"
+        redirect_url = f"{settings.API_V1_STR}/payment/success"
+        
+        token_response = await obank_service.create_token_payment(
+            amount=Decimal(str(request.amount)),
+            transaction_id=transaction_id,
+            email=request.email,
+            notify_url=notify_url,
+            redirect_url=redirect_url,
+            card_token=request.card_token
+        )
+        
+        if token_response.get("code") != "0":
+            return TokenPaymentResponse(
+                success=False,
+                client_id=request.client_id,
+                error="token_payment_failed",
+                message=token_response.get("message", "Ошибка токен-платежа")
+            )
+
+        # 5. Сохраняем в базу данных
+        auth_key = token_response.get("data", {}).get("auth-key", transaction_id)
+        created_at = datetime.now(timezone.utc)
+        qr_expires_at, invoice_expires_at = payment_lifecycle_service.calculate_expiry_times(created_at)
+
+        db.execute(text("""
+            INSERT INTO balance_topups 
+            (invoice_id, order_id, merchant_id, client_id, requested_amount, 
+             currency, description, status, odengi_status,
+             qr_expires_at, invoice_expires_at, needs_status_check, payment_provider)
+            VALUES (:invoice_id, :order_id, :merchant_id, :client_id, :requested_amount,
+                    :currency, :description, 'processing', 0,
+                    :qr_expires_at, :invoice_expires_at, true, 'OBANK')
+        """), {
+            "invoice_id": auth_key,
+            "order_id": transaction_id,
+            "merchant_id": "OBANK",
+            "client_id": request.client_id,
+            "requested_amount": request.amount,
+            "currency": settings.DEFAULT_CURRENCY,
+            "description": description,
+            "qr_expires_at": qr_expires_at,
+            "invoice_expires_at": invoice_expires_at
+        })
+        
+        db.commit()
+        
+        logger.info(f"🔐 Токен-платеж создан: {transaction_id}, auth_key: {auth_key}")
+        
+        # Запускаем мониторинг статуса платежа
+        from app.main import start_payment_monitoring
+        start_payment_monitoring("balance_topups", auth_key)
+        
+        return TokenPaymentResponse(
+            success=True,
+            transaction_id=transaction_id,
+            auth_key=auth_key,
+            status="processing",
+            message="Токен-платеж создан успешно",
+            client_id=request.client_id,
+            current_balance=float(client[1])
+        )
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Ошибка создания токен-платежа: {e}")
+        return TokenPaymentResponse(
+            success=False,
+            client_id=request.client_id,
+            error=f"internal_error: {str(e)}"
+        )
+
+@router.post("/payment/create-token", response_model=CreateTokenResponse)
+async def create_card_token(
+    request: CreateTokenRequest
+) -> CreateTokenResponse:
+    """🔑 Создание токена для сохранения карт"""
+    try:
+        # Проверяем что используется OBANK
+        if settings.PAYMENT_PROVIDER != "OBANK":
+            return CreateTokenResponse(
+                success=False,
+                error="token_creation_not_supported",
+                message="Создание токенов поддерживается только через OBANK"
+            )
+
+        # Создаем токен через OBANK
+        from app.services.obank_service import obank_service
+        
+        token_response = await obank_service.create_token(days=request.days)
+        
+        if token_response.get("code") != "0":
+            return CreateTokenResponse(
+                success=False,
+                error="token_creation_failed",
+                message=token_response.get("message", "Ошибка создания токена")
+            )
+
+        # Извлекаем URL для сохранения карты
+        token_data = token_response.get("data", {})
+        token_url = token_data.get("url", "")
+        
+        logger.info(f"🔑 Токен создан на {request.days} дней, URL: {token_url}")
+        
+        return CreateTokenResponse(
+            success=True,
+            token_url=token_url,
+            token_expires_in_days=request.days,
+            message=f"Токен создан на {request.days} дней"
+        )
+        
+    except Exception as e:
+        logger.error(f"Ошибка создания токена: {e}")
+        return CreateTokenResponse(
+            success=False,
+            error=f"internal_error: {str(e)}"
+        )
 
 # ============================================================================
 # BACKGROUND TASKS ДЛЯ ОБРАБОТКИ ПЛАТЕЖЕЙ

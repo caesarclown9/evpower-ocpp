@@ -267,6 +267,31 @@ class BalanceTopupRequest(BaseModel):
     amount: float = Field(..., gt=0, le=100000, description="Сумма пополнения в сомах")
     description: Optional[str] = Field(None, description="Описание платежа")
 
+class H2HPaymentRequest(BaseModel):
+    """Запрос на H2H платеж картой"""
+    client_id: str = Field(..., min_length=1, description="ID клиента")
+    amount: float = Field(..., gt=0, le=100000, description="Сумма платежа в сомах")
+    card_pan: str = Field(..., min_length=12, max_length=19, description="Номер карты")
+    card_name: str = Field(..., min_length=1, max_length=100, description="Имя владельца карты")
+    card_cvv: str = Field(..., min_length=3, max_length=4, description="CVV код")
+    card_year: str = Field(..., regex=r"^\d{2}$", description="Год истечения карты (YY)")
+    card_month: str = Field(..., regex=r"^(0[1-9]|1[0-2])$", description="Месяц истечения карты (MM)")
+    email: str = Field(..., description="Email клиента")
+    phone_number: Optional[str] = Field(None, description="Номер телефона клиента")
+    description: Optional[str] = Field(None, description="Описание платежа")
+
+class TokenPaymentRequest(BaseModel):
+    """Запрос на платеж по токену карты"""
+    client_id: str = Field(..., min_length=1, description="ID клиента")
+    amount: float = Field(..., gt=0, le=100000, description="Сумма платежа в сомах")
+    card_token: str = Field(..., min_length=1, description="Токен сохраненной карты")
+    email: str = Field(..., description="Email клиента")
+    description: Optional[str] = Field(None, description="Описание платежа")
+
+class CreateTokenRequest(BaseModel):
+    """Запрос на создание токена для сохранения карт"""
+    days: int = Field(default=14, ge=1, le=14, description="Количество дней действия токена")
+
 class PaymentWebhookData(BaseModel):
     """Webhook данные от O!Dengi"""
     merchant_id: str
@@ -383,3 +408,33 @@ class ChargingPaymentInfo(BaseModel):
     
     class Config:
         orm_mode = True
+
+class H2HPaymentResponse(BaseModel):
+    """Ответ на H2H платеж"""
+    success: bool
+    transaction_id: Optional[str] = None
+    auth_key: Optional[str] = None
+    status: Optional[str] = None
+    message: Optional[str] = None
+    client_id: str
+    current_balance: Optional[float] = None
+    error: Optional[str] = None
+
+class TokenPaymentResponse(BaseModel):
+    """Ответ на токен-платеж"""
+    success: bool
+    transaction_id: Optional[str] = None
+    auth_key: Optional[str] = None
+    status: Optional[str] = None
+    message: Optional[str] = None
+    client_id: str
+    current_balance: Optional[float] = None
+    error: Optional[str] = None
+
+class CreateTokenResponse(BaseModel):
+    """Ответ на создание токена"""
+    success: bool
+    token_url: Optional[str] = None
+    token_expires_in_days: Optional[int] = None
+    message: Optional[str] = None
+    error: Optional[str] = None
