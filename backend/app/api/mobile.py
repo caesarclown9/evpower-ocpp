@@ -623,7 +623,119 @@ async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
             end_time = stop_time or datetime.now(timezone.utc)
             duration_minutes = int((end_time - start_time).total_seconds() / 60)
         
-        # 🆕 ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ: energy_consumed и cost как отдельные поля
+        # 🆕 ПОЛУЧЕНИЕ РАСШИРЕННЫХ ДАННЫХ ИЗ METER VALUES
+        latest_meter_data = {}
+        meter_current = None
+        last_update = None
+        
+        if ocpp_transaction_id:
+            # Получаем последние показания всех датчиков
+            latest_meter_query = text("""
+                SELECT 
+                    energy_active_import_register,
+                    power_active_import,
+                    current_import,
+                    voltage,
+                    temperature,
+                    soc,
+                    timestamp,
+                    sampled_values
+                FROM ocpp_meter_values 
+                WHERE ocpp_transaction_id = :transaction_id
+                ORDER BY timestamp DESC 
+                LIMIT 1
+            """)
+            
+            latest_result = db.execute(latest_meter_query, {"transaction_id": ocpp_transaction_id})
+            latest_meter = latest_result.fetchone()
+            
+            if latest_meter:
+                latest_meter_data = {
+                    'energy_register': latest_meter[0],
+                    'power': latest_meter[1], 
+                    'current': latest_meter[2],
+                    'voltage': latest_meter[3],
+                    'temperature': latest_meter[4],
+                    'soc': latest_meter[5],
+                    'timestamp': latest_meter[6],
+                    'sampled_values': latest_meter[7]
+                }
+                meter_current = float(latest_meter[0]) if latest_meter[0] else None
+                last_update = latest_meter[6].isoformat() if latest_meter[6] else None
+        
+        # 🔍 ПРОВЕРКА СТАТУСА СТАНЦИИ ОНЛАЙН
+        station_online = False
+        try:
+            connected_stations = await redis_manager.get_stations()
+            station_online = station_id in connected_stations
+        except Exception as e:
+            logger.warning(f"Не удалось проверить статус станции {station_id}: {e}")
+        
+        # 🛡️ БЕЗОПАСНАЯ ОБРАБОТКА ДАННЫХ С NULL ПРОВЕРКАМИ
+        def safe_float(value, default=0.0):
+            """Безопасное преобразование в float с обработкой None"""
+            if value is None:
+                return default
+            try:
+                return float(value)
+            except (ValueError, TypeError):
+                return default
+        
+        def safe_int(value, default=0):
+            """Безопасное преобразование в int с обработкой None"""
+            if value is None:
+                return default
+            try:
+                return int(value)
+            except (ValueError, TypeError):
+                return default
+        
+        # 🔌 ПАРАМЕТРЫ ЗАРЯДКИ (из latest meter data)
+        charging_power = safe_float(latest_meter_data.get('power'), 0.0) / 1000.0  # W → kW
+        station_current = safe_float(latest_meter_data.get('current'), 0.0)
+        station_voltage = safe_float(latest_meter_data.get('voltage'), 0.0)
+        
+        # 🚗 ДАННЫЕ ЭЛЕКТРОМОБИЛЯ  
+        ev_battery_soc = safe_int(latest_meter_data.get('soc'), 0)
+        
+        # Парсим дополнительные данные из sampled_values JSON
+        ev_current = 0.0
+        ev_voltage = 0.0
+        station_body_temp = 0
+        station_outlet_temp = 0
+        station_inlet_temp = 0
+        
+        if latest_meter_data.get('sampled_values'):
+            try:
+                sampled_values = latest_meter_data['sampled_values']
+                if isinstance(sampled_values, list):
+                    for sample in sampled_values:
+                        measurand = sample.get('measurand', '')
+                        value = safe_float(sample.get('value'), 0.0)
+                        
+                        # Дополнительные measurand для ЭМ и температур
+                        if measurand == 'Current.Export':  # Ток от ЭМ
+                            ev_current = value
+                        elif measurand == 'Voltage.Export':  # Напряжение от ЭМ  
+                            ev_voltage = value
+                        elif measurand == 'Temperature.Outlet':  # Температура разъема
+                            station_outlet_temp = safe_int(value, 0)
+                        elif measurand == 'Temperature.Inlet':  # Температура входа
+                            station_inlet_temp = safe_int(value, 0)
+                        elif measurand == 'Temperature':  # Общая температура корпуса
+                            station_body_temp = safe_int(value, 0)
+            except Exception as e:
+                logger.warning(f"Ошибка парсинга sampled_values: {e}")
+        
+        # Если температура корпуса не указана отдельно, используем основную
+        if station_body_temp == 0:
+            station_body_temp = safe_int(latest_meter_data.get('temperature'), 0)
+        
+        # 📊 ПОКАЗАНИЯ СЧЕТЧИКА
+        meter_start_wh = safe_float(meter_start, 0.0)
+        meter_current_wh = meter_current or meter_start_wh
+        
+        # 🆕 РАСШИРЕННЫЙ ОТВЕТ API
         return {
             "success": True,
             "session_id": session_id,
@@ -632,34 +744,51 @@ async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
             "stop_time": stop_time.isoformat() if stop_time else None,
             "duration_minutes": duration_minutes,
             
-            # 🆕 Исправленные поля для совместимости с фронтендом
-            "energy_consumed": round(actual_energy_consumed, 3),  # В кВт⋅ч
-            "cost": round(actual_cost, 2),  # В сомах
+            # ⚡ ЭНЕРГЕТИЧЕСКИЕ ДАННЫЕ
+            "energy_consumed": round(actual_energy_consumed, 3),  # кВт⋅ч
+            "cost": round(actual_cost, 2),  # сом
+            "limit_value": round(float(limit_value), 2),  # лимит
+            "progress_percent": round(progress_percent, 1),  # % выполнения
             
-            # Дублирующие поля для обратной совместимости
+            # 🔌 ПАРАМЕТРЫ ЗАРЯДКИ (реальные данные от станции)
+            "charging_power": round(charging_power, 1),  # кВт
+            "station_current": round(station_current, 1),  # А
+            "station_voltage": round(station_voltage, 1),  # В
+            
+            # 🚗 ДАННЫЕ ЭЛЕКТРОМОБИЛЯ
+            "ev_battery_soc": ev_battery_soc,  # %
+            "ev_current": round(ev_current, 1),  # А
+            "ev_voltage": round(ev_voltage, 1),  # В
+            
+            # 🌡️ ТЕМПЕРАТУРНЫЙ МОНИТОРИНГ
+            "temperatures": {
+                "station_body": station_body_temp,  # °C
+                "station_outlet": station_outlet_temp,  # °C  
+                "station_inlet": station_inlet_temp  # °C
+            },
+            
+            # 📊 ТЕХНИЧЕСКИЕ ДАННЫЕ
+            "meter_start": int(meter_start_wh),  # Wh
+            "meter_current": int(meter_current_wh),  # Wh
+            "station_online": station_online,
+            "last_update": last_update,
+            
+            # 🔄 ОБРАТНАЯ СОВМЕСТИМОСТЬ
             "current_energy": round(actual_energy_consumed, 3),
             "current_amount": round(actual_cost, 2),
-            
-            # Лимиты и прогресс
             "limit_type": limit_type,
-            "limit_value": round(float(limit_value), 2),
-            "progress_percent": round(progress_percent, 1),
-            
-            # Метаданные
             "transaction_id": transaction_id,
             "ocpp_transaction_id": ocpp_transaction_id,
             "station_id": station_id,
             "client_id": user_id,
             "rate_per_kwh": float(price_per_kwh),
-            
-            # OCPP статус для отладки
             "ocpp_status": ocpp_status,
             "has_meter_data": meter_start is not None,
             
             "message": "Зарядка активна" if status == 'started' 
                       else "Зарядка завершена" if status == 'stopped'
                       else "Ошибка зарядки"
-            }
+        }
             
     except Exception as e:
         logger.error(f"Ошибка при получении статуса зарядки: {e}")
