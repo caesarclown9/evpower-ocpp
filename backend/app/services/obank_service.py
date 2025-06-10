@@ -103,19 +103,36 @@ class OBankService:
         try:
             context = ssl.create_default_context()
             
-            # Загружаем PKCS12 сертификат
-            if self.cert_path and self.cert_password:
-                context.load_cert_chain(self.cert_path, password=self.cert_password)
+            # Загружаем PKCS12 сертификат только если файл существует
+            if self.cert_path and self.cert_password and not self.cert_path.startswith('/path/to/'):
+                import os
+                if os.path.exists(self.cert_path):
+                    context.load_cert_chain(self.cert_path, password=self.cert_password)
+                    logger.info(f"SSL сертификат загружен: {self.cert_path}")
+                else:
+                    logger.warning(f"SSL сертификат не найден: {self.cert_path}")
+                    if self.use_production:
+                        raise OBankAuthenticationError(f"SSL сертификат обязателен для production: {self.cert_path}")
+            else:
+                logger.info("SSL сертификат не настроен - работаем без клиентского сертификата")
             
             # Отключаем проверку сертификата для тестового окружения
             if not self.use_production:
                 context.check_hostname = False
                 context.verify_mode = ssl.CERT_NONE
+                logger.info("Тестовый режим: SSL проверки отключены")
             
             return context
             
         except Exception as e:
             logger.error(f"Ошибка создания SSL контекста: {e}")
+            # В тестовом режиме создаем базовый контекст без сертификата
+            if not self.use_production:
+                logger.warning("Создаем базовый SSL контекст для тестового режима")
+                context = ssl.create_default_context()
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+                return context
             raise OBankAuthenticationError(f"Не удалось загрузить SSL сертификат: {e}")
     
     def _build_xml_request(self, method_data: Dict[str, Any], payment_data: Optional[Dict[str, Any]] = None) -> str:
