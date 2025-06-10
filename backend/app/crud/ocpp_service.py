@@ -892,11 +892,36 @@ class PaymentLifecycleService:
                     order_id=order_id
                 )
                 
-                new_status = odengi_response.get('status', 0)
-                paid_amount = odengi_response.get('amount', 0) / 100 if odengi_response.get('amount') else None
-                # Обновляем статус в базе
-                status_mapping = {0: "processing", 1: "approved", 2: "canceled", 3: "refunded", 4: "partial_refund"}
-                mapped_status = status_mapping.get(new_status, "processing")
+                # Парсим ответ O!Dengi правильно
+                data = odengi_response.get('data', {})
+                
+                # Проверяем есть ли payments (для approved статуса)
+                if 'payments' in data and data['payments']:
+                    payment_info = data['payments'][0]  # Берем первый платеж
+                    payment_status = payment_info.get('status')
+                    paid_amount = float(payment_info.get('amount', 0)) / 100  # Из копеек в сомы
+                    
+                    # Маппинг статусов от O!Dengi
+                    if payment_status == 'approved':
+                        new_status = 1
+                        mapped_status = "approved"
+                    elif payment_status == 'processing':
+                        new_status = 0
+                        mapped_status = "processing"
+                    else:
+                        new_status = 2
+                        mapped_status = "canceled"
+                else:
+                    # Fallback для случая без payments (обычно processing)
+                    status_text = data.get('status', 'processing')
+                    if status_text == 'processing':
+                        new_status = 0
+                        mapped_status = "processing"
+                        paid_amount = None
+                    else:
+                        new_status = 2
+                        mapped_status = "canceled"
+                        paid_amount = None
             
             # Обновляем статус в базе
             update_query = text(f"""
