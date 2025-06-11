@@ -208,21 +208,41 @@ class OBankService:
         }
         
         try:
-            async with httpx.AsyncClient(verify=self.ssl_context) as client:
-                logger.info(f"Отправка запроса в OBANK: {url}")
-                logger.debug(f"XML запрос: {xml_data}")
-                
-                response = await client.post(
-                    url,
-                    content=xml_data,
-                    headers=headers,
-                    timeout=30.0
-                )
-                
-                response.raise_for_status()
-                
-                logger.debug(f"XML ответ: {response.text}")
-                return self._parse_xml_response(response.text)
+            # Полностью отключаем SSL для тестирования
+            if not self.use_production:
+                logger.info("🔓 Тестовый режим: SSL полностью отключен")
+                async with httpx.AsyncClient(verify=False) as client:
+                    logger.info(f"Отправка запроса в OBANK (без SSL): {url}")
+                    logger.debug(f"XML запрос: {xml_data}")
+                    
+                    response = await client.post(
+                        url,
+                        content=xml_data,
+                        headers=headers,
+                        timeout=30.0
+                    )
+                    
+                    response.raise_for_status()
+                    
+                    logger.debug(f"XML ответ: {response.text}")
+                    return self._parse_xml_response(response.text)
+            else:
+                # Production режим с SSL сертификатом
+                async with httpx.AsyncClient(verify=self.ssl_context) as client:
+                    logger.info(f"Отправка запроса в OBANK (с SSL): {url}")
+                    logger.debug(f"XML запрос: {xml_data}")
+                    
+                    response = await client.post(
+                        url,
+                        content=xml_data,
+                        headers=headers,
+                        timeout=30.0
+                    )
+                    
+                    response.raise_for_status()
+                    
+                    logger.debug(f"XML ответ: {response.text}")
+                    return self._parse_xml_response(response.text)
                 
         except httpx.RequestError as e:
             logger.error(f"Ошибка HTTP запроса к OBANK: {e}")
