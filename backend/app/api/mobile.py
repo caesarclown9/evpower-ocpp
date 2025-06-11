@@ -1048,9 +1048,26 @@ async def create_balance_topup(
         # 6. Получаем QR код и app link из O!Dengi ответа ПЕРЕД сохранением в базу
         raw_response = payment_response.get("raw_response", {})
         qr_data = raw_response.get("data", {})
-        # Используем qr (картинка QR) для отображения, qr_url для браузера, link_app для приложения
+        
+        # Получаем URL картинки QR-кода
         qr_code_url = qr_data.get("qr") or qr_data.get("qr_url") or payment_response.get("payment_url")
         app_link_url = qr_data.get("link_app") or payment_response.get("payment_url")
+        
+        # 🔍 Извлекаем данные QR-кода из URL для генерации в мобильном приложении
+        qr_code_data = None
+        if qr_code_url:
+            try:
+                from urllib.parse import urlparse, parse_qs, unquote
+                parsed_url = urlparse(qr_code_url)
+                query_params = parse_qs(parsed_url.query)
+                
+                # Извлекаем данные из параметра 'data' и декодируем URL-encoding
+                if 'data' in query_params and query_params['data']:
+                    qr_code_data = unquote(query_params['data'][0])
+                    logger.info(f"📱 Извлечены данные QR-кода: {qr_code_data[:50]}...")
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось извлечь данные QR-кода: {e}")
+                qr_code_data = None
         
         # 7. 🕐 Рассчитываем время жизни платежа
         created_at = datetime.now(timezone.utc)
@@ -1094,7 +1111,8 @@ async def create_balance_topup(
             success=True,
             invoice_id=invoice_id,
             order_id=order_id,
-            qr_code=qr_code_url,
+            qr_code=qr_code_data,  # 📱 Данные QR-кода для мобильного приложения
+            qr_code_url=qr_code_url,  # 🖼️ URL картинки для веб-интерфейса
             app_link=app_link_url,
             amount=request.amount,
             client_id=request.client_id,

@@ -314,7 +314,8 @@ class BalanceTopupResponse(BaseModel):
     success: bool
     invoice_id: Optional[str] = None
     order_id: Optional[str] = None
-    qr_code: Optional[str] = None
+    qr_code: Optional[str] = None  # Данные QR-кода для генерации в приложении
+    qr_code_url: Optional[str] = None  # URL картинки QR-кода (для веб)
     app_link: Optional[str] = None
     amount: Optional[float] = None
     client_id: str

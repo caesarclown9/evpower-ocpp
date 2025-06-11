@@ -38,8 +38,8 @@ class Settings(BaseSettings):
         "http://localhost:3000,http://localhost:8180,https://app.flutterflow.io"
     )
     
-    # OBANK Payment API Configuration
-    OBANK_API_URL: str = os.getenv("OBANK_API_URL", "http://test-rakhmet.dengi.kg:4431/external/extended-cert")
+    # OBANK Payment API Configuration  
+    OBANK_API_URL: str = os.getenv("OBANK_API_URL", "http://test-rakhmet.dengi.kg/external/extended-cert")
     OBANK_PRODUCTION_API_URL: str = os.getenv("OBANK_PRODUCTION_API_URL", "https://rakhmet.dengi.kg:4431/external/extended-cert")
     OBANK_POINT_ID: str = os.getenv("OBANK_POINT_ID", "4354")  # Terminal ID
     OBANK_SERVICE_ID: str = os.getenv("OBANK_SERVICE_ID", "1331")  # Service ID
@@ -91,7 +91,15 @@ class Settings(BaseSettings):
     @property
     def current_obank_api_url(self) -> str:
         """Возвращает актуальный URL OBANK API в зависимости от окружения"""
-        return self.OBANK_PRODUCTION_API_URL if self.OBANK_USE_PRODUCTION else self.OBANK_API_URL
+        if self.OBANK_USE_PRODUCTION:
+            return self.OBANK_PRODUCTION_API_URL
+        else:
+            # Принудительно используем HTTP для тестового режима
+            url = self.OBANK_API_URL
+            if url.startswith("https://"):
+                url = url.replace("https://", "http://")
+                print(f"🔓 Тестовый режим: принудительно переключаем на HTTP: {url}")
+            return url
     
     @property
     def current_obank_point_id(self) -> str:
