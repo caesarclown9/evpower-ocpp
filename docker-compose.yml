@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  evpower-backend:
+    build: .
+    ports:
+      - "8000:8000"
+      - "8180:8180"
+    environment:
+      - DATABASE_URL=${DATABASE_URL}
+      - REDIS_URL=${REDIS_URL}
+      - SECRET_KEY=${SECRET_KEY}
+      - EZS_SECRET_KEY=${EZS_SECRET_KEY}
+      - ODENGI_API_URL=${ODENGI_API_URL}
+      - ODENGI_MERCHANT_ID=${ODENGI_MERCHANT_ID}
+      - ODENGI_PASSWORD=${ODENGI_PASSWORD}
+      - ODENGI_WEBHOOK_SECRET=${ODENGI_WEBHOOK_SECRET}
+      - ODENGI_USE_PRODUCTION=${ODENGI_USE_PRODUCTION}
+    restart: unless-stopped 
