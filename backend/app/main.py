@@ -31,10 +31,59 @@ from ocpp_ws_server.redis_manager import redis_manager
 from app.api import mobile  # Импорт mobile API
 
 # Настройка логирования
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+import sys
+from logging.handlers import RotatingFileHandler
+
+# Создаем форматтер для детального логирования
+detailed_formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s'
 )
+
+# Настройка root logger
+root_logger = logging.getLogger()
+root_logger.setLevel(logging.DEBUG)
+
+# Очищаем существующие handlers
+root_logger.handlers.clear()
+
+# Console handler с цветной подсветкой
+console_handler = logging.StreamHandler(sys.stdout)
+console_handler.setLevel(logging.INFO)
+console_handler.setFormatter(detailed_formatter)
+
+# File handler для ошибок
+error_file_handler = RotatingFileHandler(
+    'logs/ocpp_errors.log', 
+    maxBytes=10*1024*1024,  # 10MB
+    backupCount=5
+)
+error_file_handler.setLevel(logging.ERROR)
+error_file_handler.setFormatter(detailed_formatter)
+
+# File handler для всех OCPP событий
+ocpp_file_handler = RotatingFileHandler(
+    'logs/ocpp_debug.log',
+    maxBytes=50*1024*1024,  # 50MB
+    backupCount=3
+)
+ocpp_file_handler.setLevel(logging.DEBUG)
+ocpp_file_handler.setFormatter(detailed_formatter)
+
+# Добавляем handlers
+root_logger.addHandler(console_handler)
+root_logger.addHandler(error_file_handler)
+root_logger.addHandler(ocpp_file_handler)
+
+# Создаем папку для логов если её нет
+os.makedirs('logs', exist_ok=True)
+
+# Настройка специфичных логгеров
+logging.getLogger("OCPPHandler").setLevel(logging.DEBUG)
+logging.getLogger("OCPP").setLevel(logging.DEBUG)
+logging.getLogger("websockets").setLevel(logging.DEBUG)
+logging.getLogger("fastapi").setLevel(logging.INFO)
+logging.getLogger("uvicorn").setLevel(logging.INFO)
+
 logger = logging.getLogger(__name__)
 
 # ============================================================================

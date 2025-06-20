@@ -156,13 +156,38 @@ class OCPPChargePoint(CP):
     @on('StatusNotification')
     def on_status_notification(self, connector_id, error_code, status, **kwargs):
         """Изменения статуса коннекторов"""
+        # Детальное логирование StatusNotification
+        info = kwargs.get('info')
+        vendor_id = kwargs.get('vendor_id') 
+        vendor_error_code = kwargs.get('vendor_error_code')
+        timestamp = kwargs.get('timestamp')
+        
         self.logger.info(f"StatusNotification: connector={connector_id}, status={status}, error={error_code}")
+        self.logger.debug(f"StatusNotification полные данные: {kwargs}")
+        
+        # Специальное логирование для ошибок
+        if error_code != "NoError":
+            self.logger.warning(f"🚨 ОШИБКА КОННЕКТОРА {connector_id}: {error_code}")
+            if info:
+                self.logger.warning(f"   Дополнительная информация: {info}")
+            if vendor_error_code:
+                self.logger.warning(f"   Vendor Error Code: {vendor_error_code}")
+            if vendor_id:
+                self.logger.warning(f"   Vendor ID: {vendor_id}")
+            
+            # Автоматическая диагностика при ошибках
+            asyncio.create_task(self._perform_error_diagnostics(connector_id, error_code))
+        
+        # Логирование изменений статуса
+        if status in ["Faulted", "Unavailable"]:
+            self.logger.error(f"🔴 КОННЕКТОР {connector_id} НЕДОСТУПЕН: {status} - {error_code}")
+        elif status in ["Available", "Occupied"]:
+            self.logger.info(f"🟢 Коннектор {connector_id}: {status}")
+        else:
+            self.logger.debug(f"Коннектор {connector_id}: {status}")
         
         try:
             with next(get_db()) as db:
-                info = kwargs.get('info')
-                vendor_id = kwargs.get('vendor_id')
-                vendor_error_code = kwargs.get('vendor_error_code')
                 
                 # Обновляем статус станции (старая логика для совместимости)
                 station_status = OCPPStationService.update_station_status(
@@ -1088,6 +1113,56 @@ class OCPPChargePoint(CP):
             self.logger.error(f"Error in GetLocalListVersion: {e}")
             return call_result.GetLocalListVersion(list_version=0)
 
+    async def _perform_error_diagnostics(self, connector_id: int, error_code: str):
+        """Автоматическая диагностика при ошибках коннекторов"""
+        try:
+            self.logger.info(f"🔍 Запуск диагностики для коннектора {connector_id}, ошибка: {error_code}")
+            
+            # Задержка перед диагностикой
+            await asyncio.sleep(2)
+            
+            # Запрашиваем конфигурацию станции
+            try:
+                config_response = await self.call(call.GetConfiguration())
+                self.logger.info(f"📋 Конфигурация станции получена: {len(config_response.configuration_key if config_response.configuration_key else [])} параметров")
+                
+                # Логируем важные конфигурационные параметры
+                if config_response.configuration_key:
+                    for config in config_response.configuration_key:
+                        if config.key in ['HeartbeatInterval', 'MeterValueSampleInterval', 'NumberOfConnectors', 'SupportedFeatureProfiles']:
+                            self.logger.info(f"   {config.key}: {config.value}")
+                            
+            except Exception as e:
+                self.logger.error(f"❌ Ошибка получения конфигурации: {e}")
+            
+            # Запрашиваем диагностику
+            try:
+                diag_response = await self.call(call.GetDiagnostics(
+                    location=f"ftp://example.com/diagnostics_{self.id}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.log"
+                ))
+                self.logger.info(f"📊 Диагностика запрошена: {diag_response}")
+                
+            except Exception as e:
+                self.logger.warning(f"⚠️ Диагностика недоступна: {e}")
+            
+            # Если это OtherError, пытаемся получить больше информации через DataTransfer
+            if error_code == "OtherError":
+                try:
+                    data_response = await self.call(call.DataTransfer(
+                        vendor_id="diagnostics",
+                        message_id="error_details",
+                        data=f"connector_{connector_id}"
+                    ))
+                    self.logger.info(f"🔍 DataTransfer ответ: {data_response}")
+                    
+                except Exception as e:
+                    self.logger.debug(f"DataTransfer не поддерживается: {e}")
+            
+            self.logger.info(f"✅ Диагностика завершена для коннектора {connector_id}")
+            
+        except Exception as e:
+            self.logger.error(f"❌ Ошибка в диагностике: {e}")
+
 
 class OCPPWebSocketHandler:
     """Основной класс для обработки OCPP WebSocket подключений"""
@@ -1101,30 +1176,44 @@ class OCPPWebSocketHandler:
         
     async def handle_connection(self):
         """Основная логика обработки WebSocket подключения"""
+        connection_start = datetime.utcnow()
+        client_info = getattr(self.websocket, 'client', None)
+        client_ip = client_info.host if client_info else 'unknown'
+        
+        self.logger.info(f"🔌 НОВОЕ ПОДКЛЮЧЕНИЕ: Station {self.station_id} от IP {client_ip}")
+        
         try:
             # Принимаем WebSocket подключение с OCPP 1.6 subprotocol
+            self.logger.debug(f"Принимаем WebSocket для {self.station_id}")
             await self.websocket.accept(subprotocol="ocpp1.6")
-            self.logger.info(f"Station {self.station_id} connected")
+            self.logger.debug(f"WebSocket принят для {self.station_id} с протоколом ocpp1.6")
             
             # Создаем адаптер для OCPP библиотеки
             adapter = WebSocketAdapter(self.websocket)
             self.charge_point = OCPPChargePoint(self.station_id, adapter)
+            self.logger.debug(f"OCPP ChargePoint создан для {self.station_id}")
             
             # Регистрируем станцию в Redis
             await redis_manager.register_station(self.station_id)
+            self.logger.debug(f"Станция {self.station_id} зарегистрирована в Redis")
             
             # Запускаем обработчик команд из Redis
             self.pubsub_task = asyncio.create_task(
                 self._handle_redis_commands()
             )
+            self.logger.debug(f"Redis pub/sub task запущен для {self.station_id}")
             
             # Запускаем OCPP charge point
+            self.logger.info(f"🚀 Запуск OCPP ChargePoint для {self.station_id}")
             await self.charge_point.start()
             
         except WebSocketDisconnect:
-            self.logger.info(f"Station {self.station_id} disconnected")
+            connection_duration = (datetime.utcnow() - connection_start).total_seconds()
+            self.logger.info(f"🔌 ОТКЛЮЧЕНИЕ: Station {self.station_id} (длительность: {connection_duration:.1f}с)")
         except Exception as e:
-            self.logger.error(f"Error in WebSocket connection: {e}")
+            connection_duration = (datetime.utcnow() - connection_start).total_seconds()
+            self.logger.error(f"❌ ОШИБКА ПОДКЛЮЧЕНИЯ: Station {self.station_id} (длительность: {connection_duration:.1f}с): {e}")
+            self.logger.debug(f"Детальная ошибка для {self.station_id}:", exc_info=True)
         finally:
             await self._cleanup()
     
@@ -1280,10 +1369,17 @@ class WebSocketAdapter:
     
     async def recv(self):
         """Получение сообщения"""
-        return await self.websocket.receive_text()
+        message = await self.websocket.receive_text()
+        # Логируем входящее сообщение
+        logger = logging.getLogger(f"OCPP.{getattr(self.websocket, 'station_id', 'unknown')}")
+        logger.debug(f"📥 ПОЛУЧЕНО: {message}")
+        return message
     
     async def send(self, message):
         """Отправка сообщения"""
+        # Логируем исходящее сообщение
+        logger = logging.getLogger(f"OCPP.{getattr(self.websocket, 'station_id', 'unknown')}")
+        logger.debug(f"📤 ОТПРАВЛЕНО: {message}")
         await self.websocket.send_text(message)
     
     async def close(self):
