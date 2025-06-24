@@ -147,3 +147,9 @@ test_*
 *.postman_collection.json 
 screenshots/
 backend/bd-env.txt
+
+# BMAD/Claude tools и скрипты
+.bmad-core/
+Add-To-PowerShell-Profile.ps1
+claude-code-launcher.ps1
+web-bundles/

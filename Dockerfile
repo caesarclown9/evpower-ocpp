@@ -6,7 +6,10 @@ COPY backend/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY backend/ .
+COPY start.sh /app/start.sh
 
-EXPOSE 8000 8180
+RUN chmod +x /app/start.sh
 
-CMD ["python", "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+EXPOSE 8180
+
+CMD ["/app/start.sh"]
