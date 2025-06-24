@@ -3,7 +3,7 @@ from enum import Enum
 from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime, time, date
 from decimal import Decimal
-from pydantic import validator
+# validator устарел в Pydantic v2, используем field_validator при необходимости
 
 # Enums
 class OCPPConnectionStatus(str, Enum):
@@ -369,8 +369,7 @@ class PaymentTransactionInfo(BaseModel):
     description: Optional[str] = None
     created_at: datetime
     
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class BalanceTopupInfo(BaseModel):
     """Информация о пополнении баланса"""
@@ -386,8 +385,7 @@ class BalanceTopupInfo(BaseModel):
     qr_code_url: Optional[str] = None
     app_link: Optional[str] = None
     
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class ChargingPaymentInfo(BaseModel):
     """Информация о платеже за зарядку"""
@@ -407,8 +405,7 @@ class ChargingPaymentInfo(BaseModel):
     qr_code_url: Optional[str] = None
     app_link: Optional[str] = None
     
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class H2HPaymentResponse(BaseModel):
     """Ответ на H2H платеж"""

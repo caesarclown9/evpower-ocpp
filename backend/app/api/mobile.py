@@ -1104,8 +1104,22 @@ async def create_balance_topup(
         logger.info(f"🕐 Пополнение создано: {order_id}, invoice_id: {invoice_id}, провайдер: {get_payment_provider_service().get_provider_name()}, QR истекает: {qr_expires_at}, Invoice истекает: {invoice_expires_at}")
         
         # Запускаем мониторинг статуса платежа в фоновом режиме
-        from app.main import start_payment_monitoring
-        start_payment_monitoring("balance_topups", invoice_id)
+        async def check_payment_status_task():
+            for i in range(20):
+                await asyncio.sleep(15)
+                try:
+                    result = await payment_lifecycle_service.perform_status_check(
+                        db, "balance_topups", invoice_id
+                    )
+                    if result.get("success"):
+                        new_status = result.get("new_status")
+                        if new_status in ['approved', 'canceled', 'refunded']:
+                            return
+                except Exception as e:
+                    logger.error(f"Ошибка проверки платежа {invoice_id}: {e}")
+                    
+        asyncio.create_task(check_payment_status_task())
+        logger.info(f"🔍 Запущен мониторинг платежа {invoice_id}")
         
         return BalanceTopupResponse(
             success=True,
@@ -1551,8 +1565,22 @@ async def create_h2h_payment(
         logger.info(f"💳 H2H платеж создан: {transaction_id}, auth_key: {auth_key}")
         
         # Запускаем мониторинг статуса платежа
-        from app.main import start_payment_monitoring
-        start_payment_monitoring("balance_topups", auth_key)
+        async def check_h2h_payment_status():
+            for i in range(20):
+                await asyncio.sleep(15)
+                try:
+                    result = await payment_lifecycle_service.perform_status_check(
+                        db, "balance_topups", auth_key
+                    )
+                    if result.get("success"):
+                        new_status = result.get("new_status")
+                        if new_status in ['approved', 'canceled', 'refunded']:
+                            return
+                except Exception as e:
+                    logger.error(f"Ошибка проверки H2H платежа {auth_key}: {e}")
+                    
+        asyncio.create_task(check_h2h_payment_status())
+        logger.info(f"🔍 Запущен мониторинг H2H платежа {auth_key}")
         
         return H2HPaymentResponse(
             success=True,
@@ -1659,8 +1687,22 @@ async def create_token_payment(
         logger.info(f"🔐 Токен-платеж создан: {transaction_id}, auth_key: {auth_key}")
         
         # Запускаем мониторинг статуса платежа
-        from app.main import start_payment_monitoring
-        start_payment_monitoring("balance_topups", auth_key)
+        async def check_token_payment_status():
+            for i in range(20):
+                await asyncio.sleep(15)
+                try:
+                    result = await payment_lifecycle_service.perform_status_check(
+                        db, "balance_topups", auth_key
+                    )
+                    if result.get("success"):
+                        new_status = result.get("new_status")
+                        if new_status in ['approved', 'canceled', 'refunded']:
+                            return
+                except Exception as e:
+                    logger.error(f"Ошибка проверки токен-платежа {auth_key}: {e}")
+                    
+        asyncio.create_task(check_token_payment_status())
+        logger.info(f"🔍 Запущен мониторинг токен-платежа {auth_key}")
         
         return TokenPaymentResponse(
             success=True,
