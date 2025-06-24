@@ -13,7 +13,6 @@ services:
   evpower-backend:
     build: .
     ports:
-      - "8000:8000"
       - "8180:8180"
     depends_on:
       - redis
