@@ -95,7 +95,7 @@ async def check_payment_status(payment_table: str, invoice_id: str, max_checks: 
     Проверяет статус конкретного платежа до его завершения
     
     Args:
-        payment_table: "balance_topups" или "charging_payments"
+        payment_table: "balance_topups"
         invoice_id: ID платежа для проверки
         max_checks: Максимальное количество проверок (по умолчанию 20)
     """
@@ -145,7 +145,7 @@ def start_payment_monitoring(payment_table: str, invoice_id: str, max_checks: in
     Удобная функция для запуска мониторинга платежа из API endpoints
     
     Args:
-        payment_table: "balance_topups" или "charging_payments"  
+        payment_table: "balance_topups"
         invoice_id: ID платежа для проверки
         max_checks: Максимальное количество проверок
     """
@@ -171,9 +171,8 @@ async def payment_cleanup_task():
                 result = await payment_lifecycle_service.cleanup_expired_payments(db)
                 if result.get("success"):
                     cancelled_topups = result.get('cancelled_topups', 0)
-                    cancelled_charging = result.get('cancelled_charging_payments', 0)
-                    if cancelled_topups > 0 or cancelled_charging > 0:
-                        logger.info(f"✅ Очистка завершена: отменено {cancelled_topups} пополнений, {cancelled_charging} платежей за зарядку")
+                    if cancelled_topups > 0:
+                        logger.info(f"✅ Очистка завершена: отменено {cancelled_topups} пополнений")
                     else:
                         logger.info("✅ Очистка завершена: просроченных платежей не найдено")
                         

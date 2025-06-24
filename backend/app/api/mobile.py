@@ -1261,9 +1261,6 @@ async def force_payment_status_check(
         payment_check = db.execute(text("""
             SELECT 'balance_topups' as table_name, invoice_id, status, created_at, invoice_expires_at
             FROM balance_topups WHERE invoice_id = :invoice_id
-            UNION ALL
-            SELECT 'charging_payments' as table_name, invoice_id, status, created_at, invoice_expires_at  
-            FROM charging_payments WHERE invoice_id = :invoice_id
         """), {"invoice_id": invoice_id})
         
         payment = payment_check.fetchone()

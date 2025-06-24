@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     # Database settings for Supabase
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
+    SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     
     # PostgreSQL connection URL for Supabase
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")

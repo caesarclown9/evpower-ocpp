@@ -850,11 +850,8 @@ class PaymentLifecycleService:
                     SELECT id, order_id, client_id, status, status_check_count, created_at, paid_amount
                     FROM balance_topups WHERE invoice_id = :invoice_id
                 """)
-            else:  # charging_payments
-                query = text("""
-                    SELECT id, order_id, client_id, status, status_check_count, created_at, paid_amount
-                    FROM charging_payments WHERE invoice_id = :invoice_id
-                """)
+            else:
+                return {"success": False, "error": "unsupported_payment_table"}
             
             result = db.execute(query, {"invoice_id": invoice_id}).fetchone()
             if not result:
@@ -947,7 +944,6 @@ class PaymentLifecycleService:
                     
                     payment_processed = True
                     logger.info(f"✅ Баланс пополнен автоматически: клиент {client_id}, сумма {paid_amount}, новый баланс {new_balance}")
-                # Для charging_payments логика обработки отдельно
             elif new_status == 1 and existing_paid_amount is not None:
                 # Платеж уже был обработан ранее
                 logger.info(f"⚠️ Платеж {invoice_id} уже был обработан ранее (paid_amount: {existing_paid_amount})")
@@ -984,17 +980,8 @@ class PaymentLifecycleService:
                         needs_status_check = :needs_check
                     WHERE invoice_id = :invoice_id
                 """)
-            else:  # charging_payments
-                update_query = text("""
-                    UPDATE charging_payments 
-                    SET last_status_check_at = NOW(), 
-                        status_check_count = status_check_count + 1,
-                        odengi_status = :odengi_status,
-                        status = :status,
-                        paid_amount = :paid_amount,
-                        needs_status_check = :needs_check
-                    WHERE invoice_id = :invoice_id
-                """)
+            else:
+                return {"success": False, "error": "unsupported_payment_table"}
             
             # Определяем нужны ли дальнейшие проверки
             # Для approved/canceled статусов проверки НЕ нужны
@@ -1020,11 +1007,12 @@ class PaymentLifecycleService:
             db.commit()
             
             # Проверяем что статус действительно обновился
-            verification_query = text("""
-                SELECT status, paid_amount FROM balance_topups WHERE invoice_id = :invoice_id
-            """) if payment_table == "balance_topups" else text("""
-                SELECT status, paid_amount FROM charging_payments WHERE invoice_id = :invoice_id
-            """)
+            if payment_table == "balance_topups":
+                verification_query = text("""
+                    SELECT status, paid_amount FROM balance_topups WHERE invoice_id = :invoice_id
+                """)
+            else:
+                return {"success": False, "error": "unsupported_payment_table"}
             
             verification_result = db.execute(verification_query, {"invoice_id": invoice_id}).fetchone()
             if verification_result:
@@ -1070,22 +1058,8 @@ class PaymentLifecycleService:
                 logger.error(f"Unicode error in cleanup topups, skipping: {e}")
                 topup_result = type('MockResult', (), {'rowcount': 0})()
             
-            # Отменяем просроченные платежи за зарядку
-            try:
-                charging_update = text("""
-                    UPDATE charging_payments 
-                    SET status = 'canceled',
-                        needs_status_check = false, 
-                        completed_at = NOW()
-                    WHERE status = 'processing'
-                      AND invoice_expires_at < :current_time
-                      AND needs_status_check = true
-                """)
-                
-                charging_result = db.execute(charging_update, {"current_time": current_time})
-            except UnicodeDecodeError as e:
-                logger.error(f"Unicode error in cleanup charging, skipping: {e}")
-                charging_result = type('MockResult', (), {'rowcount': 0})()
+            # charging_payments больше не используется
+            charging_result = type('MockResult', (), {'rowcount': 0})()
             
             db.commit()
             
@@ -1093,8 +1067,7 @@ class PaymentLifecycleService:
             
             return {
                 "success": True,
-                "cancelled_topups": topup_result.rowcount,
-                "cancelled_charging_payments": charging_result.rowcount
+                "cancelled_topups": topup_result.rowcount
             }
             
         except Exception as e:

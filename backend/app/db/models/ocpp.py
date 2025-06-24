@@ -309,7 +309,6 @@ class PaymentStatus(str, enum.Enum):
 
 class PaymentType(str, enum.Enum):
     balance_topup = "balance_topup"     # Пополнение баланса
-    charging_payment = "charging_payment"  # Прямая оплата зарядки
 
 class BalanceTopup(Base):
     """Пополнения баланса клиентов через O!Dengi"""
@@ -357,64 +356,6 @@ class BalanceTopup(Base):
     # Relationships
     client = relationship("Client")
 
-class ChargingPayment(Base):
-    """Прямые платежи за зарядку через O!Dengi"""
-    __tablename__ = "charging_payments"
-    
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    
-    # O!Dengi данные
-    invoice_id = Column(String(12), unique=True, index=True)
-    order_id = Column(String(128), unique=True, index=True)
-    merchant_id = Column(String(32))
-    
-    # ЭЗС данные
-    station_id = Column(String, ForeignKey('stations.id'), nullable=False)
-    connector_id = Column(Integer, nullable=False)
-    client_id = Column(String, ForeignKey('clients.id'), nullable=False)
-    charging_session_id = Column(String, ForeignKey('charging_sessions.id'), nullable=True)
-    
-    # Финансовые данные
-    estimated_amount = Column(Numeric, nullable=False)  # Предварительная сумма
-    paid_amount = Column(Numeric, nullable=True)  # Фактически оплачено
-    currency = Column(String(3), default="KGS")
-    
-    # Зарядная сессия
-    estimated_kwh = Column(Numeric)
-    actual_kwh = Column(Numeric, nullable=True)
-    rate_per_kwh = Column(Numeric)
-    
-    # Статусы и временные метки
-    status = Column(SqlEnum(PaymentStatus), default=PaymentStatus.processing)
-    odengi_status = Column(Integer, default=0)  # Статус от O!Dengi API
-    
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    paid_at = Column(DateTime(timezone=True), nullable=True)
-    completed_at = Column(DateTime(timezone=True), nullable=True)
-    
-    # 🕐 Время жизни платежа
-    qr_expires_at = Column(DateTime(timezone=True), nullable=False)  # QR код истекает через 5 минут
-    invoice_expires_at = Column(DateTime(timezone=True), nullable=False)  # Invoice истекает через 10 минут
-    
-    # Дополнительные данные
-    description = Column(Text)
-    qr_code_url = Column(String(500))
-    app_link = Column(String(500))
-    
-    # Webhook данные
-    last_webhook_at = Column(DateTime(timezone=True), nullable=True)
-    webhook_count = Column(Integer, default=0)
-    
-    # Status check данные
-    last_status_check_at = Column(DateTime(timezone=True), nullable=True)
-    status_check_count = Column(Integer, default=0)
-    needs_status_check = Column(Boolean, default=True)  # Флаг для фоновой проверки
-    
-    # Relationships
-    station = relationship("Station")
-    client = relationship("Client")
-    charging_session = relationship("ChargingSession")
-
 class PaymentTransaction(Base):
     """Лог всех операций с балансом и платежами"""
     __tablename__ = "payment_transactions"
@@ -432,7 +373,6 @@ class PaymentTransaction(Base):
     
     # Связанные объекты
     balance_topup_id = Column(Integer, ForeignKey('balance_topups.id'), nullable=True)
-    charging_payment_id = Column(Integer, ForeignKey('charging_payments.id'), nullable=True)
     charging_session_id = Column(String, ForeignKey('charging_sessions.id'), nullable=True)
     
     # Метаданные
@@ -442,5 +382,4 @@ class PaymentTransaction(Base):
     # Relationships
     client = relationship("Client")
     balance_topup = relationship("BalanceTopup")
-    charging_payment = relationship("ChargingPayment")
     charging_session = relationship("ChargingSession")
