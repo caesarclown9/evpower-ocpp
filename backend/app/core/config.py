@@ -28,8 +28,8 @@ class Settings(BaseSettings):
     APP_HOST: str = os.getenv("APP_HOST", "0.0.0.0")
     APP_PORT: int = int(os.getenv("APP_PORT", "9210"))  # Production порт
     
-    # OCPP WebSocket settings (порт 80 для зарядных станций)
-    OCPP_WS_PORT: int = int(os.getenv("OCPP_WS_PORT", "80"))
+    # OCPP WebSocket settings (тот же порт что и API)
+    OCPP_WS_PORT: int = int(os.getenv("OCPP_WS_PORT", "9210"))
     OCPP_PROTOCOL_VERSION: str = os.getenv("OCPP_PROTOCOL_VERSION", "1.6")
     
     # CORS для FlutterFlow и внешних приложений

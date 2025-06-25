@@ -177,7 +177,7 @@ async def handler(websocket):
 
 async def main():
     # Получаем порт из переменной окружения
-    ws_port = int(os.getenv("OCPP_WS_PORT", "80"))
+    ws_port = int(os.getenv("OCPP_WS_PORT", "9210"))
     async with serve(handler, "0.0.0.0", ws_port, subprotocols=["ocpp1.6"]):
         print(f"======== Running on ws://0.0.0.0:{ws_port}/ocpp/{{cp_id}} ========")
         await asyncio.Future()  # run forever

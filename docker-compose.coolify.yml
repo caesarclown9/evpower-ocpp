@@ -28,11 +28,10 @@ services:
       # Переопределяем критичные переменные для production
       APP_ENV: production
       APP_PORT: 9210
-      OCPP_WS_PORT: 80
+      OCPP_WS_PORT: 9210
       REDIS_URL: redis://redis:6379
     ports:
-      - "9210:9210"  # API порт
-      - "80:80"      # WebSocket порт для OCPP
+      - "9210:9210"  # API и WebSocket порт
     depends_on:
       redis:
         condition: service_healthy

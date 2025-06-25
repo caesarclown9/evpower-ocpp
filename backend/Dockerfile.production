@@ -56,11 +56,11 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     APP_ENV=production \
     APP_PORT=9210 \
-    OCPP_WS_PORT=80 \
+    OCPP_WS_PORT=9210 \
     LOG_PATH=/var/log/evpower-ocpp
 
 # Порты
-EXPOSE 9210 80
+EXPOSE 9210
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
