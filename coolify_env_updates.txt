@@ -1,0 +1,7 @@
+# Переменные для обновления в Coolify Environment Variables:
+
+APP_PORT=9210
+OCPP_WS_PORT=80
+CORS_ORIGINS=http://localhost:3000,http://localhost:9210,https://app.flutterflow.io,https://ocpp.evpower.kg,http://ocpp.evpower.kg,ws://ocpp.evpower.kg,wss://ocpp.evpower.kg
+
+# Эти переменные нужно обновить в интерфейсе Coolify 
