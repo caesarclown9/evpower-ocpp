@@ -181,16 +181,17 @@ app = FastAPI(
     redoc_url=None  # Отключаем ReDoc
 )
 
-# CORS настройки (минимальные)
+# CORS настройки для WebSocket и HTTP
 allowed_origins = os.getenv("ALLOWED_HOSTS", "").split(",")
 if not allowed_origins or allowed_origins == [""]:
     allowed_origins = ["*"]
 
+# Добавляем поддержку WebSocket в CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
