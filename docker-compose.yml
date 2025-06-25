@@ -13,8 +13,8 @@ services:
   evpower-backend:
     build: .
     ports:
-      - "8000:8000"
-      - "8180:8180"
+      - "9210:9210"  # API порт
+      - "80:80"      # WebSocket порт для OCPP
     depends_on:
       - redis
     environment:

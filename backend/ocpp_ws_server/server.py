@@ -150,8 +150,21 @@ async def handle_pubsub_commands(charge_point, station_id):
 
 async def handler(websocket):
     # Получаем cp_id из пути подключения
-    cp_id = websocket.path.split('/')[-1]
-    print(f"Новое подключение: {cp_id}")
+    # Поддержка путей /ws/{cp_id} и /ocpp/{cp_id}
+    path_parts = websocket.path.strip('/').split('/')
+    if len(path_parts) >= 2 and path_parts[0] in ['ws', 'ocpp']:
+        cp_id = path_parts[1]
+    else:
+        cp_id = path_parts[-1]
+    
+    # Обработка X-Forwarded-For для получения реального IP за прокси
+    real_ip = websocket.remote_address[0]
+    if hasattr(websocket, 'request_headers'):
+        x_forwarded_for = websocket.request_headers.get('X-Forwarded-For')
+        if x_forwarded_for:
+            real_ip = x_forwarded_for.split(',')[0].strip()
+    
+    print(f"Новое подключение: {cp_id} с IP: {real_ip}")
     charge_point = ChargePoint(cp_id, websocket)
     await redis_manager.register_station(cp_id)
     pubsub_task = asyncio.create_task(handle_pubsub_commands(charge_point, cp_id))
@@ -163,8 +176,10 @@ async def handler(websocket):
         print(f"Станция отключена: {cp_id}")
 
 async def main():
-    async with serve(handler, "0.0.0.0", 8180, subprotocols=["ocpp1.6"]):
-        print("======== Running on ws://0.0.0.0:8180/ws/{cp_id} ========")
+    # Получаем порт из переменной окружения
+    ws_port = int(os.getenv("OCPP_WS_PORT", "80"))
+    async with serve(handler, "0.0.0.0", ws_port, subprotocols=["ocpp1.6"]):
+        print(f"======== Running on ws://0.0.0.0:{ws_port}/ocpp/{{cp_id}} ========")
         await asyncio.Future()  # run forever
 
 if __name__ == '__main__':

@@ -26,17 +26,17 @@ class Settings(BaseSettings):
     
     # App settings - правильные порты для production
     APP_HOST: str = os.getenv("APP_HOST", "0.0.0.0")
-    APP_PORT: int = int(os.getenv("APP_PORT", "8180"))  # Production порт
+    APP_PORT: int = int(os.getenv("APP_PORT", "9210"))  # Production порт
     
-    # OCPP WebSocket settings (тот же порт что и HTTP API)
-    OCPP_WS_PORT: int = int(os.getenv("OCPP_WS_PORT", "8180"))
+    # OCPP WebSocket settings (порт 80 для зарядных станций)
+    OCPP_WS_PORT: int = int(os.getenv("OCPP_WS_PORT", "80"))
     OCPP_PROTOCOL_VERSION: str = os.getenv("OCPP_PROTOCOL_VERSION", "1.6")
     
     # CORS для FlutterFlow и внешних приложений
     ALLOWED_HOSTS: str = os.getenv("ALLOWED_HOSTS", "*")
     CORS_ORIGINS: str = os.getenv(
         "CORS_ORIGINS", 
-        "http://localhost:3000,http://localhost:8180,https://app.flutterflow.io"
+        "http://localhost:3000,http://localhost:9210,https://app.flutterflow.io,https://ocpp.evpower.kg,http://ocpp.evpower.kg,ws://ocpp.evpower.kg,wss://ocpp.evpower.kg"
     )
     
     # OBANK Payment API Configuration  

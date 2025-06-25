@@ -221,7 +221,7 @@ async def health_check():
             "version": "1.0.0",
             "redis": "connected",
             "connected_stations": len(connected_stations),
-            "endpoints": ["ws://{host}/ws/{station_id}", "GET /health"],
+            "endpoints": ["ws://{host}/ws/{station_id}", "ws://{host}/ocpp/{station_id}", "GET /health"],
             "note": "Все системы работают"
         }
     except Exception as e:
@@ -240,6 +240,7 @@ async def health_check():
 # ============================================================================
 
 @app.websocket("/ws/{station_id}")
+@app.websocket("/ocpp/{station_id}")
 async def websocket_endpoint(websocket: WebSocket, station_id: str):
     """
     WebSocket endpoint для подключения зарядных станций по протоколу OCPP 1.6
@@ -272,7 +273,7 @@ async def root():
     return {
         "service": "EvPower OCPP WebSocket Server",
         "description": "Минимальный OCPP 1.6 WebSocket сервер для зарядных станций",
-        "websocket_url": "ws://{host}/ws/{station_id}",
+        "websocket_urls": ["ws://{host}/ws/{station_id}", "ws://{host}/ocpp/{station_id}"],
         "health_check": "GET /health",
         "version": "1.0.0",
         "protocol": "OCPP 1.6 JSON",
@@ -287,7 +288,7 @@ if __name__ == "__main__":
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=8180,
+        port=9210,
         log_level="info"
     )
 
