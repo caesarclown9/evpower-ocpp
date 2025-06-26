@@ -157,6 +157,27 @@ async def payment_cleanup_task():
 async def lifespan(app: FastAPI):
     """Lifecycle manager для приложения"""
     logger.info("🚀 Starting OCPP WebSocket Server...")
+    
+    # 🔍 DEBUG: показываем все переменные окружения связанные с Redis
+    import os
+    logger.info(f"🔍 DEBUG - ENVIRONMENT CHECK:")
+    logger.info(f"🔍 REDIS_URL from env: {os.getenv('REDIS_URL', 'NOT SET')}")
+    logger.info(f"🔍 All Redis-related env vars:")
+    for key, value in os.environ.items():
+        if 'redis' in key.lower() or 'REDIS' in key:
+            logger.info(f"🔍 {key} = {value}")
+    
+    # 🔍 DEBUG: тестируем Redis подключение
+    logger.info("🔍 Testing Redis connection...")
+    try:
+        ping_result = await redis_manager.ping()
+        if ping_result:
+            logger.info("✅ Redis PING successful!")
+        else:
+            logger.error("❌ Redis PING failed!")
+    except Exception as e:
+        logger.error(f"❌ Redis connection test failed: {e}")
+    
     logger.info("✅ Redis manager initialized")
     
     # Запуск только cleanup задачи (проверка статусов платежей теперь по событию)
