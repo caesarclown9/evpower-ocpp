@@ -26,7 +26,7 @@ services:
       - DATABASE_URL=${DATABASE_URL}
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
-      - REDIS_URL=${REDIS_URL}
+      - REDIS_URL=redis://redis:6379/0
       - SECRET_KEY=${SECRET_KEY}
       - EZS_SECRET_KEY=${EZS_SECRET_KEY}
       - APP_HOST=${APP_HOST}
@@ -58,7 +58,6 @@ services:
       - INVOICE_LIFETIME_MINUTES=${INVOICE_LIFETIME_MINUTES}
       - STATUS_CHECK_INTERVAL_SECONDS=${STATUS_CHECK_INTERVAL_SECONDS}
       - CLEANUP_INTERVAL_MINUTES=${CLEANUP_INTERVAL_MINUTES}
-      - REDIS_URL=${REDIS_URL}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9210/health"]
