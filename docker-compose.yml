@@ -11,7 +11,9 @@ services:
       - redis_data:/data
 
   evpower-backend:
-    build: .
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.production
     ports:
       - "9210:9210"  # API и WebSocket порт
     depends_on:

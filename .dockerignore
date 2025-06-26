@@ -60,11 +60,6 @@ logs/
 ehthumbs.db
 Thumbs.db
 
-# Docker
-Dockerfile*
-docker-compose*
-.dockerignore
-
 # Documentation
 README.md
 *.md
