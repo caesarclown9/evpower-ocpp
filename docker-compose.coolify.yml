@@ -18,8 +18,8 @@ services:
 
   evpower-backend:
     build:
-      context: ./backend
-      dockerfile: Dockerfile.production
+      context: .
+      dockerfile: Dockerfile
     container_name: evpower-backend
     restart: unless-stopped
     env_file:
@@ -29,7 +29,7 @@ services:
       APP_ENV: production
       APP_PORT: 9210
       OCPP_WS_PORT: 9210
-      REDIS_URL: redis://redis:6379
+      REDIS_URL: redis://redis:6379/0
     ports:
       - "9210:9210"  # API и WebSocket порт
     depends_on:
