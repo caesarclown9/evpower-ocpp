@@ -3,19 +3,29 @@
 import redis.asyncio as redis
 import json
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
+# 🔍 DEBUG: выводим реальный Redis URL
+logger.info(f"🔍 REDIS_MANAGER DEBUG: REDIS_URL = {REDIS_URL}")
+
 class RedisOcppManager:
     def __init__(self):
+        # 🔍 DEBUG: выводим URL при инициализации
+        logger.info(f"🔍 REDIS_MANAGER INIT: Using REDIS_URL = {REDIS_URL}")
         self.redis = redis.from_url(REDIS_URL, decode_responses=True)
 
     async def ping(self) -> bool:
         """Проверка соединения с Redis"""
         try:
-            await self.redis.ping()
+            result = await self.redis.ping()
+            logger.info(f"✅ REDIS PING SUCCESS: {result}")
             return True
-        except Exception:
+        except Exception as e:
+            logger.error(f"❌ REDIS PING FAILED: {e}")
             return False
 
     async def register_station(self, station_id: str):
