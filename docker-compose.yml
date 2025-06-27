@@ -49,6 +49,8 @@ services:
       - "coolify.type=compose"
       - "coolify.applicationId=evpower-ocpp"
       - "coolify.serviceId=evpower-backend"
+      - "coolify.main=true"
+      - "coolify.port=9210"
 
 networks:
   coolify:
