@@ -49,6 +49,15 @@ services:
       - "coolify.serviceId=evpower-backend"
       - "coolify.main=true"
       - "coolify.port=9210"
+      # Explicit Traefik labels для прокси
+      - "traefik.enable=true"
+      - "traefik.http.routers.evpower-backend.rule=Host(`ocpp.evpower.kg`)"
+      - "traefik.http.services.evpower-backend.loadbalancer.server.port=9210"
+      - "traefik.http.routers.evpower-backend.tls=true"
+      - "traefik.http.routers.evpower-backend.tls.certresolver=letsencrypt"
+      # Для WebSocket поддержки OCPP
+      - "traefik.http.middlewares.evpower-ws.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.routers.evpower-backend.middlewares=evpower-ws@docker"
 
 networks:
   coolify:
