@@ -14,15 +14,14 @@ services:
       timeout: 10s
       retries: 3
     networks:
-      - evpower-network
+      - coolify
 
   evpower-backend:
     build:
-      context: .
+      context: ./backend
       dockerfile: Dockerfile
     container_name: evpower-backend
     restart: unless-stopped
-
     environment:
       # Переопределяем критичные переменные для production
       APP_ENV: production
@@ -41,7 +40,7 @@ services:
       retries: 3
       start_period: 40s
     networks:
-      - evpower-network
+      - coolify
     volumes:
       - ./backend/certificates:/app/certificates:ro
       - /var/log/evpower-ocpp:/var/log/evpower-ocpp
@@ -52,37 +51,9 @@ services:
       - "coolify.applicationId=evpower-ocpp"
       - "coolify.serviceId=evpower-backend"
 
-  evpower-frontend:
-    build:
-      context: ./frontend
-      dockerfile: Dockerfile.production
-    container_name: evpower-frontend
-    restart: unless-stopped
-    environment:
-      NODE_ENV: production
-      NEXT_PUBLIC_API_URL: https://ocpp.evpower.kg/api
-      NEXT_PUBLIC_WS_URL: wss://ocpp.evpower.kg
-    ports:
-      - "3000:3000"
-    depends_on:
-      - evpower-backend
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3000"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-    networks:
-      - evpower-network
-    labels:
-      # Метки для Coolify
-      - "coolify.managed=true"
-      - "coolify.type=compose"
-      - "coolify.applicationId=evpower-ocpp"
-      - "coolify.serviceId=evpower-frontend"
-
 networks:
-  evpower-network:
-    driver: bridge
+  coolify:
+    external: true
 
 volumes:
   redis-data:
