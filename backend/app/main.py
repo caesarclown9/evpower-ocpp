@@ -266,6 +266,57 @@ async def health_check():
             "note": "КРИТИЧЕСКАЯ ОШИБКА: Redis недоступен - OCPP и зарядка не работают!"
         }
 
+@app.get("/health-force", summary="Принудительная диагностика Redis")
+async def health_check_force():
+    """Принудительная диагностика с пересозданием Redis подключения"""
+    import os
+    from ocpp_ws_server.redis_manager import RedisManager
+    
+    try:
+        # Принудительно создаем новый Redis manager
+        redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
+        logger.info(f"🔄 FORCE CHECK - Creating new Redis connection to: {redis_url}")
+        
+        # Создаем новый экземпляр для тестирования
+        test_redis = RedisManager(redis_url)
+        
+        # Пытаемся подключиться
+        ping_result = await test_redis.ping()
+        logger.info(f"🔄 FORCE CHECK - New Redis ping: {ping_result}")
+        
+        if ping_result:
+            # Тестируем операции
+            await test_redis.redis.set("health_test", "ok", ex=10)
+            test_value = await test_redis.redis.get("health_test")
+            await test_redis.redis.delete("health_test")
+            
+            logger.info(f"🔄 FORCE CHECK - Redis read/write test: {test_value}")
+            
+            return {
+                "status": "healthy",
+                "service": "EvPower OCPP WebSocket Server (FORCE CHECK)",
+                "version": "1.0.0",
+                "redis": "connected",
+                "redis_url": redis_url,
+                "ping_result": ping_result,
+                "rw_test": test_value.decode() if test_value else None,
+                "note": "Принудительная проверка прошла успешно"
+            }
+        else:
+            raise Exception("Redis ping failed")
+            
+    except Exception as e:
+        logger.error(f"❌ FORCE CHECK FAILED: {e}")
+        return {
+            "status": "unhealthy",
+            "service": "EvPower OCPP WebSocket Server (FORCE CHECK)",
+            "version": "1.0.0",
+            "error": str(e),
+            "redis": "disconnected",
+            "redis_url": os.getenv('REDIS_URL', 'NOT SET'),
+            "note": f"Принудительная проверка не удалась: {e}"
+        }
+
 # ============================================================================
 # OCPP WEBSOCKET ENDPOINT (основная функциональность)
 # ============================================================================
