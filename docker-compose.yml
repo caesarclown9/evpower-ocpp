@@ -27,8 +27,6 @@ services:
       APP_ENV: production
       APP_PORT: 9210
       OCPP_WS_PORT: 9210
-    ports:
-      - "9210:9210"  # API и WebSocket порт
     depends_on:
       redis:
         condition: service_healthy
