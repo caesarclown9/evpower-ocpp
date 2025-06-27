@@ -230,12 +230,21 @@ app.include_router(mobile.router)
 @app.get("/health", summary="Проверка здоровья OCPP сервера")
 async def health_check():
     """Проверка состояния OCPP WebSocket сервера"""
+    import os
     try:
+        # 🔍 DEBUG для health check
+        redis_url = os.getenv('REDIS_URL', 'NOT SET')
+        logger.info(f"🔍 HEALTH CHECK - REDIS_URL: {redis_url}")
+        
         redis_status = await redis_manager.ping()
+        logger.info(f"🔍 HEALTH CHECK - Redis ping result: {redis_status}")
+        
         if not redis_status:
             raise Exception("Redis недоступен - OCPP функции не работают")
             
         connected_stations = await redis_manager.get_stations()
+        logger.info(f"🔍 HEALTH CHECK - Connected stations: {len(connected_stations)}")
+        
         return {
             "status": "healthy",
             "service": "EvPower OCPP WebSocket Server",
@@ -246,7 +255,8 @@ async def health_check():
             "note": "Все системы работают"
         }
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
+        logger.error(f"❌ HEALTH CHECK FAILED: {e}")
+        logger.error(f"🔍 HEALTH CHECK - Current REDIS_URL: {os.getenv('REDIS_URL', 'NOT SET')}")
         return {
             "status": "unhealthy",
             "service": "EvPower OCPP WebSocket Server", 
