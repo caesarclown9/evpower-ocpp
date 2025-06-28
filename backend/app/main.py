@@ -1,20 +1,5 @@
-# Принудительная загрузка .env файла для background задач
+# Environment variables загружаются из Docker/Coolify напрямую
 import os
-from pathlib import Path
-
-# Загружаем .env файл явно перед импортом settings
-env_path = Path(__file__).parent.parent / '.env'
-if env_path.exists():
-    with open(env_path, 'r', encoding='utf-8') as f:
-        for line in f:
-            line = line.strip()
-            if line and not line.startswith('#') and '=' in line:
-                key, value = line.split('=', 1)
-                key = key.strip()
-                value = value.strip()
-                # Устанавливаем только если переменная еще не установлена
-                if key not in os.environ:
-                    os.environ[key] = value
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
