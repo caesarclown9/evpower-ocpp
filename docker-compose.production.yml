@@ -3,18 +3,18 @@ version: '3.8'
 services:
   evpower-backend:
     build: .
-    container_name: evpower-backend-${COOLIFY_APP_ID:-local}
+    container_name: evpower-backend
     restart: unless-stopped
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.${COOLIFY_APP_ID:-evpower}.rule=Host(`ocpp.evpower.kg`)"
-      - "traefik.http.routers.${COOLIFY_APP_ID:-evpower}.entrypoints=websecure"
-      - "traefik.http.routers.${COOLIFY_APP_ID:-evpower}.tls=true"
-      - "traefik.http.routers.${COOLIFY_APP_ID:-evpower}.tls.certresolver=letsencrypt"
-      - "traefik.http.services.${COOLIFY_APP_ID:-evpower}.loadbalancer.server.port=9210"
+      - "traefik.http.routers.evpower.rule=Host(`ocpp.evpower.kg`)"
+      - "traefik.http.routers.evpower.entrypoints=websecure"
+      - "traefik.http.routers.evpower.tls=true"
+      - "traefik.http.routers.evpower.tls.certresolver=letsencrypt"
+      - "traefik.http.services.evpower.loadbalancer.server.port=9210"
       # WebSocket support
-      - "traefik.http.middlewares.${COOLIFY_APP_ID:-evpower}-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
-      - "traefik.http.routers.${COOLIFY_APP_ID:-evpower}.middlewares=${COOLIFY_APP_ID:-evpower}-headers"
+      - "traefik.http.middlewares.evpower-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.routers.evpower.middlewares=evpower-headers"
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -26,7 +26,7 @@ services:
 
   redis:
     image: redis:7-alpine
-    container_name: redis-${COOLIFY_APP_ID:-local}
+    container_name: redis
     restart: unless-stopped
     volumes:
       - redis_data:/data
