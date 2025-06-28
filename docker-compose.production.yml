@@ -51,7 +51,7 @@ services:
     image: redis:7-alpine
     container_name: redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory-policy allkeys-lru --maxmemory 256mb --save 60 1000 --tcp-keepalive 60
+    command: redis-server --maxmemory-policy allkeys-lru --maxmemory 256mb --tcp-keepalive 60 --save ""
     volumes:
       - redis_data:/data
     healthcheck:
@@ -64,9 +64,6 @@ services:
       - coolify
     security_opt:
       - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /tmp:noexec,nosuid,size=100m
 
 volumes:
   redis_data:
