@@ -30,43 +30,50 @@ class StructuredFormatter(logging.Formatter):
             # Для всех остальных объектов (включая WebSocket) - строковое представление
             return str(obj)
     
-    def format(self, record: logging.LogRecord) -> str:
-        log_entry = {
-            "timestamp": datetime.utcnow().isoformat() + "Z",
-            "level": record.levelname,
-            "logger": record.name,
-            "message": record.getMessage(),
-            "correlation_id": correlation_id.get(),
-            "module": record.module,
-            "function": record.funcName,
-            "line": record.lineno,
-        }
-        
-        # Добавляем exception info если есть
-        if record.exc_info:
-            log_entry["exception"] = self.formatException(record.exc_info)
-        
-        # Добавляем дополнительные поля из record (безопасно)
-        excluded_fields = {
-            'name', 'msg', 'args', 'levelname', 'levelno', 'pathname', 
-            'filename', 'module', 'exc_info', 'exc_text', 'stack_info',
-            'lineno', 'funcName', 'created', 'msecs', 'relativeCreated',
-            'thread', 'threadName', 'processName', 'process', 'getMessage'
-        }
-        
-        for key, value in record.__dict__.items():
-            if key not in excluded_fields:
-                try:
-                    log_entry[key] = self._safe_serialize(value)
-                except Exception as e:
-                    # Если сериализация не удалась, записываем тип объекта
-                    log_entry[key] = f"<{type(value).__name__}>"
-        
+    def format(self, record):
+        """Форматирует лог запись в JSON"""
         try:
-            return json.dumps(log_entry, ensure_ascii=False)
+            # Исключаем несериализуемые объекты (WebSocket, Connection и т.д.)
+            if hasattr(record, 'args') and record.args:
+                cleaned_args = []
+                for arg in record.args:
+                    if hasattr(arg, '__class__') and any(x in str(arg.__class__.__name__) for x in ['WebSocket', 'Connection', 'Protocol', 'Transport']):
+                        cleaned_args.append(f"<{arg.__class__.__name__}>")
+                    else:
+                        cleaned_args.append(self._safe_serialize(arg))
+                record.args = tuple(cleaned_args)
+            
+            log_data = {
+                "timestamp": datetime.utcnow().isoformat() + 'Z',
+                "level": record.levelname,
+                "logger": record.name,
+                "message": record.getMessage(),
+                "correlation_id": correlation_id.get(),
+                "module": getattr(record, 'module', record.name.split('.')[-1]),
+                "function": getattr(record, 'funcName', ''),
+                "line": getattr(record, 'lineno', 0)
+            }
+            
+            # Добавляем дополнительные поля если они есть
+            extra_fields = ['method', 'path', 'client_ip', 'status_code', 'process_time', 
+                           'station_id', 'transaction_id', 'user_id', 'amount', 'currency']
+            
+            for field in extra_fields:
+                if hasattr(record, field):
+                    log_data[field] = self._safe_serialize(getattr(record, field))
+            
+            # Безопасная сериализация всего объекта
+            return json.dumps(self._safe_serialize(log_data), ensure_ascii=False, separators=(',', ':'))
+            
         except Exception as e:
-            # Fallback на простое логирование если JSON не работает
-            return f"{log_entry['timestamp']} - {log_entry['logger']} - {log_entry['level']} - {log_entry['message']}"
+            # Fallback в случае ошибки сериализации
+            return json.dumps({
+                "timestamp": datetime.utcnow().isoformat() + 'Z',
+                "level": "ERROR",
+                "logger": "logging_system",
+                "message": f"Logging error: {str(e)} | Original: {getattr(record, 'message', str(record))}",
+                "correlation_id": correlation_id.get()
+            }, ensure_ascii=False)
 
 def setup_logging():
     """Настройка системы логирования"""

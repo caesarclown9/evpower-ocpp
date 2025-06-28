@@ -39,6 +39,7 @@ services:
       - "coolify.version=1.0.0"
       - "coolify.name=evpower-backend"
     environment:
+      - REDIS_URL=redis://redis:6379/0
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:
@@ -51,7 +52,7 @@ services:
     image: redis:7-alpine
     container_name: redis
     restart: unless-stopped
-    command: redis-server --maxmemory-policy allkeys-lru --maxmemory 256mb --tcp-keepalive 60 --save ""
+    command: redis-server --appendonly yes --maxmemory-policy allkeys-lru --maxmemory 256mb --save 60 1000 --tcp-keepalive 60
     volumes:
       - redis_data:/data
     healthcheck:
