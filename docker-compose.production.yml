@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  evpower-backend:
+    build: .
+    container_name: evpower-backend-${COOLIFY_APP_ID:-local}
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.${COOLIFY_APP_ID:-evpower}.rule=Host(`ocpp.evpower.kg`)"
+      - "traefik.http.routers.${COOLIFY_APP_ID:-evpower}.entrypoints=websecure"
+      - "traefik.http.routers.${COOLIFY_APP_ID:-evpower}.tls=true"
+      - "traefik.http.routers.${COOLIFY_APP_ID:-evpower}.tls.certresolver=letsencrypt"
+      - "traefik.http.services.${COOLIFY_APP_ID:-evpower}.loadbalancer.server.port=9210"
+      # WebSocket support
+      - "traefik.http.middlewares.${COOLIFY_APP_ID:-evpower}-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.routers.${COOLIFY_APP_ID:-evpower}.middlewares=${COOLIFY_APP_ID:-evpower}-headers"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - coolify
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis-${COOLIFY_APP_ID:-local}
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - coolify
+
+volumes:
+  redis_data:
+
+networks:
+  coolify:
+    external: true 
