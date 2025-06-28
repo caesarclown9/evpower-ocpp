@@ -13,6 +13,6 @@ COPY start.sh /app/start.sh
 
 RUN chmod +x /app/start.sh
 
-EXPOSE 8180
+EXPOSE 9210
 
 CMD ["/app/start.sh"]
