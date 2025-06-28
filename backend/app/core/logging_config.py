@@ -13,6 +13,23 @@ correlation_id: ContextVar[str] = ContextVar('correlation_id', default='')
 class StructuredFormatter(logging.Formatter):
     """Форматтер для структурированных JSON логов"""
     
+    def _safe_serialize(self, obj: Any) -> Any:
+        """Безопасная сериализация объектов для JSON"""
+        if obj is None:
+            return None
+        elif isinstance(obj, (str, int, float, bool)):
+            return obj
+        elif isinstance(obj, (list, tuple)):
+            return [self._safe_serialize(item) for item in obj]
+        elif isinstance(obj, dict):
+            return {k: self._safe_serialize(v) for k, v in obj.items()}
+        elif hasattr(obj, '__dict__'):
+            # Для объектов с __dict__ берем только строковые представления
+            return str(obj)
+        else:
+            # Для всех остальных объектов (включая WebSocket) - строковое представление
+            return str(obj)
+    
     def format(self, record: logging.LogRecord) -> str:
         log_entry = {
             "timestamp": datetime.utcnow().isoformat() + "Z",
@@ -29,15 +46,27 @@ class StructuredFormatter(logging.Formatter):
         if record.exc_info:
             log_entry["exception"] = self.formatException(record.exc_info)
         
-        # Добавляем дополнительные поля из record
-        for key, value in record.__dict__.items():
-            if key not in ('name', 'msg', 'args', 'levelname', 'levelno', 'pathname', 
-                          'filename', 'module', 'exc_info', 'exc_text', 'stack_info',
-                          'lineno', 'funcName', 'created', 'msecs', 'relativeCreated',
-                          'thread', 'threadName', 'processName', 'process', 'getMessage'):
-                log_entry[key] = value
+        # Добавляем дополнительные поля из record (безопасно)
+        excluded_fields = {
+            'name', 'msg', 'args', 'levelname', 'levelno', 'pathname', 
+            'filename', 'module', 'exc_info', 'exc_text', 'stack_info',
+            'lineno', 'funcName', 'created', 'msecs', 'relativeCreated',
+            'thread', 'threadName', 'processName', 'process', 'getMessage'
+        }
         
-        return json.dumps(log_entry, ensure_ascii=False)
+        for key, value in record.__dict__.items():
+            if key not in excluded_fields:
+                try:
+                    log_entry[key] = self._safe_serialize(value)
+                except Exception as e:
+                    # Если сериализация не удалась, записываем тип объекта
+                    log_entry[key] = f"<{type(value).__name__}>"
+        
+        try:
+            return json.dumps(log_entry, ensure_ascii=False)
+        except Exception as e:
+            # Fallback на простое логирование если JSON не работает
+            return f"{log_entry['timestamp']} - {log_entry['logger']} - {log_entry['level']} - {log_entry['message']}"
 
 def setup_logging():
     """Настройка системы логирования"""
@@ -87,6 +116,17 @@ def setup_logging():
             "uvicorn.access": {
                 "level": "INFO",
                 "handlers": ["console"], 
+                "propagate": False
+            },
+            # Ограничиваем избыточное логирование WebSocket
+            "websockets": {
+                "level": "WARNING",
+                "handlers": ["console"],
+                "propagate": False
+            },
+            "websockets.server": {
+                "level": "WARNING", 
+                "handlers": ["console"],
                 "propagate": False
             }
         }

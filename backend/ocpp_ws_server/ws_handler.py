@@ -57,9 +57,34 @@ class OCPPChargePoint(CP):
         self.logger.info(f"BootNotification: {charge_point_model}, {charge_point_vendor}")
         
         try:
+            # 🚀 БЫСТРЫЙ ОТВЕТ: Минимальная обработка для избежания таймаутов
+            self.logger.info(f"✅ Станция {self.id} успешно зарегистрирована")
+            
+            # Выполняем DB операции асинхронно в background
+            firmware_version = kwargs.get('firmware_version')
+            asyncio.create_task(self._handle_boot_notification_background(firmware_version))
+            
+            return call_result.BootNotification(
+                current_time=datetime.utcnow().isoformat() + 'Z',
+                interval=300,
+                status=RegistrationStatus.accepted
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Error in BootNotification: {e}")
+            return call_result.BootNotification(
+                current_time=datetime.utcnow().isoformat() + 'Z',
+                interval=300,
+                status=RegistrationStatus.rejected
+            )
+    
+    async def _handle_boot_notification_background(self, firmware_version: str = None):
+        """Background обработка BootNotification для избежания блокировок"""
+        try:
+            self.logger.info(f"🔄 Background обработка BootNotification для {self.id}")
+            
             with next(get_db()) as db:
                 # Сохраняем информацию о станции
-                firmware_version = kwargs.get('firmware_version')
                 OCPPStationService.mark_boot_notification_sent(
                     db, self.id, firmware_version
                 )
@@ -113,26 +138,15 @@ class OCPPChargePoint(CP):
                         "limit_value": limit_value
                     }
                     
-                    # Используем asyncio для отправки Redis команды
-                    asyncio.create_task(
-                        redis_manager.publish_command(self.id, command_data)
-                    )
+                    # Отправляем Redis команду
+                    await redis_manager.publish_command(self.id, command_data)
                     
                     self.logger.info(f"🚀 Автозапуск зарядки для сессии {session_id}")
+                    
+                db.commit()
                 
-            return call_result.BootNotification(
-                current_time=datetime.utcnow().isoformat() + 'Z',
-                interval=300,
-                status=RegistrationStatus.accepted
-            )
-            
         except Exception as e:
-            self.logger.error(f"Error in BootNotification: {e}")
-            return call_result.BootNotification(
-                current_time=datetime.utcnow().isoformat() + 'Z',
-                interval=300,
-                status=RegistrationStatus.rejected
-            )
+            self.logger.error(f"❌ Ошибка background обработки BootNotification: {e}")
 
     @on('Heartbeat')
     def on_heartbeat(self, **kwargs):
