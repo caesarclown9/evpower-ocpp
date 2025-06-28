@@ -16,7 +16,7 @@ if env_path.exists():
                 if key not in os.environ:
                     os.environ[key] = value
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, status, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import logging
@@ -26,19 +26,14 @@ from datetime import datetime
 from sqlalchemy import text
 
 from app.core.config import settings
+from app.core.logging_config import setup_logging
+from app.core.security_middleware import SecurityMiddleware
 from ocpp_ws_server.ws_handler import OCPPWebSocketHandler
 from ocpp_ws_server.redis_manager import redis_manager
 from app.api import mobile  # Импорт mobile API
 
-# Настройка логирования - используем только console
-import sys
-
-# Простая настройка логирования только в консоль
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+# Настройка улучшенного логирования
+setup_logging()
 
 # Настройка специфичных логгеров
 logging.getLogger("OCPPHandler").setLevel(logging.INFO)
@@ -207,10 +202,20 @@ allowed_origins = os.getenv("ALLOWED_HOSTS", "").split(",")
 if not allowed_origins or allowed_origins == [""]:
     allowed_origins = ["*"]
 
-# Добавляем поддержку WebSocket в CORS
+# Добавляем Security Middleware
+security_middleware = SecurityMiddleware()
+app.middleware("http")(security_middleware)
+
+# Добавляем поддержку WebSocket в CORS (только production домены)
+production_origins = [
+    "https://ocpp.evpower.kg",
+    "wss://ocpp.evpower.kg", 
+    "https://app.flutterflow.io"
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=production_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],

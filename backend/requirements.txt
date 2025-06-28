@@ -25,3 +25,6 @@ python-multipart
 
 # --- Для O!Dengi интеграции ---
 cryptography>=3.4.8
+
+# Мониторинг и системные метрики
+psutil>=5.9.0
