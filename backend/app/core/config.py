@@ -12,8 +12,7 @@ class Settings(BaseSettings):
     # PostgreSQL connection URL for Supabase
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
     
-    # Redis settings
-    REDIS_URL: str = os.getenv("REDIS_URL", "redis://localhost:6379")
+    # Redis settings removed - managed by redis_manager.py
     
     # API settings
     API_V1_STR: str = "/api/v1"
