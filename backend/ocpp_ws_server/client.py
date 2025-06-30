@@ -15,7 +15,7 @@ except ImportError:
 
 parser = argparse.ArgumentParser(description="OCPP 1.6 WebSocket клиент")
 parser.add_argument("--chargebox_id", type=str, default=os.getenv("CHARGEBOX_ID", "DE-BERLIN-001"), help="ID станции (chargeBoxId)")
-parser.add_argument("--ocpp_url", type=str, default=os.getenv("OCPP_URL", "ws://localhost:8180/ws/DE-BERLIN-001"), help="OCPP WebSocket URL")
+parser.add_argument("--ocpp_url", type=str, default=os.getenv("OCPP_URL", "ws://localhost:9210/ws/DE-BERLIN-001"), help="OCPP WebSocket URL")
 args = parser.parse_args()
 
 CHARGEBOX_ID = args.chargebox_id

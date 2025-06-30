@@ -25,4 +25,4 @@ docker-compose ps
 
 echo "✅ Deployment complete!"
 echo "🌐 FastAPI: http://localhost:8000"
-echo "🔌 WebSocket: ws://localhost:8180" 
+echo "🔌 WebSocket: ws://localhost:9210" 

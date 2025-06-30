@@ -79,7 +79,7 @@ GET /ocpp/sessions?user_id=...
 ---
 
 ## Тестирование с эмулятором станции
-- Подключить эмулятор к ws://localhost:8180/ws/{station_id}
+- Подключить эмулятор к ws://localhost:9210/ws/{station_id}
 - Отправить BootNotification, StartTransaction, MeterValues, StopTransaction
 - Проверить, что лимиты и баланс учитываются, сессии фиксируются
 
