@@ -5,39 +5,39 @@ services:
     build: .
     container_name: evpower-backend
     restart: unless-stopped
-    labels:
-      - "traefik.enable=true"
-      # HTTP/HTTPS маршруты для REST API
-      - "traefik.http.routers.evpower-api.rule=Host(`ocpp.evpower.kg`) && !PathPrefix(`/ocpp/`) && !PathPrefix(`/ws/`)"
-      - "traefik.http.routers.evpower-api.entrypoints=websecure"
-      - "traefik.http.routers.evpower-api.tls=true"
-      - "traefik.http.routers.evpower-api.tls.certresolver=letsencrypt"
-      - "traefik.http.services.evpower-api.loadbalancer.server.port=9210"
-      
-      # WebSocket маршруты для OCPP
-      - "traefik.http.routers.evpower-ws.rule=Host(`ocpp.evpower.kg`) && (PathPrefix(`/ocpp/`) || PathPrefix(`/ws/`))"
-      - "traefik.http.routers.evpower-ws.entrypoints=websecure"
-      - "traefik.http.routers.evpower-ws.tls=true"
-      - "traefik.http.routers.evpower-ws.tls.certresolver=letsencrypt"
-      - "traefik.http.services.evpower-ws.loadbalancer.server.port=9210"
-      
-      # WebSocket специфичные настройки
-      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.Connection=Upgrade"
-      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.Upgrade=websocket"
-      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
-      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.X-Forwarded-For="
-      
-      # Применяем middleware
-      - "traefik.http.routers.evpower-ws.middlewares=evpower-ws-headers"
-      - "traefik.http.routers.evpower-api.middlewares=evpower-headers"
-      
-      # Стандартные заголовки для API
-      - "traefik.http.middlewares.evpower-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
-      
-      # Coolify метки
-      - "coolify.managed=true"
-      - "coolify.version=1.0.0"
-      - "coolify.name=evpower-backend"
+#    labels:
+#      - "traefik.enable=true"
+#      # HTTP/HTTPS маршруты для REST API
+#      - "traefik.http.routers.evpower-api.rule=Host(`ocpp.evpower.kg`) && !PathPrefix(`/ocpp/`) && !PathPrefix(`/ws/`)"
+#      - "traefik.http.routers.evpower-api.entrypoints=websecure"
+#      - "traefik.http.routers.evpower-api.tls=true"
+#      - "traefik.http.routers.evpower-api.tls.certresolver=letsencrypt"
+#      - "traefik.http.services.evpower-api.loadbalancer.server.port=9210"
+#      
+#      # WebSocket маршруты для OCPP
+#      - "traefik.http.routers.evpower-ws.rule=Host(`ocpp.evpower.kg`) && (PathPrefix(`/ocpp/`) || PathPrefix(`/ws/`))"
+#      - "traefik.http.routers.evpower-ws.entrypoints=websecure"
+#      - "traefik.http.routers.evpower-ws.tls=true"
+#      - "traefik.http.routers.evpower-ws.tls.certresolver=letsencrypt"
+#      - "traefik.http.services.evpower-ws.loadbalancer.server.port=9210"
+#      
+#      # WebSocket специфичные настройки
+#      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.Connection=Upgrade"
+#      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.Upgrade=websocket"
+#      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+#      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.X-Forwarded-For="
+#      
+#      # Применяем middleware
+#      - "traefik.http.routers.evpower-ws.middlewares=evpower-ws-headers"
+#      - "traefik.http.routers.evpower-api.middlewares=evpower-headers"
+#      
+#      # Стандартные заголовки для API
+#      - "traefik.http.middlewares.evpower-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+#      
+#      # Coolify метки
+#      - "coolify.managed=true"
+#      - "coolify.version=1.0.0"
+#      - "coolify.name=evpower-backend"
     environment:
       - REDIS_URL=redis://redis:6379/0
       - REDIS_HOST=redis
