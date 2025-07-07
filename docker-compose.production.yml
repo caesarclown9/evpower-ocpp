@@ -47,6 +47,8 @@ services:
         condition: service_healthy
     networks:
       - coolify
+    ports:
+      - "9210:9210"
 
   redis:
     image: redis:7-alpine
