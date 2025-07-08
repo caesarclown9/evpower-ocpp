@@ -47,15 +47,7 @@ services:
       - APP_ENV=production
       - LOG_LEVEL=INFO
       - WORKERS=1
-    # Включаем IPv6 поддержку в контейнере для Supabase
-    sysctls:
-      - net.ipv6.conf.all.disable_ipv6=0
-    # Используем DNS которые поддерживают IPv6
-    dns:
-      - 2001:4860:4860::8888
-      - 2001:4860:4860::8844
-      - 8.8.8.8
-      - 8.8.4.4
+    # Стандартная конфигурация без прокси
     depends_on:
       redis:
         condition: service_healthy
@@ -99,11 +91,12 @@ services:
         max-size: "5m"
         max-file: "2"
 
+
+
 volumes:
   redis_data:
     driver: local
 
 networks:
   coolify:
-    external: true
-    enable_ipv6: true 
+    external: true 
