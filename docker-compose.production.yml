@@ -5,43 +5,63 @@ services:
     build: .
     container_name: evpower-backend
     restart: unless-stopped
-#    labels:
-#      - "traefik.enable=true"
-#      # HTTP/HTTPS маршруты для REST API
-#      - "traefik.http.routers.evpower-api.rule=Host(`ocpp.evpower.kg`) && !PathPrefix(`/ocpp/`) && !PathPrefix(`/ws/`)"
-#      - "traefik.http.routers.evpower-api.entrypoints=websecure"
-#      - "traefik.http.routers.evpower-api.tls=true"
-#      - "traefik.http.routers.evpower-api.tls.certresolver=letsencrypt"
-#      - "traefik.http.services.evpower-api.loadbalancer.server.port=9210"
-#      
-#      # WebSocket маршруты для OCPP
-#      - "traefik.http.routers.evpower-ws.rule=Host(`ocpp.evpower.kg`) && (PathPrefix(`/ocpp/`) || PathPrefix(`/ws/`))"
-#      - "traefik.http.routers.evpower-ws.entrypoints=websecure"
-#      - "traefik.http.routers.evpower-ws.tls=true"
-#      - "traefik.http.routers.evpower-ws.tls.certresolver=letsencrypt"
-#      - "traefik.http.services.evpower-ws.loadbalancer.server.port=9210"
-#      
-#      # WebSocket специфичные настройки
-#      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.Connection=Upgrade"
-#      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.Upgrade=websocket"
-#      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
-#      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.X-Forwarded-For="
-#      
-#      # Применяем middleware
-#      - "traefik.http.routers.evpower-ws.middlewares=evpower-ws-headers"
-#      - "traefik.http.routers.evpower-api.middlewares=evpower-headers"
-#      
-#      # Стандартные заголовки для API
-#      - "traefik.http.middlewares.evpower-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
-#      
-#      # Coolify метки
-#      - "coolify.managed=true"
-#      - "coolify.version=1.0.0"
-#      - "coolify.name=evpower-backend"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9210/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '0.5'
+        reservations:
+          memory: 512M
+          cpus: '0.25'
+    security_opt:
+      - no-new-privileges:true
+    user: "1000:1000"
+    tmpfs:
+      - /tmp
+    labels:
+      - "traefik.enable=true"
+      # HTTP/HTTPS маршруты для REST API
+      - "traefik.http.routers.evpower-api.rule=Host(`ocpp.evpower.kg`) && !PathPrefix(`/ocpp/`) && !PathPrefix(`/ws/`)"
+      - "traefik.http.routers.evpower-api.entrypoints=websecure"
+      - "traefik.http.routers.evpower-api.tls=true"
+      - "traefik.http.routers.evpower-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.evpower-api.loadbalancer.server.port=9210"
+      
+      # WebSocket маршруты для OCPP
+      - "traefik.http.routers.evpower-ws.rule=Host(`ocpp.evpower.kg`) && (PathPrefix(`/ocpp/`) || PathPrefix(`/ws/`))"
+      - "traefik.http.routers.evpower-ws.entrypoints=websecure"
+      - "traefik.http.routers.evpower-ws.tls=true"
+      - "traefik.http.routers.evpower-ws.tls.certresolver=letsencrypt"
+      - "traefik.http.services.evpower-ws.loadbalancer.server.port=9210"
+      
+      # WebSocket специфичные настройки
+      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.Connection=Upgrade"
+      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.Upgrade=websocket"
+      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.evpower-ws-headers.headers.customrequestheaders.X-Forwarded-For="
+      
+      # Применяем middleware
+      - "traefik.http.routers.evpower-ws.middlewares=evpower-ws-headers"
+      - "traefik.http.routers.evpower-api.middlewares=evpower-headers"
+      
+      # Стандартные заголовки для API
+      - "traefik.http.middlewares.evpower-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      
+      # Coolify метки
+      - "coolify.managed=true"
+      - "coolify.version=1.0.0"
+      - "coolify.name=evpower-backend"
     environment:
       - REDIS_URL=redis://redis:6379/0
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - APP_ENV=production
+      - LOG_LEVEL=INFO
+      - WORKERS=1
     depends_on:
       redis:
         condition: service_healthy
@@ -49,14 +69,28 @@ services:
       - coolify
     ports:
       - "9210:9210"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   redis:
     image: redis:7-alpine
     container_name: redis
     restart: unless-stopped
-    command: redis-server --appendonly yes --maxmemory-policy allkeys-lru --maxmemory 256mb --save 60 1000 --tcp-keepalive 60
+    command: redis-server /usr/local/etc/redis/redis.conf
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.25'
+        reservations:
+          memory: 256M
+          cpus: '0.1'
     volumes:
       - redis_data:/data
+      - ./backend/redis.conf:/usr/local/etc/redis/redis.conf:ro
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -67,9 +101,16 @@ services:
       - coolify
     security_opt:
       - no-new-privileges:true
+    user: "999:999"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "5m"
+        max-file: "2"
 
 volumes:
   redis_data:
+    driver: local
 
 networks:
   coolify:
