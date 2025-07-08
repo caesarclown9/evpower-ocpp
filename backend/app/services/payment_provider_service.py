@@ -20,8 +20,15 @@ logger = logging.getLogger(__name__)
 class PaymentProviderService:
     """Унифицированный сервис для работы с платежными провайдерами"""
     
-    def __init__(self):
-        self.provider = settings.PAYMENT_PROVIDER
+    def __init__(self, force_provider: Optional[str] = None):
+        """
+        Инициализация провайдера
+        
+        Args:
+            force_provider: Принудительно использовать конкретный провайдер ("OBANK" или "ODENGI")
+                           Если None - использует настройку из config
+        """
+        self.provider = force_provider or settings.PAYMENT_PROVIDER
         
         if self.provider == "OBANK":
             from app.services.obank_service import obank_service
@@ -266,8 +273,13 @@ class PaymentProviderService:
 _payment_provider_service = None
 
 def get_payment_provider_service() -> PaymentProviderService:
-    """Возвращает экземпляр PaymentProviderService с ленивой инициализацией"""
-    global _payment_provider_service
-    if _payment_provider_service is None:
-        _payment_provider_service = PaymentProviderService()
-    return _payment_provider_service 
+    """Получение сервиса с настройками по умолчанию"""
+    return PaymentProviderService()
+
+def get_qr_payment_service() -> PaymentProviderService:
+    """Получение сервиса для QR платежей (O!Dengi)"""
+    return PaymentProviderService(force_provider="ODENGI")
+
+def get_card_payment_service() -> PaymentProviderService:
+    """Получение сервиса для платежей картами (OBANK)"""
+    return PaymentProviderService(force_provider="OBANK") 
