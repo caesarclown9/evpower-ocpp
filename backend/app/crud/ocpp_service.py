@@ -898,18 +898,26 @@ class PaymentLifecycleService:
                 if 'payments' in data and data['payments']:
                     payment_info = data['payments'][0]  # Берем первый платеж
                     payment_status = payment_info.get('status')
-                    paid_amount = float(payment_info.get('amount', 0)) / 100  # Из копеек в сомы
+                    payment_amount = payment_info.get('amount', 0)
+                    
+                    logger.info(f"💳 O!Dengi payment_status='{payment_status}', amount={payment_amount}")
                     
                     # Маппинг статусов от O!Dengi
                     if payment_status == 'approved':
                         new_status = 1
                         mapped_status = "approved"
+                        paid_amount = float(payment_amount) / 100  # Из копеек в сомы только для approved
+                        logger.info(f"💳 APPROVED: установлен paid_amount={paid_amount}")
                     elif payment_status == 'processing':
                         new_status = 0
                         mapped_status = "processing"
+                        paid_amount = None  # Для processing paid_amount должен быть None
+                        logger.info(f"💳 PROCESSING: paid_amount=None")
                     else:
                         new_status = 2
                         mapped_status = "canceled"
+                        paid_amount = None  # Для canceled paid_amount должен быть None
+                        logger.info(f"💳 OTHER STATUS '{payment_status}': paid_amount=None")
                 else:
                     # Fallback для случая без payments (обычно processing)
                     status_text = data.get('status', 'processing')
@@ -926,26 +934,30 @@ class PaymentLifecycleService:
             payment_processed = False
             if new_status == 1 and current_status != "approved" and existing_paid_amount is None:
                 # КРИТИЧЕСКИ ВАЖНО: Проверяем что платеж еще не был обработан
-                logger.info(f"🔍 Платеж {invoice_id} готов к обработке: new_status={new_status}, current_status={current_status}, existing_paid_amount={existing_paid_amount}")
+                logger.info(f"💰 ОБРАБАТЫВАЕМ ПЛАТЕЖ {invoice_id}: new_status={new_status}, current_status={current_status}, existing_paid_amount={existing_paid_amount}, paid_amount={paid_amount}")
                 
                 if payment_table == "balance_topups":
                     # Обрабатываем пополнение баланса
                     current_balance = payment_service.get_client_balance(db, client_id)
+                    logger.info(f"💰 Текущий баланс клиента {client_id}: {current_balance}")
+                    
                     new_balance = payment_service.update_client_balance(
                         db, client_id, Decimal(str(paid_amount or 0)), "add",
-                        f"Пополнение баланса через O!Dengi (invoice: {invoice_id})"
+                        f"Пополнение баланса через {payment_provider} (invoice: {invoice_id})"
                     )
+                    logger.info(f"💰 Баланс обновлен с {current_balance} до {new_balance}")
                     
                     # Создаем транзакцию
-                    payment_service.create_payment_transaction(
+                    transaction_id = payment_service.create_payment_transaction(
                         db, client_id, "balance_topup", 
                         Decimal(str(paid_amount or 0)), current_balance, new_balance,
-                        f"Пополнение баланса через O!Dengi",
+                        f"Пополнение баланса через {payment_provider}",
                         balance_topup_id=payment_id
                     )
+                    logger.info(f"💰 Создана транзакция {transaction_id}")
                     
                     payment_processed = True
-                    logger.info(f"✅ Баланс пополнен автоматически: клиент {client_id}, сумма {paid_amount}, новый баланс {new_balance}")
+                    logger.info(f"✅ БАЛАНС ПОПОЛНЕН АВТОМАТИЧЕСКИ: клиент {client_id}, сумма {paid_amount}, новый баланс {new_balance}")
             elif new_status == 1 and existing_paid_amount is not None:
                 # Платеж уже был обработан ранее
                 logger.info(f"⚠️ Платеж {invoice_id} уже был обработан ранее (paid_amount: {existing_paid_amount})")
@@ -956,7 +968,7 @@ class PaymentLifecycleService:
                 payment_processed = False
             else:
                 # Другие случаи
-                logger.info(f"🔍 Платеж {invoice_id} НЕ обрабатывается: new_status={new_status}, current_status={current_status}, existing_paid_amount={existing_paid_amount}")
+                logger.info(f"🔍 Платеж {invoice_id} НЕ обрабатывается: new_status={new_status}, current_status={current_status}, existing_paid_amount={existing_paid_amount}, paid_amount={paid_amount}")
             
             # Обновляем статус в базе (включая paid_at если платеж обработан)
             if payment_processed and payment_table == "balance_topups":
