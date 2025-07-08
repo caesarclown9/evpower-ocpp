@@ -47,16 +47,15 @@ services:
       - APP_ENV=production
       - LOG_LEVEL=INFO
       - WORKERS=1
-    # Принудительное использование IPv4 для внешних подключений  
-    extra_hosts:
-      - "db.fsoffzrngojgsigrmlui.supabase.co:35.177.75.133"
-    # Используем Google DNS для IPv4
+    # Включаем IPv6 поддержку в контейнере для Supabase
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+    # Используем DNS которые поддерживают IPv6
     dns:
+      - 2001:4860:4860::8888
+      - 2001:4860:4860::8844
       - 8.8.8.8
       - 8.8.4.4
-    # Отключаем IPv6 для контейнера
-    sysctls:
-      - net.ipv6.conf.all.disable_ipv6=1
     depends_on:
       redis:
         condition: service_healthy
@@ -106,4 +105,5 @@ volumes:
 
 networks:
   coolify:
-    external: true 
+    external: true
+    enable_ipv6: true 
