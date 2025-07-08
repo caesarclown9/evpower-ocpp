@@ -847,7 +847,7 @@ class PaymentLifecycleService:
             # Получаем данные платежа (включая paid_amount для проверки дублирования)
             if payment_table == "balance_topups":
                 query = text("""
-                    SELECT id, order_id, client_id, status, status_check_count, created_at, paid_amount
+                    SELECT id, order_id, client_id, status, status_check_count, created_at, paid_amount, payment_provider
                     FROM balance_topups WHERE invoice_id = :invoice_id
                 """)
             else:
@@ -857,14 +857,16 @@ class PaymentLifecycleService:
             if not result:
                 return {"success": False, "error": "payment_not_found"}
             
-            payment_id, order_id, client_id, current_status, check_count, created_at, existing_paid_amount = result
+            payment_id, order_id, client_id, current_status, check_count, created_at, existing_paid_amount, payment_provider = result
             
             # Проверяем нужна ли проверка
             if not PaymentLifecycleService.should_status_check(created_at, None, check_count, current_status):
                 return {"success": False, "error": "status_check_not_needed"}
             
             # Выбираем провайдера и вызываем соответствующий API
-            if settings.PAYMENT_PROVIDER == "OBANK":
+            # ✅ Используем сохраненный провайдер вместо глобальной настройки
+            logger.info(f"🔍 Status check для {invoice_id}: payment_provider='{payment_provider}'")
+            if payment_provider == "OBANK":
                 # Для OBANK используем auth_key из order_id
                 from app.services.obank_service import obank_service
                 api_response = await obank_service.check_payment_status(auth_key=invoice_id)
