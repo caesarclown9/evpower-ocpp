@@ -5,6 +5,9 @@ services:
     build: .
     container_name: evpower-backend
     restart: unless-stopped
+    # Добавляем IPv4 маппинг для Supabase
+    extra_hosts:
+      - "aws-0-eu-west-1.pooler.supabase.com:52.209.89.87"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9210/health"]
       interval: 30s
