@@ -1877,16 +1877,21 @@ async def create_qr_balance_topup(
                 client_id=request.client_id
             )
 
-        # 7. Получаем QR код и app link из O!Dengi ответа
+        # 7. Получаем QR код из ODENGI ответа (по официальной документации)
         raw_response = payment_response.get("raw_response", {})
         qr_data = raw_response.get("data", {})
         
-        qr_code_url = qr_data.get("qr") or qr_data.get("qr_url") or payment_response.get("payment_url")
-        app_link_url = qr_data.get("link_app") or payment_response.get("payment_url")
+        # По документации ODENGI ответ должен содержать invoice_id и qr поля
+        qr_code_data = qr_data.get("qr")  # Прямые данные QR кода
+        qr_code_url = qr_data.get("qr_url") or f"https://api.dengi.o.kg/qr.php?type=emvQr&data={qr_code_data}" if qr_code_data else None
+        app_link_url = qr_data.get("link_app") or qr_data.get("app_link")
         
-        # Извлекаем данные QR-кода
-        qr_code_data = None
-        if qr_code_url:
+        logger.info(f"📱 ODENGI ответ: qr_data={qr_code_data[:50] if qr_code_data else None}...")
+        logger.info(f"📱 ODENGI qr_url={qr_code_url}")
+        logger.info(f"📱 ODENGI app_link={app_link_url}")
+        
+        # Если нет прямых данных QR, пытаемся извлечь из URL
+        if not qr_code_data and qr_code_url:
             try:
                 from urllib.parse import urlparse, parse_qs, unquote
                 parsed_url = urlparse(qr_code_url)
@@ -1894,9 +1899,9 @@ async def create_qr_balance_topup(
                 
                 if 'data' in query_params and query_params['data']:
                     qr_code_data = unquote(query_params['data'][0])
-                    logger.info(f"📱 Извлечены данные QR-кода: {qr_code_data[:50]}...")
+                    logger.info(f"📱 Извлечены данные QR из URL: {qr_code_data[:50]}...")
             except Exception as e:
-                logger.warning(f"⚠️ Не удалось извлечь данные QR-кода: {e}")
+                logger.warning(f"⚠️ Не удалось извлечь данные QR-кода из URL: {e}")
                 qr_code_data = None
         
         # 8. Рассчитываем время жизни платежа

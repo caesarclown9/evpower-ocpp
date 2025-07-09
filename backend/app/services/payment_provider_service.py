@@ -97,11 +97,14 @@ class PaymentProviderService:
                 amount_kopecks=amount_kopecks
             )
             
-            # O!Dengi может вернуть данные в разных полях в зависимости от версии API
-            invoice_id = (response.get('invoice_id') or 
-                         response.get('id') or 
-                         response.get('data', {}).get('invoice_id') or
+            # ODENGI возвращает invoice_id в поле data согласно документации
+            data = response.get('data', {})
+            invoice_id = (data.get('invoice_id') or 
+                         response.get('invoice_id') or
+                         response.get('id') or
                          order_id)  # fallback к order_id если API не вернул ID
+            
+            logger.info(f"📱 ODENGI extracted invoice_id: {invoice_id}")
             
             payment_url = (response.get('url') or 
                           response.get('pay_url') or
@@ -176,13 +179,12 @@ class PaymentProviderService:
                 # Конвертируем из копеек в сомы
                 paid_amount = response.get('amount', 0) / 100
             
-            # Маппинг статусов O!Dengi (обновлённые)
+            # Маппинг статусов O!Dengi (по официальной документации)
             status_mapping = {
-                0: "processing",
-                1: "approved", 
-                2: "canceled",
-                3: "refunded",
-                4: "partial_refund"
+                1: "processing",  # В ожидании оплаты
+                2: "canceled",    # Транзакция отменена
+                3: "approved",    # Платеж оплачен
+                0: "processing"   # Fallback
             }
             
             return {
