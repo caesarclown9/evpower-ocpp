@@ -685,9 +685,9 @@ class ODengiService:
     
     @staticmethod
     def get_status_text(status: int) -> str:
-        """Преобразование статуса O!Dengi в текст"""
+        """Преобразование внутреннего статуса в текст"""
         statuses = {
-            1: "В ожидании оплаты",  # PROCESSING
+            1: "В ожидании оплаты",  # PROCESSING  
             2: "Транзакция отменена",  # CANCELED
             3: "Платеж оплачен",  # APPROVED
             0: "Неизвестный статус"  # Fallback
@@ -906,34 +906,44 @@ class PaymentLifecycleService:
                 # Парсим ответ O!Dengi по официальной документации
                 data = odengi_response.get('data', {})
                 
-                # По документации ODENGI: 1=processing, 2=canceled, 3=approved
-                odengi_status = data.get('status', 1)  # По умолчанию 1 (processing)
+                # РЕАЛЬНОЕ API ODENGI возвращает текстовые статусы!
+                odengi_status_text = data.get('status', 'processing')  # Текстовый статус
                 payment_amount = data.get('amount', 0)
                 
-                logger.info(f"💳 ODENGI numeric status={odengi_status}, amount={payment_amount}")
+                logger.info(f"💳 ODENGI текстовый status='{odengi_status_text}', amount={payment_amount}")
                 
-                # Официальный маппинг статусов ODENGI
-                if odengi_status == 3:  # Платеж оплачен
+                # Проверяем есть ли массив payments (для оплаченных платежей)
+                payments = data.get('payments', [])
+                if payments and len(payments) > 0:
+                    # Если есть payments, берем статус оттуда и сумму
+                    payment_info = payments[0]
+                    payment_status = payment_info.get('status', odengi_status_text)
+                    payment_amount = payment_info.get('amount', payment_amount)
+                    logger.info(f"💳 ODENGI из payments: status='{payment_status}', amount={payment_amount}")
+                    odengi_status_text = payment_status
+                
+                # Маппинг РЕАЛЬНЫХ текстовых статусов ODENGI
+                if odengi_status_text == 'approved':  # Платеж оплачен
                     new_status = 3
                     mapped_status = "approved"
                     paid_amount = float(payment_amount) / 100 if payment_amount > 0 else None
                     logger.info(f"💳 ODENGI APPROVED: paid_amount={paid_amount}")
-                elif odengi_status == 1:  # В ожидании оплаты
+                elif odengi_status_text == 'processing':  # В ожидании оплаты
                     new_status = 1
                     mapped_status = "processing"
                     paid_amount = None
                     logger.info(f"💳 ODENGI PROCESSING")
-                elif odengi_status == 2:  # Транзакция отменена
+                elif odengi_status_text in ['canceled', 'cancelled', 'failed']:  # Отменен
                     new_status = 2
                     mapped_status = "canceled"
                     paid_amount = None
                     logger.info(f"💳 ODENGI CANCELED")
                 else:
-                    # Неизвестный статус - считаем отмененным для безопасности
-                    new_status = 2
-                    mapped_status = "canceled"
+                    # Неизвестный статус - считаем processing для безопасности
+                    new_status = 1
+                    mapped_status = "processing"
                     paid_amount = None
-                    logger.warning(f"💳 ODENGI UNKNOWN STATUS {odengi_status} - treating as canceled")
+                    logger.warning(f"💳 ODENGI UNKNOWN STATUS '{odengi_status_text}' - treating as processing")
             
             # Если платеж оплачен - обрабатываем ПЕРЕД обновлением статуса
             payment_processed = False
