@@ -910,12 +910,12 @@ class PaymentLifecycleService:
                 if 'payments' in data and data['payments']:
                     payment_info = data['payments'][0]  # Берем первый платеж
                     odengi_status = payment_info.get('status', 'processing')
-                    payment_amount = payment_info.get('amount', 0)
+                    payment_amount = int(payment_info.get('amount', 0))  # Преобразуем в int
                     logger.info(f"💳 ODENGI PAYMENTS status='{odengi_status}', amount={payment_amount}")
                 else:
                     # Если нет payments - читаем из корневого data
                     odengi_status = data.get('status', 'processing')
-                    payment_amount = data.get('amount', 0)
+                    payment_amount = int(data.get('amount', 0))  # Преобразуем в int
                     logger.info(f"💳 ODENGI ROOT status='{odengi_status}', amount={payment_amount}")
                 
                 # Обработка ТЕКСТОВЫХ статусов ODENGI (как есть в реальности)
