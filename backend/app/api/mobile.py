@@ -1893,8 +1893,19 @@ async def create_qr_balance_topup(
         # Извлекаем EMV QR данные из ODENGI URLs
         qr_code_data = None
         
-        # Метод 1: Извлечение из параметра 'data' в основном URL
-        if qr_code_url:
+        # Метод 1: ПРИОРИТЕТ - извлечение из fragment (#) альтернативного URL (ПОЛНЫЕ ДАННЫЕ)
+        if qr_code_url_alt:
+            try:
+                from urllib.parse import urlparse, unquote
+                parsed_url = urlparse(qr_code_url_alt)
+                if parsed_url.fragment:
+                    qr_code_data = unquote(parsed_url.fragment)
+                    logger.info(f"📱 Извлечены ПОЛНЫЕ EMV QR данные из fragment: {qr_code_data[:50]}... (длина: {len(qr_code_data)})")
+            except Exception as e:
+                logger.warning(f"⚠️ Ошибка извлечения из fragment: {e}")
+        
+        # Метод 2: FALLBACK - извлечение из параметра 'data' в основном URL  
+        if not qr_code_data and qr_code_url:
             try:
                 from urllib.parse import urlparse, parse_qs, unquote
                 parsed_url = urlparse(qr_code_url)
@@ -1902,38 +1913,59 @@ async def create_qr_balance_topup(
                 
                 if 'data' in query_params and query_params['data']:
                     qr_code_data = unquote(query_params['data'][0])
-                    logger.info(f"📱 Извлечены EMV QR данные из 'data' параметра: {qr_code_data[:50]}...")
+                    logger.info(f"📱 Извлечены EMV QR данные из 'data' параметра: {qr_code_data[:50]}... (длина: {len(qr_code_data)})")
             except Exception as e:
                 logger.warning(f"⚠️ Ошибка извлечения из 'data' параметра: {e}")
-        
-        # Метод 2: Извлечение из fragment (#) альтернативного URL
-        if not qr_code_data and qr_code_url_alt:
-            try:
-                from urllib.parse import urlparse, unquote
-                parsed_url = urlparse(qr_code_url_alt)
-                if parsed_url.fragment:
-                    qr_code_data = unquote(parsed_url.fragment)
-                    logger.info(f"📱 Извлечены EMV QR данные из fragment: {qr_code_data[:50]}...")
-            except Exception as e:
-                logger.warning(f"⚠️ Ошибка извлечения из fragment: {e}")
-        
-        # Метод 3: Fallback - используем прямые данные если они есть
+                
+        # Метод 3: Прямое извлечение из URL строки (если парсинг не работает)
         if not qr_code_data:
-            for key in ['qr_code', 'emv_qr', 'qr_string']:
+            for url in [qr_code_url_alt, qr_code_url]:
+                if url and '#' in url:
+                    try:
+                        # Извлекаем все после символа #
+                        raw_data = url.split('#')[1]
+                        qr_code_data = unquote(raw_data)
+                        logger.info(f"📱 Извлечены QR данные прямым методом: {qr_code_data[:50]}... (длина: {len(qr_code_data)})")
+                        break
+                    except Exception as e:
+                        logger.warning(f"⚠️ Ошибка прямого извлечения: {e}")
+                elif url and 'data=' in url:
+                    try:
+                        # Извлекаем параметр data из URL строки
+                        data_part = url.split('data=')[1].split('&')[0]
+                        qr_code_data = unquote(data_part)
+                        logger.info(f"📱 Извлечены QR данные из URL строки: {qr_code_data[:50]}... (длина: {len(qr_code_data)})")
+                        break
+                    except Exception as e:
+                        logger.warning(f"⚠️ Ошибка извлечения из URL строки: {e}")
+        
+        # Метод 4: Последний шанс - ищем прямые данные в ответе ODENGI
+        if not qr_code_data:
+            for key in ['qr_code', 'emv_qr', 'qr_string', 'emv_data']:
                 if qr_data.get(key) and not qr_data.get(key).startswith('http'):
                     qr_code_data = qr_data.get(key)
-                    logger.info(f"📱 Найдены прямые EMV QR данные в поле '{key}': {qr_code_data[:50]}...")
+                    logger.info(f"📱 Найдены прямые EMV QR данные в поле '{key}': {qr_code_data[:50]}... (длина: {len(qr_code_data)})")
                     break
         
-        # Проверяем что у нас есть валидные EMV QR данные
-        if qr_code_data and not qr_code_data.startswith('000201'):
-            logger.warning(f"⚠️ QR данные не похожи на EMV формат: {qr_code_data[:50]}...")
-        
-        if not qr_code_data:
-            logger.error("❌ НЕ УДАЛОСЬ ИЗВЛЕЧЬ EMV QR ДАННЫЕ из ответа ODENGI!")
-            logger.error(f"❌ Полный ответ ODENGI: {qr_data}")
+        # Валидация EMV QR данных
+        if qr_code_data:
+            qr_length = len(qr_code_data)
+            is_emv_format = qr_code_data.startswith('000201')
+            is_valid_length = qr_length >= 150  # Минимальная длина для полного EMV QR
+            
+            if not is_emv_format:
+                logger.warning(f"⚠️ QR данные не в EMV формате (не начинаются с 000201): {qr_code_data[:50]}...")
+            
+            if not is_valid_length:
+                logger.warning(f"⚠️ QR данные слишком короткие ({qr_length} символов, ожидается минимум 150)")
+                logger.warning(f"⚠️ Возможно данные обрезаны. Полные данные: {qr_code_data}")
+            
+            logger.info(f"✅ EMV QR данные извлечены: {qr_length} символов, EMV формат: {is_emv_format}, достаточная длина: {is_valid_length}")
         else:
-            logger.info(f"✅ EMV QR данные успешно извлечены: {len(qr_code_data)} символов")
+            logger.error("❌ НЕ УДАЛОСЬ ИЗВЛЕЧЬ EMV QR ДАННЫЕ из ответа ODENGI!")
+            logger.error(f"❌ Доступные поля в ответе: {list(qr_data.keys()) if isinstance(qr_data, dict) else 'не словарь'}")
+            logger.error(f"❌ qr_code_url: {qr_code_url}")
+            logger.error(f"❌ qr_code_url_alt: {qr_code_url_alt}")
         
         # 8. Рассчитываем время жизни платежа
         created_at = datetime.now(timezone.utc)
