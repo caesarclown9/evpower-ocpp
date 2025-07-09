@@ -906,11 +906,17 @@ class PaymentLifecycleService:
                 # Парсим ответ O!Dengi по официальной документации
                 data = odengi_response.get('data', {})
                 
-                # ODENGI возвращает ТЕКСТОВЫЕ статусы
-                odengi_status = data.get('status', 'processing')  # По умолчанию processing
-                payment_amount = data.get('amount', 0)
-                
-                logger.info(f"💳 ODENGI text status='{odengi_status}', amount={payment_amount}")
+                # ИСПРАВЛЕНО: Проверяем есть ли payments (для approved статуса)
+                if 'payments' in data and data['payments']:
+                    payment_info = data['payments'][0]  # Берем первый платеж
+                    odengi_status = payment_info.get('status', 'processing')
+                    payment_amount = payment_info.get('amount', 0)
+                    logger.info(f"💳 ODENGI PAYMENTS status='{odengi_status}', amount={payment_amount}")
+                else:
+                    # Если нет payments - читаем из корневого data
+                    odengi_status = data.get('status', 'processing')
+                    payment_amount = data.get('amount', 0)
+                    logger.info(f"💳 ODENGI ROOT status='{odengi_status}', amount={payment_amount}")
                 
                 # Обработка ТЕКСТОВЫХ статусов ODENGI (как есть в реальности)
                 if odengi_status == 'approved':  # Платеж оплачен
