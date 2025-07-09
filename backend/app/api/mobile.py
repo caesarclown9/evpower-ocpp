@@ -1877,44 +1877,45 @@ async def create_qr_balance_topup(
                 client_id=request.client_id
             )
 
-        # 7. Получаем QR код из ODENGI ответа (правильное извлечение)
+        # 7. Получаем QR код из ODENGI ответа (по официальной документации)
         raw_response = payment_response.get("raw_response", {})
         qr_data = raw_response.get("data", {})
         
-        # ODENGI возвращает URLs, но нам нужны EMV QR данные
-        qr_code_url = qr_data.get("qr")  # Полный URL с QR данными
-        qr_code_url_alt = qr_data.get("qr_url")  # Альтернативный URL
+        # По документации ODENGI ответ должен содержать invoice_id и qr поля
+        qr_code_data = qr_data.get("qr")  # Прямые данные QR кода
+        qr_code_url = qr_data.get("qr_url") or f"https://api.dengi.o.kg/qr.php?type=emvQr&data={qr_code_data}" if qr_code_data else None
         app_link_url = qr_data.get("link_app") or qr_data.get("app_link")
         
-        logger.info(f"📱 ODENGI qr_url: {qr_code_url}")
-        logger.info(f"📱 ODENGI qr_url_alt: {qr_code_url_alt}")
-        logger.info(f"📱 ODENGI app_link: {app_link_url}")
+        logger.info(f"📱 ODENGI ответ: qr_data={qr_code_data[:50] if qr_code_data else None}...")
+        logger.info(f"📱 ODENGI qr_url={qr_code_url}")
+        logger.info(f"📱 ODENGI app_link={app_link_url}")
         
-        # ПРОСТОЕ извлечение QR данных (КАК БЫЛО В РАБОЧЕЙ ВЕРСИИ)
-        # Банковские приложения прекрасно работают с URL QR кодами!
-        qr_code_data = qr_code_url or qr_code_url_alt
-        
-        logger.info(f"📱 QR код для сканирования: {qr_code_data}")
-        
-        # Простая проверка что QR код получен
-        if not qr_code_data:
-            logger.error("❌ НЕ ПОЛУЧЕН QR КОД из ответа ODENGI!")
-            logger.error(f"❌ Доступные поля: {list(qr_data.keys()) if isinstance(qr_data, dict) else 'не словарь'}")
-        else:
-            logger.info(f"✅ QR код успешно получен: {len(qr_code_data)} символов")
+        # Если нет прямых данных QR, пытаемся извлечь из URL
+        if not qr_code_data and qr_code_url:
+            try:
+                from urllib.parse import urlparse, parse_qs, unquote
+                parsed_url = urlparse(qr_code_url)
+                query_params = parse_qs(parsed_url.query)
+                
+                if 'data' in query_params and query_params['data']:
+                    qr_code_data = unquote(query_params['data'][0])
+                    logger.info(f"📱 Извлечены данные QR из URL: {qr_code_data[:50]}...")
+            except Exception as e:
+                logger.warning(f"⚠️ Не удалось извлечь данные QR-кода из URL: {e}")
+                qr_code_data = None
         
         # 8. Рассчитываем время жизни платежа
         created_at = datetime.now(timezone.utc)
         qr_expires_at, invoice_expires_at = payment_lifecycle_service.calculate_expiry_times(created_at)
 
-        # 9. Сохранение в базу данных  
+        # 9. Сохранение в базу данных
         topup_insert = db.execute(text("""
             INSERT INTO balance_topups 
             (invoice_id, order_id, merchant_id, client_id, requested_amount, 
              currency, description, qr_code_url, app_link, status, odengi_status,
              qr_expires_at, invoice_expires_at, needs_status_check, payment_provider)
             VALUES (:invoice_id, :order_id, :merchant_id, :client_id, :requested_amount,
-                    :currency, :description, :qr_code_url, :app_link, 'processing', 1,
+                    :currency, :description, :qr_code_url, :app_link, 'processing', 0,
                     :qr_expires_at, :invoice_expires_at, true, :payment_provider)
             RETURNING id
         """), {
@@ -1925,7 +1926,7 @@ async def create_qr_balance_topup(
             "requested_amount": request.amount,
             "currency": settings.DEFAULT_CURRENCY,
             "description": description,
-            "qr_code_url": qr_code_url or qr_code_url_alt,  # Используем основной или альтернативный URL
+            "qr_code_url": qr_code_url,
             "app_link": app_link_url,
             "qr_expires_at": qr_expires_at,
             "invoice_expires_at": invoice_expires_at,
@@ -1959,8 +1960,8 @@ async def create_qr_balance_topup(
             success=True,
             invoice_id=invoice_id,
             order_id=order_id,
-            qr_code=qr_code_data,  # Теперь содержит чистые EMV QR данные
-            qr_code_url=qr_code_url or qr_code_url_alt,  # URL для отображения
+            qr_code=qr_code_data,
+            qr_code_url=qr_code_url,
             app_link=app_link_url,
             amount=request.amount,
             client_id=request.client_id,

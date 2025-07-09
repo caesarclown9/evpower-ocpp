@@ -172,48 +172,33 @@ class PaymentProviderService:
                 order_id=order_id
             )
             
-            # ODENGI возвращает текстовые статусы в data.status
+            # ODENGI возвращает текстовый статус в data.status
             data = response.get('data', {})
             status_text = data.get('status', 'processing')
             paid_amount = None
             
-            # Проверяем массив payments для оплаченных платежей
-            payments = data.get('payments', [])
-            if payments and len(payments) > 0:
-                payment_info = payments[0]
-                status_text = payment_info.get('status', status_text)
-                payment_amount = payment_info.get('amount', 0)
-                if payment_amount > 0:
-                    paid_amount = float(payment_amount) / 100
-            elif data.get('amount'):
+            if data.get('amount'):
                 # Конвертируем из копеек в сомы
-                paid_amount = float(data.get('amount', 0)) / 100
+                paid_amount = data.get('amount', 0) / 100
             
-            # Маппинг РЕАЛЬНЫХ текстовых статусов ODENGI
+            # Маппинг ТЕКСТОВЫХ статусов ODENGI (как возвращает API)
             status_mapping = {
-                "processing": "processing",
-                "approved": "approved", 
-                "canceled": "canceled",
-                "cancelled": "canceled",
-                "failed": "canceled"
+                'processing': "processing",
+                'approved': "approved", 
+                'canceled': "canceled"
             }
             
-            # Числовые статусы для совместимости
+            # Числовой статус для обратной совместимости
             numeric_mapping = {
-                "processing": 1,
-                "approved": 3,
-                "canceled": 2,
-                "cancelled": 2,
-                "failed": 2
+                'processing': 0,
+                'approved': 1,
+                'canceled': 2
             }
-            
-            mapped_status = status_mapping.get(status_text, "processing")
-            numeric_status = numeric_mapping.get(status_text, 1)
             
             return {
                 "success": True,
-                "status": mapped_status,
-                "numeric_status": numeric_status,
+                "status": status_mapping.get(status_text, "processing"),
+                "numeric_status": numeric_mapping.get(status_text, 0),
                 "paid_amount": paid_amount,
                 "provider": "ODENGI",
                 "raw_response": response
