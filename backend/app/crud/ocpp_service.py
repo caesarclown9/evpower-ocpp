@@ -910,13 +910,24 @@ class PaymentLifecycleService:
                 if 'payments' in data and data['payments']:
                     payment_info = data['payments'][0]  # Берем первый платеж
                     odengi_status = payment_info.get('status', 'processing')
-                    payment_amount = int(payment_info.get('amount', 0))  # Преобразуем в int
-                    logger.info(f"💳 ODENGI PAYMENTS status='{odengi_status}', amount={payment_amount}")
+                    # НАДЕЖНОЕ преобразование amount с обработкой ошибок
+                    raw_amount = payment_info.get('amount', 0)
+                    try:
+                        payment_amount = int(raw_amount) if raw_amount else 0
+                    except (ValueError, TypeError):
+                        logger.warning(f"⚠️ Не удалось преобразовать amount '{raw_amount}' в int, использую 0")
+                        payment_amount = 0
+                    logger.info(f"💳 ODENGI PAYMENTS status='{odengi_status}', amount={payment_amount} (raw: {raw_amount})")
                 else:
                     # Если нет payments - читаем из корневого data
                     odengi_status = data.get('status', 'processing')
-                    payment_amount = int(data.get('amount', 0))  # Преобразуем в int
-                    logger.info(f"💳 ODENGI ROOT status='{odengi_status}', amount={payment_amount}")
+                    raw_amount = data.get('amount', 0)
+                    try:
+                        payment_amount = int(raw_amount) if raw_amount else 0
+                    except (ValueError, TypeError):
+                        logger.warning(f"⚠️ Не удалось преобразовать amount '{raw_amount}' в int, использую 0")
+                        payment_amount = 0
+                    logger.info(f"💳 ODENGI ROOT status='{odengi_status}', amount={payment_amount} (raw: {raw_amount})")
                 
                 # Обработка ТЕКСТОВЫХ статусов ODENGI (как есть в реальности)
                 if odengi_status == 'approved':  # Платеж оплачен
