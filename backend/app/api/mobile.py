@@ -1949,3 +1949,177 @@ async def create_card_balance_topup(
             error="internal_error",
             client_id=request.client_id
         )
+
+@router.post("/balance/topup-card")
+async def topup_card_balance(
+    request: CardTopUpRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Top up balance using card (OBANK H2H Payment with SSL Certificate)
+    
+    ВАЖНО: Требует клиентский SSL сертификат PKCS12!
+    Скачать: https://drive.google.com/file/d/17tjIhkFMK7_F3mVQGlANQHtPj19xKZmu/view?usp=sharing
+    Пароль: bPAKhpUlss
+    """
+    try:
+        logger.info(f"Card balance top-up request for client: {request.client_id}, amount: {request.amount}")
+        
+        # Prepare card data for OBANK H2H payment
+        card_data = {
+            "number": request.card_number,
+            "holder_name": request.card_holder_name,
+            "cvv": request.cvv,
+            "exp_month": f"{request.exp_month:02d}",
+            "exp_year": str(request.exp_year)[-2:]  # Last 2 digits
+        }
+        
+        # Create H2H payment via OBANK (XML format)
+        payment_result = await obank_service.create_h2h_payment(
+            amount_kgs=request.amount,
+            client_id=request.client_id,
+            card_data=card_data
+        )
+        
+        if payment_result.get("success"):
+            return {
+                "success": True,
+                "message": "Card payment initiated successfully",
+                "payment_id": payment_result.get("payment_id"),
+                "status": payment_result.get("status"),
+                "provider": "OBANK_H2H",
+                "amount": request.amount,
+                "currency": "KGS"
+            }
+        else:
+            logger.error(f"OBANK H2H payment failed: {payment_result}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Payment failed: {payment_result.get('error', 'Unknown error')}"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Card balance top-up error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Internal server error during card payment")
+
+@router.post("/balance/h2h-payment")
+async def create_h2h_payment(
+    request: CardTopUpRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Direct Host-to-Host card payment via OBANK API (XML format with SSL cert)
+    
+    Требует:
+    - Клиентский SSL сертификат PKCS12
+    - XML формат запроса
+    - Mutual TLS authentication
+    """
+    try:
+        logger.info(f"H2H payment request for client: {request.client_id}, amount: {request.amount}")
+        
+        card_data = {
+            "number": request.card_number,
+            "holder_name": request.card_holder_name,
+            "cvv": request.cvv,
+            "exp_month": f"{request.exp_month:02d}",
+            "exp_year": str(request.exp_year)[-2:]
+        }
+        
+        # Direct H2H payment
+        result = await obank_service.create_h2h_payment(
+            amount_kgs=request.amount,
+            client_id=request.client_id,
+            card_data=card_data
+        )
+        
+        return {
+            "success": result.get("success", False),
+            "payment_id": result.get("payment_id"),
+            "status": result.get("status"),
+            "detail": result.get("result")
+        }
+        
+    except Exception as e:
+        logger.error(f"H2H payment error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"H2H payment failed: {str(e)}")
+
+@router.post("/payment/create-token")
+async def create_payment_token(
+    days: int = 14,
+    db: Session = Depends(get_db)
+):
+    """
+    Create card storage token via OBANK API (XML format)
+    
+    Максимум 14 дней хранения токена
+    """
+    try:
+        logger.info(f"Creating payment token for {days} days")
+        
+        result = await obank_service.create_token(days=days)
+        
+        return {
+            "success": result.get("success", False),
+            "detail": result.get("result")
+        }
+        
+    except Exception as e:
+        logger.error(f"Token creation error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Token creation failed: {str(e)}")
+
+@router.post("/payment/token-payment")
+async def token_payment(
+    client_id: str,
+    amount: float,
+    card_token: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Payment using saved card token via OBANK API (XML format)
+    """
+    try:
+        logger.info(f"Token payment for client: {client_id}, amount: {amount}")
+        
+        result = await obank_service.create_token_payment(
+            amount_kgs=amount,
+            client_id=client_id,
+            card_token=card_token
+        )
+        
+        return {
+            "success": result.get("success", False),
+            "payment_id": result.get("payment_id"),
+            "status": result.get("status"),
+            "detail": result.get("result")
+        }
+        
+    except Exception as e:
+        logger.error(f"Token payment error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Token payment failed: {str(e)}")
+
+@router.get("/payment/h2h-status/{transaction_id}")
+async def check_h2h_payment_status(
+    transaction_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Check H2H payment status via OBANK API (XML format)
+    """
+    try:
+        logger.info(f"Checking H2H payment status: {transaction_id}")
+        
+        result = await obank_service.check_h2h_status(transaction_id)
+        
+        return {
+            "success": result.get("success", False),
+            "status": result.get("status"),
+            "final": result.get("final", False),
+            "detail": result.get("result")
+        }
+        
+    except Exception as e:
+        logger.error(f"Status check error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Status check failed: {str(e)}")

@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     
     # OBANK Payment API Configuration  
     OBANK_API_URL: str = os.getenv("OBANK_API_URL", "https://test-rakhmet.dengi.kg:4431/external/extended-cert")
+    OBANK_API_URL_HTTP: str = os.getenv("OBANK_API_URL_HTTP", "http://test-rakhmet.dengi.kg:4430/external/extended-cert")  # HTTP альтернатива
     OBANK_PRODUCTION_API_URL: str = os.getenv("OBANK_PRODUCTION_API_URL", "https://rakhmet.dengi.kg:4431/external/extended-cert")
     OBANK_POINT_ID: str = os.getenv("OBANK_POINT_ID", "4354")  # Terminal ID
     OBANK_SERVICE_ID: str = os.getenv("OBANK_SERVICE_ID", "1331")  # Service ID

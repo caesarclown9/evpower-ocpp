@@ -1,567 +1,298 @@
 """
-OBANK Payment Link API Service
-
-Сервис для интеграции с OBANK Payment API для обработки платежей
-через электронные кошельки и банковские карты.
-
-Поддерживает:
-- Создание платежных ссылок (Payment Page)
-- Host2Host платежи
-- Проверка статуса платежей
-- Сохранение карт и токен-платежи
-- Отмена и возврат средств
+OBANK payment service implementation with proper client SSL certificate authentication
 """
-
-import ssl
-import xml.etree.ElementTree as ET
-from typing import Dict, Any, Optional, Union
-from datetime import datetime, timezone
 import httpx
+import xml.etree.ElementTree as ET
+from typing import Dict, Any, Optional
+import asyncio
+from datetime import datetime
+import uuid
 import logging
-from decimal import Decimal
+import ssl
+import tempfile
+import os
+from pathlib import Path
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.serialization import pkcs12
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
-class OBankPaymentError(Exception):
-    """Базовое исключение для ошибок OBANK API"""
-    pass
-
-class OBankAuthenticationError(OBankPaymentError):
-    """Ошибка аутентификации OBANK"""
-    pass
-
-class OBankAPIError(OBankPaymentError):
-    """Ошибка вызова OBANK API"""
-    pass
-
 class OBankService:
-    """Сервис для работы с OBANK Payment Link API"""
-    
     def __init__(self):
-        # Инициализация отложенная до первого использования
-        self._api_url = None
-        self._point_id = None
-        self._service_id = None
-        self._cert_path = None
-        self._cert_password = None
-        self._use_production = None
-        self._ssl_context = None
-        self._initialized = False
-    
-    def _ensure_initialized(self):
-        """Ленивая инициализация настроек"""
-        if not self._initialized:
-            self._api_url = settings.current_obank_api_url
-            self._point_id = settings.current_obank_point_id
-            self._service_id = settings.current_obank_service_id
-            self._cert_path = settings.OBANK_CERT_PATH
-            self._cert_password = settings.OBANK_CERT_PASSWORD
-            self._use_production = settings.OBANK_USE_PRODUCTION
-            self._initialized = True
-    
-    @property
-    def api_url(self):
-        self._ensure_initialized()
-        return self._api_url
-    
-    @property
-    def point_id(self):
-        self._ensure_initialized()
-        return self._point_id
-    
-    @property
-    def service_id(self):
-        self._ensure_initialized()
-        return self._service_id
-    
-    @property
-    def cert_path(self):
-        self._ensure_initialized()
-        return self._cert_path
-    
-    @property
-    def cert_password(self):
-        self._ensure_initialized()
-        return self._cert_password
-    
-    @property
-    def use_production(self):
-        self._ensure_initialized()
-        return self._use_production
-    
-    @property
-    def ssl_context(self) -> ssl.SSLContext:
-        """Ленивая загрузка SSL контекста"""
-        if self._ssl_context is None:
-            self._ssl_context = self._create_ssl_context()
-        return self._ssl_context
-    
-    def _create_ssl_context(self) -> ssl.SSLContext:
-        """Создает SSL контекст с клиентским сертификатом PKCS12"""
+        self.base_url = "https://test-rakhmet.dengi.kg:4431/external/extended-cert"
+        self.point_id = 4354  # Из документации
+        self.service_id = 1331  # Из документации
+        self.cert_path = Path(__file__).parent.parent.parent / "certificates" / "obank_client.p12"
+        self.cert_password = "bPAKhpUlss"
+        
+    def _load_pkcs12_certificate(self):
+        """
+        Load PKCS12 client certificate and create SSL context
+        """
         try:
-            context = ssl.create_default_context()
+            if not self.cert_path.exists():
+                raise FileNotFoundError(f"OBANK certificate not found: {self.cert_path}")
             
-            # Загружаем PKCS12 сертификат только если файл существует
-            if self.cert_path and self.cert_password and not self.cert_path.startswith('/path/to/'):
-                import os
-                if os.path.exists(self.cert_path):
-                    context.load_cert_chain(self.cert_path, password=self.cert_password)
-                    logger.info(f"SSL сертификат загружен: {self.cert_path}")
-                else:
-                    logger.warning(f"SSL сертификат не найден: {self.cert_path}")
-                    if self.use_production:
-                        raise OBankAuthenticationError(f"SSL сертификат обязателен для production: {self.cert_path}")
-            else:
-                logger.info("SSL сертификат не настроен - работаем без клиентского сертификата")
+            # Load PKCS12 certificate
+            with open(self.cert_path, 'rb') as cert_file:
+                cert_data = cert_file.read()
             
-            # Отключаем проверку сертификата для тестового окружения
-            if not self.use_production:
-                context.check_hostname = False
-                context.verify_mode = ssl.CERT_NONE
-                logger.info("Тестовый режим: SSL проверки отключены")
+            # Parse PKCS12 certificate
+            private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(
+                cert_data, 
+                self.cert_password.encode('utf-8')
+            )
             
-            return context
+            # Create temporary PEM files for httpx
+            cert_pem = certificate.public_bytes(serialization.Encoding.PEM)
+            key_pem = private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption()
+            )
+            
+            return cert_pem, key_pem
             
         except Exception as e:
-            logger.error(f"Ошибка создания SSL контекста: {e}")
-            # В тестовом режиме создаем базовый контекст без сертификата
-            if not self.use_production:
-                logger.warning("Создаем базовый SSL контекст для тестового режима")
-                context = ssl.create_default_context()
-                context.check_hostname = False
-                context.verify_mode = ssl.CERT_NONE
-                return context
-            raise OBankAuthenticationError(f"Не удалось загрузить SSL сертификат: {e}")
-    
-    def _build_xml_request(self, method_data: Dict[str, Any], payment_data: Optional[Dict[str, Any]] = None) -> str:
-        """Формирует XML запрос для OBANK API"""
-        root = ET.Element("request", point=self.point_id)
+            logger.error(f"Failed to load PKCS12 certificate: {str(e)}")
+            raise
         
-        if payment_data:
-            # Для платежных операций
-            payment_elem = ET.SubElement(root, "payment", payment_data)
-            
-            for key, value in method_data.items():
-                attr_elem = ET.SubElement(payment_elem, "attribute", name=key, value=str(value))
-        else:
-            # Для служебных операций (статус, отмена и т.д.)
-            if "function" in method_data:
-                # Advanced функции
-                advanced_elem = ET.SubElement(root, "advanced", 
-                    service=self.service_id, 
-                    function=method_data["function"]
-                )
-                
-                for key, value in method_data.items():
-                    if key != "function":
-                        attr_elem = ET.SubElement(advanced_elem, "attribute", name=key, value=str(value))
-            elif "id" in method_data and "sum" in method_data:
-                # Отмена операции
-                cancel_elem = ET.SubElement(root, "cancel", 
-                    id=str(method_data["id"]),
-                    sum=str(method_data["sum"])
-                )
-            elif "id" in method_data:
-                # Запрос статуса
-                status_elem = ET.SubElement(root, "status", id=str(method_data["id"]))
-        
-        return ET.tostring(root, encoding='unicode')
-    
-    def _parse_xml_response(self, xml_data: str) -> Dict[str, Any]:
-        """Парсит XML ответ от OBANK API"""
+    async def _make_request(self, endpoint: str, xml_data: str) -> Dict[str, Any]:
+        """
+        Make authenticated request to OBANK API with client SSL certificate
+        """
         try:
-            root = ET.fromstring(xml_data)
+            # Load client certificate
+            cert_pem, key_pem = self._load_pkcs12_certificate()
             
-            result = {}
+            # Create temporary files for certificate and key
+            with tempfile.NamedTemporaryFile(suffix='.pem', delete=False) as cert_file:
+                cert_file.write(cert_pem)
+                cert_file_path = cert_file.name
             
-            # Извлекаем атрибуты result
-            result_elem = root.find('result')
-            if result_elem is not None:
-                result.update(result_elem.attrib)
-                
-                # Извлекаем data/input элементы
-                data_elem = result_elem.find('data')
-                if data_elem is not None:
-                    inputs = {}
-                    for input_elem in data_elem.findall('input'):
-                        key = input_elem.get('key')
-                        value = input_elem.get('value')
-                        if key and value:
-                            inputs[key] = value
-                    result['data'] = inputs
+            with tempfile.NamedTemporaryFile(suffix='.pem', delete=False) as key_file:
+                key_file.write(key_pem)
+                key_file_path = key_file.name
             
-            return result
-            
-        except ET.ParseError as e:
-            logger.error(f"Ошибка парсинга XML ответа: {e}")
-            raise OBankAPIError(f"Некорректный XML ответ: {e}")
-    
-    async def _make_request(self, xml_data: str, endpoint: str = "") -> Dict[str, Any]:
-        """Выполняет HTTP запрос к OBANK API"""
-        url = f"{self.api_url}/{endpoint}" if endpoint else self.api_url
-        
-        headers = {
-            "Content-Type": "application/xml",
-            "Accept": "application/xml"
-        }
-        
-        try:
-            if not self.use_production:
-                # Тестовый режим: полностью отключаем SSL проверку
-                logger.info("🔓 Тестовый режим: SSL проверка полностью отключена")
-                
-                async with httpx.AsyncClient(verify=False) as client:
-                    logger.info(f"Отправка запроса в OBANK (тестовый HTTPS): {url}")
-                    logger.debug(f"XML запрос: {xml_data}")
+            try:
+                async with httpx.AsyncClient(
+                    cert=(cert_file_path, key_file_path),
+                    verify=False,  # Для тестового сервера
+                    timeout=30.0
+                ) as client:
+                    
+                    logger.info(f"Making OBANK request to: {self.base_url}{endpoint}")
+                    logger.debug(f"Request XML: {xml_data}")
                     
                     response = await client.post(
-                        url,
+                        f"{self.base_url}{endpoint}",
                         content=xml_data,
-                        headers=headers,
-                        timeout=30.0
+                        headers={
+                            "Content-Type": "application/xml",
+                            "Accept": "application/xml"
+                        }
                     )
                     
-                    response.raise_for_status()
+                    logger.info(f"OBANK response status: {response.status_code}")
+                    logger.debug(f"Response content: {response.text}")
                     
-                    logger.debug(f"XML ответ: {response.text}")
-                    return self._parse_xml_response(response.text)
-            else:
-                # Production режим с клиентским SSL сертификатом
-                async with httpx.AsyncClient(verify=self.ssl_context) as client:
-                    logger.info(f"Отправка запроса в OBANK (продакшн SSL): {url}")
-                    logger.debug(f"XML запрос: {xml_data}")
-                    
-                    response = await client.post(
-                        url,
-                        content=xml_data,
-                        headers=headers,
-                        timeout=30.0
-                    )
-                    
-                    response.raise_for_status()
-                    
-                    logger.debug(f"XML ответ: {response.text}")
-                    return self._parse_xml_response(response.text)
-                
-        except httpx.RequestError as e:
-            logger.error(f"Ошибка HTTP запроса к OBANK: {e}")
-            raise OBankAPIError(f"Ошибка соединения с OBANK: {e}")
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP ошибка от OBANK: {e.response.status_code} - {e.response.text}")
-            raise OBankAPIError(f"OBANK вернул ошибку: {e.response.status_code}")
-    
-    async def create_payment_page(
-        self,
-        amount: Decimal,
-        order_id: str,
-        email: str,
-        notify_url: str,
-        redirect_url: str,
-        phone_number: Optional[str] = None,
-        address: Optional[str] = None,
-        city: Optional[str] = None,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """
-        Создает платежную страницу для оплаты
-        
-        Args:
-            amount: Сумма платежа в сомах
-            order_id: Уникальный ID заказа
-            email: Email клиента
-            notify_url: URL для уведомлений
-            redirect_url: URL для редиректа
-            phone_number: Телефон клиента (опционально)
-            address: Адрес клиента (опционально)
-            city: Город клиента (опционально)
+                    if response.status_code == 200:
+                        # Парсинг XML ответа
+                        root = ET.fromstring(response.text)
+                        return self._parse_xml_response(root)
+                    else:
+                        logger.error(f"OBANK API error: {response.status_code} - {response.text}")
+                        return {"error": f"HTTP {response.status_code}", "detail": response.text}
             
-        Returns:
-            Dict с данными платежной ссылки
-        """
-        # Конвертируем сумму в тыйыны (1 сом = 1000 тыйынов)
-        amount_in_tyiyn = int(amount * 1000)
-        
-        method_data = {
-            "sum": amount_in_tyiyn,
-            "amount_currency": "417",  # KGS код валюты
-            "notify_url": notify_url,
-            "redirect_url": redirect_url,
-            "email": email,
-            "order_id": order_id,
-            "function": "auth-acquiring"
-        }
-        
-        # Добавляем опциональные поля
-        if phone_number:
-            method_data["phone_number"] = phone_number
-        if address:
-            method_data["address"] = address
-        if city:
-            method_data["city"] = city
-        if kwargs.get("province"):
-            method_data["province"] = kwargs["province"]
-        if kwargs.get("post_code"):
-            method_data["post_code"] = kwargs["post_code"]
-        if kwargs.get("country_code"):
-            method_data["country_code"] = kwargs["country_code"]
-        
-        xml_request = self._build_xml_request(method_data)
-        response = await self._make_request(xml_request, "PaymentPage")
-        
-        # Проверяем успешность ответа
-        if response.get("code") != "0":
-            raise OBankAPIError(f"Ошибка создания платежной страницы: {response}")
-        
-        return response
+            finally:
+                # Cleanup temporary files
+                try:
+                    os.unlink(cert_file_path)
+                    os.unlink(key_file_path)
+                except:
+                    pass
+                    
+        except Exception as e:
+            logger.error(f"OBANK request failed: {str(e)}")
+            return {"error": "Connection failed", "detail": str(e)}
     
-    async def check_payment_status(self, auth_key: str) -> Dict[str, Any]:
-        """
-        Проверяет статус платежа по auth-key
+    def _parse_xml_response(self, root: ET.Element) -> Dict[str, Any]:
+        """Parse XML response from OBANK API"""
+        result = {}
         
-        Args:
-            auth_key: Ключ аутентификации платежа
+        # Парсинг result элемента
+        result_elem = root.find("result")
+        if result_elem is not None:
+            result.update(result_elem.attrib)
             
-        Returns:
-            Dict со статусом платежа
-        """
-        method_data = {
-            "function": "fetch-operation",
-            "key": auth_key
-        }
+            # Парсинг data элементов
+            data_elem = result_elem.find("data")
+            if data_elem is not None:
+                result["data"] = []
+                for input_elem in data_elem.findall("input"):
+                    result["data"].append(input_elem.attrib)
         
-        xml_request = self._build_xml_request(method_data)
-        response = await self._make_request(xml_request, "status")
-        
-        return response
+        return result
     
-    async def create_h2h_payment(
-        self,
-        amount: Decimal,
-        transaction_id: str,
-        account: str,
-        email: str,
-        notify_url: str,
-        redirect_url: str,
-        card_pan: str,
-        card_name: str,
-        card_cvv: str,
-        card_year: str,
-        card_month: str,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """
-        Создает Host2Host платеж с данными карты
+    def _create_h2h_xml(self, amount_tyiyn: int, client_id: str, card_data: Dict[str, str]) -> str:
+        """Create XML for H2H payment request"""
+        transaction_id = int(datetime.now().timestamp())
+        current_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S+0600")
         
-        Args:
-            amount: Сумма платежа в сомах
-            transaction_id: ID транзакции
-            account: Номер карты/счета
-            email: Email клиента
-            notify_url: URL для уведомлений
-            redirect_url: URL для редиректа
-            card_pan: Номер карты
-            card_name: Имя владельца карты
-            card_cvv: CVV код
-            card_year: Год истечения карты
-            card_month: Месяц истечения карты
+        xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<request point="{self.point_id}">
+    <payment
+        id="{transaction_id}"
+        sum="{amount_tyiyn}"
+        check="0"
+        service="{self.service_id}"
+        date="{current_time}"
+        account="{card_data['number']}">
+        <attribute name="amount_currency" value="417"/>
+        <attribute name="notify_url" value="{settings.DOMAIN}/api/payment/obank/notify"/>
+        <attribute name="redirect_url" value="{settings.DOMAIN}/payment/success"/>
+        <attribute name="card_pan" value="{card_data['number']}"/>
+        <attribute name="card_name" value="{card_data['holder_name']}"/>
+        <attribute name="card_cvv" value="{card_data['cvv']}"/>
+        <attribute name="card_year" value="{card_data['exp_year']}"/>
+        <attribute name="card_month" value="{card_data['exp_month']}"/>
+        <attribute name="email" value="test@evpower.kg"/>
+        <attribute name="phone_number" value="+996700000000"/>
+        <attribute name="city" value="BISHKEK"/>
+        <attribute name="country_code" value="KGZ"/>
+    </payment>
+</request>"""
+        
+        return xml
+    
+    def _create_token_xml(self, days: int = 14) -> str:
+        """Create XML for card tokenization request"""
+        xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<request point="{self.point_id}">
+    <advanced service="{self.service_id}" function="stored-cards">
+        <attribute name="days" value="{days}"/>
+    </advanced>
+</request>"""
+        
+        return xml
+    
+    def _create_token_payment_xml(self, amount_tyiyn: int, client_id: str, card_token: str) -> str:
+        """Create XML for token payment request"""
+        transaction_id = int(datetime.now().timestamp())
+        current_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S+0600")
+        
+        xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<request point="{self.point_id}">
+    <payment
+        id="{transaction_id}"
+        sum="{amount_tyiyn}"
+        check="0"
+        service="{self.service_id}"
+        date="{current_time}"
+        account="">
+        <attribute name="amount_currency" value="417"/>
+        <attribute name="notify_url" value="{settings.DOMAIN}/api/payment/obank/notify"/>
+        <attribute name="redirect_url" value="{settings.DOMAIN}/payment/success"/>
+        <attribute name="email" value="test@evpower.kg"/>
+        <attribute name="card-token" value="{card_token}"/>
+    </payment>
+</request>"""
+        
+        return xml
+    
+    def _create_status_xml(self, transaction_id: str) -> str:
+        """Create XML for status check request"""
+        xml = f"""<?xml version="1.0" encoding="UTF-8"?>
+<request point="{self.point_id}">
+    <status id="{transaction_id}"/>
+</request>"""
+        
+        return xml
+
+    async def create_h2h_payment(self, amount_kgs: float, client_id: str, card_data: Dict[str, str]) -> Dict[str, Any]:
+        """
+        Create Host-to-Host card payment
+        """
+        try:
+            amount_tyiyn = int(amount_kgs * 100)  # KGS to tyiyn
             
-        Returns:
-            Dict с результатом платежа
-        """
-        # Конвертируем сумму в тыйыны (1 сом = 1000 тыйынов)
-        amount_in_tyiyn = int(amount * 1000)
-        
-        # H2H платежи используют function="host2host" согласно документации
-        method_data = {
-            "function": "host2host",
-            "sum": str(amount_in_tyiyn),
-            "amount_currency": "417",  # KGS код валюты
-            "notify_url": notify_url,
-            "redirect_url": redirect_url,
-            "card_pan": card_pan,
-            "card_name": card_name,
-            "card_cvv": card_cvv,
-            "card_year": card_year,
-            "card_month": card_month,
-            "email": email,
-            "account": account,
-            "order_id": transaction_id
-        }
-        
-        # Добавляем опциональные поля
-        for key in ["phone_number", "address", "city", "province", "post_code", "country_code"]:
-            if kwargs.get(key):
-                method_data[key] = kwargs[key]
-        
-        xml_request = self._build_xml_request(method_data)
-        response = await self._make_request(xml_request, "H2HPayment")
-        
-        # Форматируем ответ для PaymentProviderService
-        if response.get("code") == "0":
-            data = response.get("data", {})
+            xml_data = self._create_h2h_xml(amount_tyiyn, client_id, card_data)
+            
+            result = await self._make_request("/h2h-payment", xml_data)
+            
             return {
-                "success": True,
-                "auth_key": data.get("auth-key") or data.get("auth_key") or data.get("key"),
-                "transaction_id": transaction_id,
-                "status": "processing",
-                "message": "H2H платеж создан успешно",
-                "raw_response": response
+                "success": "error" not in result,
+                "payment_id": result.get("id"),
+                "status": result.get("state"),
+                "result": result
             }
-        else:
-            return {
-                "success": False,
-                "error": f"obank_error_{response.get('code', 'unknown')}",
-                "message": response.get("description", "Ошибка создания H2H платежа"),
-                "raw_response": response
-            }
-    
-    async def check_h2h_status(self, auth_key: str) -> Dict[str, Any]:
-        """
-        Проверяет статус H2H платежа
-        
-        Args:
-            auth_key: Ключ аутентификации платежа (возвращается при создании)
             
-        Returns:
-            Dict со статусом платежа
+        except Exception as e:
+            logger.error(f"H2H payment failed: {str(e)}")
+            return {"success": False, "error": str(e)}
+
+    async def create_token_payment(self, amount_kgs: float, client_id: str, card_token: str) -> Dict[str, Any]:
         """
-        method_data = {
-            "function": "fetch-operation",
-            "key": auth_key
-        }
-        
-        xml_request = self._build_xml_request(method_data)
-        response = await self._make_request(xml_request, "status")
-        
-        return response
-    
+        Create payment using saved card token
+        """
+        try:
+            amount_tyiyn = int(amount_kgs * 100)  # KGS to tyiyn
+            
+            xml_data = self._create_token_payment_xml(amount_tyiyn, client_id, card_token)
+            
+            result = await self._make_request("/token-payment", xml_data)
+            
+            return {
+                "success": "error" not in result,
+                "payment_id": result.get("id"),
+                "status": result.get("state"),
+                "result": result
+            }
+            
+        except Exception as e:
+            logger.error(f"Token payment failed: {str(e)}")
+            return {"success": False, "error": str(e)}
+
     async def create_token(self, days: int = 14) -> Dict[str, Any]:
         """
-        Создает токен для сохранения карт
-        
-        Args:
-            days: Количество дней для действия токена (максимум 14)
+        Create card storage token
+        """
+        try:
+            xml_data = self._create_token_xml(days)
             
-        Returns:
-            Dict с токенами карт
-        """
-        method_data = {
-            "function": "stored-cards",
-            "days": min(days, 14)  # Ограничиваем максимумом 14 дней
-        }
-        
-        xml_request = self._build_xml_request(method_data)
-        response = await self._make_request(xml_request, "CreateToken")
-        
-        # Форматируем ответ для PaymentProviderService
-        if response.get("code") == "0":
-            data = response.get("data", {})
-            return {
-                "success": True,
-                "token_url": data.get("token-url") or data.get("token_url") or data.get("url"),
-                "token_expires_in_days": days,
-                "message": "Токен создан успешно",
-                "raw_response": response
-            }
-        else:
-            return {
-                "success": False,
-                "error": f"obank_error_{response.get('code', 'unknown')}",
-                "message": response.get("description", "Ошибка создания токена"),
-                "raw_response": response
-            }
-    
-    async def create_token_payment(
-        self,
-        amount: Decimal,
-        transaction_id: str,
-        email: str,
-        notify_url: str,
-        redirect_url: str,
-        card_token: str,
-        **kwargs
-    ) -> Dict[str, Any]:
-        """
-        Создает платеж по сохраненному токену карты
-        
-        Args:
-            amount: Сумма платежа в сомах
-            transaction_id: ID транзакции
-            email: Email клиента
-            notify_url: URL для уведомлений
-            redirect_url: URL для редиректа
-            card_token: Токен сохраненной карты
+            result = await self._make_request("/token-Create", xml_data)
             
-        Returns:
-            Dict с результатом платежа
-        """
-        # Конвертируем сумму в тыйыны (1 сом = 1000 тыйынов)
-        amount_in_tyiyn = int(amount * 1000)
-        
-        # Token платежи используют function="token-payment" согласно документации
-        method_data = {
-            "function": "token-payment",
-            "sum": str(amount_in_tyiyn),
-            "amount_currency": "417",  # KGS код валюты
-            "notify_url": notify_url,
-            "redirect_url": redirect_url,
-            "email": email,
-            "card_token": card_token,
-            "order_id": transaction_id
-        }
-        
-        # Добавляем опциональные поля
-        for key in ["phone_number", "address", "city", "province", "post_code", "country_code"]:
-            if kwargs.get(key):
-                method_data[key] = kwargs[key]
-        
-        xml_request = self._build_xml_request(method_data)
-        response = await self._make_request(xml_request, "TokenPayment")
-        
-        # Форматируем ответ для PaymentProviderService
-        if response.get("code") == "0":
-            data = response.get("data", {})
             return {
-                "success": True,
-                "auth_key": data.get("auth-key") or data.get("auth_key") or data.get("key"),
-                "transaction_id": transaction_id,
-                "status": "processing",
-                "message": "Token платеж создан успешно",
-                "raw_response": response
+                "success": "error" not in result,
+                "result": result
             }
-        else:
-            return {
-                "success": False,
-                "error": f"obank_error_{response.get('code', 'unknown')}",
-                "message": response.get("description", "Ошибка создания Token платежа"),
-                "raw_response": response
-            }
-    
-    async def cancel_payment(self, transaction_id: str, refund_amount: Decimal) -> Dict[str, Any]:
-        """
-        Отменяет платеж и возвращает средства
-        
-        Args:
-            transaction_id: ID транзакции для отмены
-            refund_amount: Сумма возврата в сомах
             
-        Returns:
-            Dict с результатом отмены
-        """
-        # Конвертируем сумму в тыйыны
-        refund_amount_in_tyiyn = int(refund_amount * 1000)
-        
-        method_data = {
-            "id": transaction_id,
-            "sum": refund_amount_in_tyiyn
-        }
-        
-        xml_request = self._build_xml_request(method_data)
-        response = await self._make_request(xml_request, "Reversal")
-        
-        return response
+        except Exception as e:
+            logger.error(f"Token creation failed: {str(e)}")
+            return {"success": False, "error": str(e)}
 
-# Создаем глобальный экземпляр сервиса
+    async def check_h2h_status(self, transaction_id: str) -> Dict[str, Any]:
+        """
+        Check H2H payment status
+        """
+        try:
+            xml_data = self._create_status_xml(transaction_id)
+            
+            result = await self._make_request("/h2hstatus", xml_data)
+            
+            return {
+                "success": "error" not in result,
+                "status": result.get("state"),
+                "final": result.get("final") == "1",
+                "result": result
+            }
+            
+        except Exception as e:
+            logger.error(f"Status check failed: {str(e)}")
+            return {"success": False, "error": str(e)}
+
+# Global instance
 obank_service = OBankService() 
