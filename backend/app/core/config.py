@@ -94,11 +94,8 @@ class Settings(BaseSettings):
         if self.OBANK_USE_PRODUCTION:
             return self.OBANK_PRODUCTION_API_URL
         else:
-            # Для тестового режима принудительно используем HTTP вместо HTTPS
-            base_url = self.OBANK_API_URL
-            if base_url.startswith("https://"):
-                base_url = base_url.replace("https://", "http://", 1)
-            return base_url
+            # Тестовый сервер тоже требует HTTPS, но с отключенной SSL проверкой
+            return self.OBANK_API_URL
     
     @property
     def current_obank_point_id(self) -> str:

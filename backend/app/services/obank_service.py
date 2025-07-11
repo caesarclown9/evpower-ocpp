@@ -208,11 +208,19 @@ class OBankService:
         }
         
         try:
-            # Полностью отключаем SSL для тестирования
             if not self.use_production:
-                logger.info("🔓 Тестовый режим: SSL полностью отключен")
-                async with httpx.AsyncClient(verify=False) as client:
-                    logger.info(f"Отправка запроса в OBANK (без SSL): {url}")
+                # Тестовый режим: HTTPS с полностью отключенной SSL проверкой
+                logger.info("🔓 Тестовый режим: HTTPS с отключенной SSL проверкой")
+                
+                # Создаем контекст с максимально отключенной проверкой
+                import ssl
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+                ssl_context.set_ciphers('ALL:@SECLEVEL=0')  # Разрешаем слабые cipher'ы
+                
+                async with httpx.AsyncClient(verify=ssl_context) as client:
+                    logger.info(f"Отправка запроса в OBANK (тестовый HTTPS): {url}")
                     logger.debug(f"XML запрос: {xml_data}")
                     
                     response = await client.post(
@@ -227,9 +235,9 @@ class OBankService:
                     logger.debug(f"XML ответ: {response.text}")
                     return self._parse_xml_response(response.text)
             else:
-                # Production режим с SSL сертификатом
+                # Production режим с клиентским SSL сертификатом
                 async with httpx.AsyncClient(verify=self.ssl_context) as client:
-                    logger.info(f"Отправка запроса в OBANK (с SSL): {url}")
+                    logger.info(f"Отправка запроса в OBANK (продакшн SSL): {url}")
                     logger.debug(f"XML запрос: {xml_data}")
                     
                     response = await client.post(
