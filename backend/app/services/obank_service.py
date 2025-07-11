@@ -369,22 +369,14 @@ class OBankService:
         Returns:
             Dict с результатом платежа
         """
-        # Конвертируем сумму в тыйыны
+        # Конвертируем сумму в тыйыны (1 сом = 1000 тыйынов)
         amount_in_tyiyn = int(amount * 1000)
         
-        # Данные платежа
-        payment_data = {
-            "id": transaction_id,
-            "sum": str(amount_in_tyiyn),
-            "check": "0",
-            "service": self.service_id,
-            "date": datetime.now(timezone.utc).isoformat(),
-            "account": account
-        }
-        
-        # Атрибуты платежа
+        # H2H платежи используют function="host2host" согласно документации
         method_data = {
-            "amount_currency": "417",  # KGS
+            "function": "host2host",
+            "sum": str(amount_in_tyiyn),
+            "amount_currency": "417",  # KGS код валюты
             "notify_url": notify_url,
             "redirect_url": redirect_url,
             "card_pan": card_pan,
@@ -392,7 +384,9 @@ class OBankService:
             "card_cvv": card_cvv,
             "card_year": card_year,
             "card_month": card_month,
-            "email": email
+            "email": email,
+            "account": account,
+            "order_id": transaction_id
         }
         
         # Добавляем опциональные поля
@@ -400,25 +394,28 @@ class OBankService:
             if kwargs.get(key):
                 method_data[key] = kwargs[key]
         
-        xml_request = self._build_xml_request(method_data, payment_data)
-        response = await self._make_request(xml_request, "h2h-payment")
+        xml_request = self._build_xml_request(method_data)
+        response = await self._make_request(xml_request, "H2HPayment")
         
         return response
     
-    async def check_h2h_status(self, transaction_id: str) -> Dict[str, Any]:
+    async def check_h2h_status(self, auth_key: str) -> Dict[str, Any]:
         """
         Проверяет статус H2H платежа
         
         Args:
-            transaction_id: ID транзакции
+            auth_key: Ключ аутентификации платежа (возвращается при создании)
             
         Returns:
             Dict со статусом платежа
         """
-        method_data = {"id": transaction_id}
+        method_data = {
+            "function": "fetch-operation",
+            "key": auth_key
+        }
         
         xml_request = self._build_xml_request(method_data)
-        response = await self._make_request(xml_request, "h2hstatus")
+        response = await self._make_request(xml_request, "status")
         
         return response
     
@@ -438,7 +435,7 @@ class OBankService:
         }
         
         xml_request = self._build_xml_request(method_data)
-        response = await self._make_request(xml_request, "token-Create")
+        response = await self._make_request(xml_request, "CreateToken")
         
         return response
     
@@ -466,26 +463,19 @@ class OBankService:
         Returns:
             Dict с результатом платежа
         """
-        # Конвертируем сумму в тыйыны
+        # Конвертируем сумму в тыйыны (1 сом = 1000 тыйынов)
         amount_in_tyiyn = int(amount * 1000)
         
-        # Данные платежа
-        payment_data = {
-            "id": transaction_id,
-            "sum": str(amount_in_tyiyn),
-            "check": "0",
-            "service": self.service_id,
-            "date": datetime.now(timezone.utc).isoformat(),
-            "account": ""  # Пустой для токен-платежей
-        }
-        
-        # Атрибуты платежа
+        # Token платежи используют function="token-payment" согласно документации
         method_data = {
-            "amount_currency": "417",  # KGS
+            "function": "token-payment",
+            "sum": str(amount_in_tyiyn),
+            "amount_currency": "417",  # KGS код валюты
             "notify_url": notify_url,
             "redirect_url": redirect_url,
             "email": email,
-            "card-token": card_token
+            "card_token": card_token,
+            "order_id": transaction_id
         }
         
         # Добавляем опциональные поля
@@ -493,8 +483,8 @@ class OBankService:
             if kwargs.get(key):
                 method_data[key] = kwargs[key]
         
-        xml_request = self._build_xml_request(method_data, payment_data)
-        response = await self._make_request(xml_request, "token-payment")
+        xml_request = self._build_xml_request(method_data)
+        response = await self._make_request(xml_request, "TokenPayment")
         
         return response
     

@@ -39,12 +39,12 @@ class Settings(BaseSettings):
     )
     
     # OBANK Payment API Configuration  
-    OBANK_API_URL: str = os.getenv("OBANK_API_URL", "http://test-rakhmet.dengi.kg/external/extended-cert")
+    OBANK_API_URL: str = os.getenv("OBANK_API_URL", "https://test-rakhmet.dengi.kg:4431/external/extended-cert")
     OBANK_PRODUCTION_API_URL: str = os.getenv("OBANK_PRODUCTION_API_URL", "https://rakhmet.dengi.kg:4431/external/extended-cert")
     OBANK_POINT_ID: str = os.getenv("OBANK_POINT_ID", "4354")  # Terminal ID
     OBANK_SERVICE_ID: str = os.getenv("OBANK_SERVICE_ID", "1331")  # Service ID
     OBANK_CERT_PATH: str = os.getenv("OBANK_CERT_PATH", "")  # Path to PKCS12 certificate
-    OBANK_CERT_PASSWORD: str = os.getenv("OBANK_CERT_PASSWORD", "")  # Certificate password
+    OBANK_CERT_PASSWORD: str = os.getenv("OBANK_CERT_PASSWORD", "bPAKhpUlss")  # Certificate password (тестовый)
     OBANK_USE_PRODUCTION: bool = os.getenv("OBANK_USE_PRODUCTION", "false").lower() == "true"
     
     # OBANK Production настройки
@@ -94,12 +94,7 @@ class Settings(BaseSettings):
         if self.OBANK_USE_PRODUCTION:
             return self.OBANK_PRODUCTION_API_URL
         else:
-            # Принудительно используем HTTP для тестового режима
-            url = self.OBANK_API_URL
-            if url.startswith("https://"):
-                url = url.replace("https://", "http://")
-                print(f"🔓 Тестовый режим: принудительно переключаем на HTTP: {url}")
-            return url
+            return self.OBANK_API_URL
     
     @property
     def current_obank_point_id(self) -> str:
