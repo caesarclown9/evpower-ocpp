@@ -38,6 +38,9 @@ class Settings(BaseSettings):
         "http://localhost:3000,http://localhost:9210,https://app.flutterflow.io,https://ocpp.evpower.kg,http://ocpp.evpower.kg,ws://ocpp.evpower.kg,wss://ocpp.evpower.kg"
     )
     
+    # Domain для webhook URLs
+    DOMAIN: str = os.getenv("DOMAIN", "https://ocpp.evpower.kg")
+    
     # OBANK Payment API Configuration  
     OBANK_API_URL: str = os.getenv("OBANK_API_URL", "https://test-rakhmet.dengi.kg:4431/external/extended-cert")
     OBANK_API_URL_HTTP: str = os.getenv("OBANK_API_URL_HTTP", "http://test-rakhmet.dengi.kg:4430/external/extended-cert")  # HTTP альтернатива
