@@ -204,6 +204,219 @@ class PaymentProviderService:
                 "raw_response": response
             }
     
+    async def create_h2h_payment(
+        self,
+        amount: Decimal,
+        order_id: str,
+        card_data: Dict[str, str],
+        email: str,
+        phone_number: Optional[str] = None,
+        description: str = "",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Создает H2H платеж картой (только OBANK)
+        
+        Args:
+            amount: Сумма платежа в сомах
+            order_id: Уникальный ID заказа
+            card_data: Данные карты (pan, name, cvv, year, month)
+            email: Email клиента
+            phone_number: Телефон клиента
+            description: Описание платежа
+            
+        Returns:
+            Dict с результатом платежа
+        """
+        if self.provider != "OBANK":
+            return {
+                "success": False,
+                "error": "h2h_not_supported",
+                "message": f"H2H платежи поддерживаются только провайдером OBANK, текущий: {self.provider}"
+            }
+        
+        try:
+            response = await self.service.create_h2h_payment(
+                amount=amount,
+                transaction_id=order_id,
+                account=card_data.get('pan', ''),
+                email=email,
+                notify_url="",  # OBANK H2H не использует уведомления
+                redirect_url="",  # OBANK H2H не использует редиректы
+                card_pan=card_data.get('pan', ''),
+                card_name=card_data.get('name', ''),
+                card_cvv=card_data.get('cvv', ''),
+                card_year=card_data.get('year', ''),
+                card_month=card_data.get('month', ''),
+                **kwargs
+            )
+            
+            if response.get('success'):
+                return {
+                    "success": True,
+                    "transaction_id": response.get('transaction_id'),
+                    "auth_key": response.get('auth_key'),
+                    "status": response.get('status', 'processing'),
+                    "message": response.get('message', 'H2H платеж создан'),
+                    "provider": "OBANK"
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": response.get('error', 'h2h_creation_failed'),
+                    "message": response.get('message', 'Ошибка создания H2H платежа')
+                }
+                
+        except Exception as e:
+            logger.error(f"H2H payment creation error: {e}")
+            return {
+                "success": False,
+                "error": "h2h_exception",
+                "message": str(e)
+            }
+    
+    async def create_token_payment(
+        self,
+        amount: Decimal,
+        order_id: str,
+        card_token: str,
+        email: str,
+        description: str = "",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Создает платеж по токену карты (только OBANK)
+        
+        Args:
+            amount: Сумма платежа в сомах
+            order_id: Уникальный ID заказа
+            card_token: Токен сохраненной карты
+            email: Email клиента
+            description: Описание платежа
+            
+        Returns:
+            Dict с результатом платежа
+        """
+        if self.provider != "OBANK":
+            return {
+                "success": False,
+                "error": "token_not_supported",
+                "message": f"Token платежи поддерживаются только провайдером OBANK, текущий: {self.provider}"
+            }
+        
+        try:
+            response = await self.service.create_token_payment(
+                amount=amount,
+                transaction_id=order_id,
+                email=email,
+                notify_url="",
+                redirect_url="",
+                card_token=card_token,
+                **kwargs
+            )
+            
+            if response.get('success'):
+                return {
+                    "success": True,
+                    "transaction_id": response.get('transaction_id'),
+                    "auth_key": response.get('auth_key'),
+                    "status": response.get('status', 'processing'),
+                    "message": response.get('message', 'Token платеж создан'),
+                    "provider": "OBANK"
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": response.get('error', 'token_payment_failed'),
+                    "message": response.get('message', 'Ошибка создания Token платежа')
+                }
+                
+        except Exception as e:
+            logger.error(f"Token payment creation error: {e}")
+            return {
+                "success": False,
+                "error": "token_exception", 
+                "message": str(e)
+            }
+    
+    async def create_token(self, days: int = 14) -> Dict[str, Any]:
+        """
+        Создает токен для сохранения карт (только OBANK)
+        
+        Args:
+            days: Количество дней действия токена
+            
+        Returns:
+            Dict с токеном
+        """
+        if self.provider != "OBANK":
+            return {
+                "success": False,
+                "error": "token_creation_not_supported",
+                "message": f"Создание токенов поддерживается только провайдером OBANK, текущий: {self.provider}"
+            }
+        
+        try:
+            response = await self.service.create_token(days=days)
+            
+            if response.get('success'):
+                return {
+                    "success": True,
+                    "token_url": response.get('token_url'),
+                    "token_expires_in_days": days,
+                    "message": "Токен создан успешно",
+                    "provider": "OBANK"
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": response.get('error', 'token_creation_failed'),
+                    "message": response.get('message', 'Ошибка создания токена')
+                }
+                
+        except Exception as e:
+            logger.error(f"Token creation error: {e}")
+            return {
+                "success": False,
+                "error": "token_creation_exception",
+                "message": str(e)
+            }
+    
+    async def check_h2h_status(self, auth_key: str) -> Dict[str, Any]:
+        """
+        Проверяет статус H2H платежа (только OBANK)
+        
+        Args:
+            auth_key: Ключ аутентификации H2H платежа
+            
+        Returns:
+            Dict со статусом платежа
+        """
+        if self.provider != "OBANK":
+            return {
+                "success": False,
+                "error": "h2h_status_not_supported",
+                "message": f"Проверка H2H статуса поддерживается только провайдером OBANK, текущий: {self.provider}"
+            }
+        
+        try:
+            response = await self.service.check_h2h_status(auth_key=auth_key)
+            
+            return {
+                "success": True,
+                "status": response.get('status', 'processing'),
+                "provider": "OBANK",
+                "raw_response": response
+            }
+            
+        except Exception as e:
+            logger.error(f"H2H status check error: {e}")
+            return {
+                "success": False,
+                "error": "h2h_status_exception",
+                "message": str(e)
+            }
+
     async def cancel_payment(
         self, 
         transaction_id: str, 

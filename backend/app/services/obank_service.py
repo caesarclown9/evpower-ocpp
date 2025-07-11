@@ -397,7 +397,24 @@ class OBankService:
         xml_request = self._build_xml_request(method_data)
         response = await self._make_request(xml_request, "H2HPayment")
         
-        return response
+        # Форматируем ответ для PaymentProviderService
+        if response.get("code") == "0":
+            data = response.get("data", {})
+            return {
+                "success": True,
+                "auth_key": data.get("auth-key") or data.get("auth_key") or data.get("key"),
+                "transaction_id": transaction_id,
+                "status": "processing",
+                "message": "H2H платеж создан успешно",
+                "raw_response": response
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"obank_error_{response.get('code', 'unknown')}",
+                "message": response.get("description", "Ошибка создания H2H платежа"),
+                "raw_response": response
+            }
     
     async def check_h2h_status(self, auth_key: str) -> Dict[str, Any]:
         """
@@ -437,7 +454,23 @@ class OBankService:
         xml_request = self._build_xml_request(method_data)
         response = await self._make_request(xml_request, "CreateToken")
         
-        return response
+        # Форматируем ответ для PaymentProviderService
+        if response.get("code") == "0":
+            data = response.get("data", {})
+            return {
+                "success": True,
+                "token_url": data.get("token-url") or data.get("token_url") or data.get("url"),
+                "token_expires_in_days": days,
+                "message": "Токен создан успешно",
+                "raw_response": response
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"obank_error_{response.get('code', 'unknown')}",
+                "message": response.get("description", "Ошибка создания токена"),
+                "raw_response": response
+            }
     
     async def create_token_payment(
         self,
@@ -486,7 +519,24 @@ class OBankService:
         xml_request = self._build_xml_request(method_data)
         response = await self._make_request(xml_request, "TokenPayment")
         
-        return response
+        # Форматируем ответ для PaymentProviderService
+        if response.get("code") == "0":
+            data = response.get("data", {})
+            return {
+                "success": True,
+                "auth_key": data.get("auth-key") or data.get("auth_key") or data.get("key"),
+                "transaction_id": transaction_id,
+                "status": "processing",
+                "message": "Token платеж создан успешно",
+                "raw_response": response
+            }
+        else:
+            return {
+                "success": False,
+                "error": f"obank_error_{response.get('code', 'unknown')}",
+                "message": response.get("description", "Ошибка создания Token платежа"),
+                "raw_response": response
+            }
     
     async def cancel_payment(self, transaction_id: str, refund_amount: Decimal) -> Dict[str, Any]:
         """
