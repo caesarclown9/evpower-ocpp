@@ -209,17 +209,10 @@ class OBankService:
         
         try:
             if not self.use_production:
-                # Тестовый режим: HTTPS с полностью отключенной SSL проверкой
-                logger.info("🔓 Тестовый режим: HTTPS с отключенной SSL проверкой")
+                # Тестовый режим: полностью отключаем SSL проверку
+                logger.info("🔓 Тестовый режим: SSL проверка полностью отключена")
                 
-                # Создаем контекст с максимально отключенной проверкой
-                import ssl
-                ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
-                ssl_context.set_ciphers('ALL:@SECLEVEL=0')  # Разрешаем слабые cipher'ы
-                
-                async with httpx.AsyncClient(verify=ssl_context) as client:
+                async with httpx.AsyncClient(verify=False) as client:
                     logger.info(f"Отправка запроса в OBANK (тестовый HTTPS): {url}")
                     logger.debug(f"XML запрос: {xml_data}")
                     
