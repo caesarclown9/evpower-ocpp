@@ -29,24 +29,21 @@ class OBankService:
         self.cert_password = "bPAKhpUlss"
         
     def _load_pkcs12_certificate(self):
-        """
-        Load PKCS12 client certificate and create SSL context
-        """
+        """Load PKCS12 certificate and extract cert + key"""
         try:
             if not self.cert_path.exists():
-                raise FileNotFoundError(f"OBANK certificate not found: {self.cert_path}")
-            
-            # Load PKCS12 certificate
+                raise FileNotFoundError(f"SSL certificate not found: {self.cert_path}")
+                
             with open(self.cert_path, 'rb') as cert_file:
-                cert_data = cert_file.read()
+                p12_data = cert_file.read()
             
-            # Parse PKCS12 certificate
+            # Parse PKCS12
             private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(
-                cert_data, 
+                p12_data, 
                 self.cert_password.encode('utf-8')
             )
             
-            # Create temporary PEM files for httpx
+            # Convert to PEM format
             cert_pem = certificate.public_bytes(serialization.Encoding.PEM)
             key_pem = private_key.private_bytes(
                 encoding=serialization.Encoding.PEM,
@@ -57,68 +54,74 @@ class OBankService:
             return cert_pem, key_pem
             
         except Exception as e:
-            logger.error(f"Failed to load PKCS12 certificate: {str(e)}")
+            logger.error(f"Failed to load PKCS12 certificate: {e}")
             raise
-        
+
     async def _make_request(self, endpoint: str, xml_data: str) -> Dict[str, Any]:
         """
         Make authenticated request to OBANK API with client SSL certificate
         """
         try:
-            # Load client certificate
+            # Load certificate
             cert_pem, key_pem = self._load_pkcs12_certificate()
             
-            # Create temporary files for certificate and key
-            with tempfile.NamedTemporaryFile(suffix='.pem', delete=False) as cert_file:
+            # Create temporary files for cert and key
+            cert_file_path = None
+            key_file_path = None
+            
+            with tempfile.NamedTemporaryFile(mode='wb', suffix='.crt', delete=False) as cert_file:
                 cert_file.write(cert_pem)
                 cert_file_path = cert_file.name
-            
-            with tempfile.NamedTemporaryFile(suffix='.pem', delete=False) as key_file:
+                
+            with tempfile.NamedTemporaryFile(mode='wb', suffix='.key', delete=False) as key_file:
                 key_file.write(key_pem)
                 key_file_path = key_file.name
             
-            try:
-                async with httpx.AsyncClient(
-                    cert=(cert_file_path, key_file_path),
-                    verify=False,  # Для тестового сервера
-                    timeout=30.0
-                ) as client:
-                    
-                    logger.info(f"Making OBANK request to: {self.base_url}{endpoint}")
-                    logger.debug(f"Request XML: {xml_data}")
-                    
-                    response = await client.post(
-                        f"{self.base_url}{endpoint}",
-                        content=xml_data,
-                        headers={
-                            "Content-Type": "application/xml",
-                            "Accept": "application/xml"
-                        }
-                    )
-                    
-                    logger.info(f"OBANK response status: {response.status_code}")
-                    logger.debug(f"Response content: {response.text}")
-                    
-                    if response.status_code == 200:
-                        # Парсинг XML ответа
-                        root = ET.fromstring(response.text)
-                        return self._parse_xml_response(root)
-            else:
-                        logger.error(f"OBANK API error: {response.status_code} - {response.text}")
-                        return {"error": f"HTTP {response.status_code}", "detail": response.text}
+            # Create SSL context for mutual TLS
+            ssl_context = ssl.create_default_context()
+            ssl_context.load_cert_chain(cert_file_path, key_file_path)
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
             
-            finally:
-                # Cleanup temporary files
-                try:
-                    os.unlink(cert_file_path)
-                    os.unlink(key_file_path)
-                except:
-                    pass
+            async with httpx.AsyncClient(
+                verify=ssl_context,
+                timeout=30.0,
+                limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
+            ) as client:
+                
+                response = await client.post(
+                    f"{self.base_url}{endpoint}",
+                    content=xml_data,
+                    headers={
+                        "Content-Type": "application/xml; charset=utf-8",
+                        "Accept": "application/xml"
+                    }
+                )
+                
+                logger.info(f"OBANK response status: {response.status_code}")
+                logger.debug(f"Response content: {response.text}")
+                
+                if response.status_code == 200:
+                    # Парсинг XML ответа
+                    root = ET.fromstring(response.text)
+                    return self._parse_xml_response(root)
+                else:
+                    logger.error(f"OBANK API error: {response.status_code} - {response.text}")
+                    return {"error": f"HTTP {response.status_code}", "detail": response.text}
                     
         except Exception as e:
             logger.error(f"OBANK request failed: {str(e)}")
             return {"error": "Connection failed", "detail": str(e)}
-    
+        finally:
+            # Cleanup temporary files
+            try:
+                if cert_file_path:
+                    os.unlink(cert_file_path)
+                if key_file_path:
+                    os.unlink(key_file_path)
+            except:
+                pass
+
     def _parse_xml_response(self, root: ET.Element) -> Dict[str, Any]:
         """Parse XML response from OBANK API"""
         result = {}
