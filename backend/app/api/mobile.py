@@ -15,6 +15,7 @@ from ocpp_ws_server.redis_manager import redis_manager
 from pydantic import BaseModel, Field, validator
 
 from app.services.payment_provider_service import get_payment_provider_service, get_qr_payment_service, get_card_payment_service
+from app.services.obank_service import obank_service
 
 # ============================================================================
 # ПЛАТЕЖНЫЕ ENDPOINTS O!DENGI
@@ -1350,8 +1351,6 @@ async def create_h2h_payment(
         description = request.description or f"H2H пополнение баланса клиента {request.client_id} на {request.amount} сом"
         
         # 5. Создаем H2H платеж через OBANK
-        from app.services.obank_service import obank_service
-        
         notify_url = f"{settings.API_V1_STR}/payment/webhook"
         redirect_url = f"{settings.API_V1_STR}/payment/success"
         
@@ -1478,8 +1477,6 @@ async def create_token_payment(
         description = request.description or f"Токен-пополнение баланса клиента {request.client_id} на {request.amount} сом"
         
         # 4. Создаем токен-платеж через OBANK
-        from app.services.obank_service import obank_service
-        
         notify_url = f"{settings.API_V1_STR}/payment/webhook"
         redirect_url = f"{settings.API_V1_STR}/payment/success"
         
@@ -1581,8 +1578,6 @@ async def create_card_token(
             )
 
         # Создаем токен через OBANK
-        from app.services.obank_service import obank_service
-        
         token_response = await obank_service.create_token(days=request.days)
         
         if token_response.get("code") != "0":
@@ -1950,11 +1945,11 @@ async def create_card_balance_topup(
             client_id=request.client_id
         )
 
-@router.post("/balance/topup-card")
+@router.post("/balance/topup-card", response_model=H2HPaymentResponse)
 async def topup_card_balance(
-    request: CardTopUpRequest,
+    request: H2HPaymentRequest,
     db: Session = Depends(get_db)
-):
+) -> H2HPaymentResponse:
     """
     Top up balance using card (OBANK H2H Payment with SSL Certificate)
     
@@ -1967,11 +1962,11 @@ async def topup_card_balance(
         
         # Prepare card data for OBANK H2H payment
         card_data = {
-            "number": request.card_number,
-            "holder_name": request.card_holder_name,
-            "cvv": request.cvv,
-            "exp_month": f"{request.exp_month:02d}",
-            "exp_year": str(request.exp_year)[-2:]  # Last 2 digits
+            "number": request.card_pan,
+            "holder_name": request.card_name,
+            "cvv": request.card_cvv,
+            "exp_month": request.card_month,
+            "exp_year": request.card_year
         }
         
         # Create H2H payment via OBANK (XML format)
@@ -2004,11 +1999,11 @@ async def topup_card_balance(
         logger.error(f"Card balance top-up error: {str(e)}")
         raise HTTPException(status_code=500, detail="Internal server error during card payment")
 
-@router.post("/balance/h2h-payment")
-async def create_h2h_payment(
-    request: CardTopUpRequest,
+@router.post("/payment/h2h-payment", response_model=H2HPaymentResponse)
+async def create_h2h_payment_endpoint(
+    request: H2HPaymentRequest,
     db: Session = Depends(get_db)
-):
+) -> H2HPaymentResponse:
     """
     Direct Host-to-Host card payment via OBANK API (XML format with SSL cert)
     
@@ -2021,11 +2016,11 @@ async def create_h2h_payment(
         logger.info(f"H2H payment request for client: {request.client_id}, amount: {request.amount}")
         
         card_data = {
-            "number": request.card_number,
-            "holder_name": request.card_holder_name,
-            "cvv": request.cvv,
-            "exp_month": f"{request.exp_month:02d}",
-            "exp_year": str(request.exp_year)[-2:]
+            "number": request.card_pan,
+            "holder_name": request.card_name,
+            "cvv": request.card_cvv,
+            "exp_month": request.card_month,
+            "exp_year": request.card_year
         }
         
         # Direct H2H payment

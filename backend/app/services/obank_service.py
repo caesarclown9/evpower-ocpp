@@ -103,7 +103,7 @@ class OBankService:
                         # Парсинг XML ответа
                         root = ET.fromstring(response.text)
                         return self._parse_xml_response(root)
-                    else:
+            else:
                         logger.error(f"OBANK API error: {response.status_code} - {response.text}")
                         return {"error": f"HTTP {response.status_code}", "detail": response.text}
             
@@ -255,7 +255,7 @@ class OBankService:
         except Exception as e:
             logger.error(f"Token payment failed: {str(e)}")
             return {"success": False, "error": str(e)}
-
+    
     async def create_token(self, days: int = 14) -> Dict[str, Any]:
         """
         Create card storage token
