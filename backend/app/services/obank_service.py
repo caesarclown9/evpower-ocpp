@@ -266,7 +266,7 @@ class OBankService:
         try:
             xml_data = self._create_token_xml(days)
             
-            result = await self._make_request("/token-Create", xml_data)
+            result = await self._make_request("/", xml_data)
             
             return {
                 "success": "error" not in result,

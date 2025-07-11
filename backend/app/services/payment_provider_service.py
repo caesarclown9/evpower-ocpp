@@ -237,18 +237,15 @@ class PaymentProviderService:
         
         try:
             response = await self.service.create_h2h_payment(
-                amount=amount,
-                transaction_id=order_id,
-                account=card_data.get('pan', ''),
-                email=email,
-                notify_url="",  # OBANK H2H не использует уведомления
-                redirect_url="",  # OBANK H2H не использует редиректы
-                card_pan=card_data.get('pan', ''),
-                card_name=card_data.get('name', ''),
-                card_cvv=card_data.get('cvv', ''),
-                card_year=card_data.get('year', ''),
-                card_month=card_data.get('month', ''),
-                **kwargs
+                amount_kgs=float(amount),
+                client_id=order_id,
+                card_data={
+                    "number": card_data.get('pan', ''),
+                    "holder_name": card_data.get('name', ''),
+                    "cvv": card_data.get('cvv', ''),
+                    "exp_year": card_data.get('year', ''),
+                    "exp_month": card_data.get('month', '')
+                }
             )
             
             if response.get('success'):
@@ -306,13 +303,9 @@ class PaymentProviderService:
         
         try:
             response = await self.service.create_token_payment(
-                amount=amount,
-                transaction_id=order_id,
-                email=email,
-                notify_url="",
-                redirect_url="",
-                card_token=card_token,
-                **kwargs
+                amount_kgs=float(amount),
+                client_id=order_id,
+                card_token=card_token
             )
             
             if response.get('success'):
@@ -400,7 +393,7 @@ class PaymentProviderService:
             }
         
         try:
-            response = await self.service.check_h2h_status(auth_key=auth_key)
+            response = await self.service.check_h2h_status(transaction_id=auth_key)
             
             return {
                 "success": True,
