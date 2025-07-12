@@ -286,52 +286,25 @@ class OBankService:
             logger.info(f"💳 Card data: {card_data}")
             logger.info(f"📄 Generated XML: {xml_data}")
             
-            # 🔍 ДИАГНОСТИКА 1: Тестируем GET запрос к корню
-            logger.info(f"🔍 Testing GET request to base URL...")
-            try:
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    get_response = await client.get(f"{self.base_url}/")
-                    logger.info(f"🔍 GET / response: {get_response.status_code}")
-                    logger.info(f"🔍 GET / content: '{get_response.text[:500]}'")
-            except Exception as e:
-                logger.error(f"🔍 GET request failed: {e}")
+            # ✅ Используем правильный эндпоинт из документации
+            result = await self._make_request("/h2h-payment", xml_data)
             
-            # 🔍 ДИАГНОСТИКА 2: Тестируем разные endpoints с POST
-            endpoints_to_try = [
-                "/",
-                "/payment", 
-                "/api",
-                "/api/payment",
-                "/process",
-                "/h2h",
-                "/xml",
-                "/rakhmet",
-                "/gateway"
-            ]
-            
-            for endpoint in endpoints_to_try:
-                logger.info(f"🔍 Testing POST endpoint: {endpoint}")
-                result = await self._make_request(endpoint, xml_data)
-                
-                if "error" not in result or result.get("error") != "HTTP 404":
-                    logger.info(f"✅ Working endpoint found: {endpoint}")
-                    return {
-                        "success": "error" not in result,
-                        "payment_id": result.get("id"),
-                        "status": result.get("state"),
-                        "result": result
-                    }
-                else:
-                    logger.info(f"❌ Endpoint {endpoint} returned 404")
-            
-            # Если все endpoints возвращают 404, возвращаем последний результат
-            logger.error(f"🚨 All endpoints returned 404! Server might be misconfigured.")
-            return {
-                "success": False,
-                "payment_id": None,
-                "status": None,
-                "result": result
-            }
+            if "error" not in result:
+                logger.info(f"✅ H2H payment successful!")
+                return {
+                    "success": True,
+                    "payment_id": result.get("id"),
+                    "status": result.get("state"),
+                    "result": result
+                }
+            else:
+                logger.error(f"❌ H2H payment failed: {result.get('error')}")
+                return {
+                    "success": False,
+                    "payment_id": None,
+                    "status": None,
+                    "result": result
+                }
             
         except Exception as e:
             logger.error(f"H2H payment failed: {str(e)}")
@@ -346,7 +319,8 @@ class OBankService:
             
             xml_data = self._create_token_payment_xml(amount_tyiyn, client_id, card_token)
             
-            result = await self._make_request("/", xml_data)
+            # ✅ Используем правильный эндпоинт для токен платежей
+            result = await self._make_request("/token-payment", xml_data)
             
             return {
                 "success": "error" not in result,
@@ -366,7 +340,8 @@ class OBankService:
         try:
             xml_data = self._create_token_xml(days)
             
-            result = await self._make_request("/", xml_data)
+            # ✅ Используем правильный эндпоинт для создания токена
+            result = await self._make_request("/token-Create", xml_data)
             
             return {
                 "success": "error" not in result,
@@ -384,7 +359,8 @@ class OBankService:
         try:
             xml_data = self._create_status_xml(transaction_id)
             
-            result = await self._make_request("/", xml_data)
+            # ✅ Используем правильный эндпоинт для проверки статуса H2H
+            result = await self._make_request("/h2hstatus", xml_data)
             
             return {
                 "success": "error" not in result,
