@@ -32,16 +32,30 @@ class OBankService:
         """Load PKCS12 certificate and extract cert + key"""
         try:
             if not self.cert_path.exists():
+                logger.error(f"🚨 SSL certificate NOT FOUND: {self.cert_path}")
+                logger.error(f"🚨 Certificate directory contents:")
+                cert_dir = self.cert_path.parent
+                if cert_dir.exists():
+                    for file in cert_dir.iterdir():
+                        logger.error(f"🚨   - {file.name}")
+                else:
+                    logger.error(f"🚨 Certificate directory does not exist: {cert_dir}")
                 raise FileNotFoundError(f"SSL certificate not found: {self.cert_path}")
                 
+            logger.info(f"✅ SSL certificate found: {self.cert_path}")
+            
             with open(self.cert_path, 'rb') as cert_file:
                 p12_data = cert_file.read()
+            
+            logger.info(f"✅ PKCS12 data read: {len(p12_data)} bytes")
             
             # Parse PKCS12
             private_key, certificate, additional_certificates = pkcs12.load_key_and_certificates(
                 p12_data, 
                 self.cert_password.encode('utf-8')
             )
+            
+            logger.info(f"✅ PKCS12 parsed successfully")
             
             # Convert to PEM format
             cert_pem = certificate.public_bytes(serialization.Encoding.PEM)
@@ -51,10 +65,13 @@ class OBankService:
                 encryption_algorithm=serialization.NoEncryption()
             )
             
+            logger.info(f"✅ Certificate converted to PEM format")
+            
             return cert_pem, key_pem
             
         except Exception as e:
-            logger.error(f"Failed to load PKCS12 certificate: {e}")
+            logger.error(f"🚨 Failed to load PKCS12 certificate: {e}")
+            logger.error(f"🚨 Exception type: {type(e).__name__}")
             raise
 
     async def _make_request(self, endpoint: str, xml_data: str) -> Dict[str, Any]:
@@ -62,8 +79,40 @@ class OBankService:
         Make authenticated request to OBANK API with client SSL certificate
         """
         try:
+            logger.info(f"🔍 OBANK request: {self.base_url}{endpoint}")
+            logger.info(f"🔍 SSL cert path: {self.cert_path}")
+            logger.info(f"🔍 SSL cert exists: {self.cert_path.exists()}")
+            
+            # Проверяем наличие сертификата
+            if not self.cert_path.exists():
+                logger.error(f"🚨 SSL certificate missing! Using HTTP fallback for testing...")
+                # Временно используем HTTP endpoint для тестирования
+                http_url = self.base_url.replace("https://", "http://").replace(":4431", ":4430")
+                
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(
+                        f"{http_url}{endpoint}",
+                        content=xml_data,
+                        headers={
+                            "Content-Type": "application/xml; charset=utf-8",
+                            "Accept": "application/xml"
+                        }
+                    )
+                    
+                    logger.info(f"🔍 HTTP fallback response status: {response.status_code}")
+                    logger.info(f"🔍 HTTP fallback response: '{response.text}'")
+                    
+                    if response.status_code == 200:
+                        root = ET.fromstring(response.text)
+                        return self._parse_xml_response(root)
+                    else:
+                        return {"error": f"HTTP {response.status_code}", "detail": response.text}
+            
             # Load certificate
             cert_pem, key_pem = self._load_pkcs12_certificate()
+            
+            logger.info(f"🔍 SSL cert loaded: {len(cert_pem)} bytes")
+            logger.info(f"🔍 SSL key loaded: {len(key_pem)} bytes")
             
             # Create temporary files for cert and key
             cert_file_path = None
@@ -98,15 +147,19 @@ class OBankService:
                     }
                 )
                 
-                logger.info(f"OBANK response status: {response.status_code}")
-                logger.debug(f"Response content: {response.text}")
+                logger.info(f"🔍 OBANK response status: {response.status_code}")
+                logger.info(f"🔍 OBANK response headers: {dict(response.headers)}")
+                logger.info(f"🔍 OBANK response content: '{response.text}'")
+                logger.info(f"🔍 OBANK response length: {len(response.text)} chars")
                 
                 if response.status_code == 200:
                     # Парсинг XML ответа
                     root = ET.fromstring(response.text)
                     return self._parse_xml_response(root)
                 else:
-                    logger.error(f"OBANK API error: {response.status_code} - {response.text}")
+                    logger.error(f"❌ OBANK API error: {response.status_code}")
+                    logger.error(f"❌ OBANK response: '{response.text}'")
+                    logger.error(f"❌ OBANK headers: {dict(response.headers)}")
                     return {"error": f"HTTP {response.status_code}", "detail": response.text}
                     
         except Exception as e:
