@@ -134,74 +134,8 @@ class OBankService:
                 logger.info(f"🔍 Created temp cert file: {cert_file_path}")
                 logger.info(f"🔍 Created temp key file: {key_file_path}")
                 
-                # ✅ РАСШИРЕННАЯ ДИАГНОСТИКА: Тестирование альтернативных endpoint'ов
-                if endpoint == "/h2h-payment":
-                    logger.info(f"🔧 OBANK SERVER DIAGNOSTIC MODE ACTIVATED")
-                    logger.info(f"🔧 Testing multiple endpoints to find working API...")
-                    
-                    # Список endpoint'ов из документации для тестирования
-                    test_endpoints = [
-                        "",  # Base URL
-                        "/",  # Root
-                        "/h2h-payment",  # Наш основной endpoint
-                        "/PaymentPage",  # Платежная страница
-                        "/status",  # Статус
-                        "/token-Create",  # Создание токена
-                        "/Sertifikat",  # Сертификат endpoint
-                    ]
-                    
-                    results = {}
-                    
-                    async with httpx.AsyncClient(
-                        cert=(cert_file_path, key_file_path),
-                        verify=False,
-                        timeout=15.0
-                    ) as client:
-                        
-                        for test_endpoint in test_endpoints:
-                            try:
-                                url = f"{self.base_url}{test_endpoint}"
-                                logger.info(f"🔧 Testing: {url}")
-                                
-                                # Пробуем GET запрос
-                                get_response = await client.get(url)
-                                get_status = get_response.status_code
-                                get_content = get_response.text[:100] if get_response.text else ""
-                                
-                                # Пробуем POST запрос с нашим XML
-                                post_response = await client.post(
-                                    url,
-                                    content=xml_data,
-                                    headers={
-                                        "Content-Type": "application/xml; charset=utf-8",
-                                        "Accept": "application/xml"
-                                    }
-                                )
-                                post_status = post_response.status_code
-                                post_content = post_response.text[:100] if post_response.text else ""
-                                
-                                results[test_endpoint or "ROOT"] = {
-                                    "GET": {"status": get_status, "content": get_content},
-                                    "POST": {"status": post_status, "content": post_content}
-                                }
-                                
-                                logger.info(f"🔧 {test_endpoint or 'ROOT'}: GET={get_status}, POST={post_status}")
-                                
-                                # Если нашли working endpoint с хорошим ответом
-                                if post_status == 200 and post_response.text.strip():
-                                    logger.info(f"🎯 FOUND WORKING ENDPOINT: {url}")
-                                    logger.info(f"🎯 POST Response: {post_response.text}")
-                                    return self._parse_xml_response(post_response.text)
-                                    
-                            except Exception as e:
-                                results[test_endpoint or "ROOT"] = {"error": str(e)}
-                                logger.info(f"🔧 {test_endpoint or 'ROOT'}: ERROR - {str(e)}")
-                    
-                    # Логируем итоговые результаты диагностики
-                    logger.info(f"🔧 === OBANK SERVER DIAGNOSTIC RESULTS ===")
-                    for endpoint_name, result in results.items():
-                        logger.info(f"🔧 {endpoint_name}: {result}")
-                    logger.info(f"🔧 === END DIAGNOSTIC ===")
+                # ✅ ДИАГНОСТИКА ОТКЛЮЧЕНА: Рабочий endpoint найден - base URL
+                logger.info(f"🔍 Using confirmed working endpoint: {self.base_url}{endpoint}")
                 
                 # Основной запрос с SSL сертификатом
                 async with httpx.AsyncClient(
@@ -364,29 +298,48 @@ class OBankService:
             logger.info(f"💳 Card data: {card_data}")
             logger.info(f"📄 Generated XML: {xml_data}")
             
-            # ✅ Используем правильный эндпоинт из документации
-            result = await self._make_request("/h2h-payment", xml_data)
+            # ✅ ИСПРАВЛЕНО: Используем base URL (диагностика показала что endpoint = "")
+            result = await self._make_request("", xml_data)
             
             if "error" not in result:
                 logger.info(f"✅ H2H payment successful!")
+                
+                # ✅ ИСПРАВЛЕНО: Правильные поля для mobile.py
+                # OBANK возвращает: id, trans, state, code, final
+                # Mobile API ожидает: auth_key, transaction_id, status
+                payment_id = result.get("id")  # ID платежа
+                trans_id = result.get("trans")  # Транзакционный ID банка
+                state = result.get("state", "0")  # Статус платежа
+                
                 return {
                     "success": True,
-                    "payment_id": result.get("id"),
-                    "status": result.get("state"),
+                    "auth_key": payment_id,  # ID платежа как auth_key для invoice_id
+                    "transaction_id": trans_id,  # Банковский transaction ID
+                    "payment_id": payment_id,  # Дублируем для совместимости
+                    "status": "processing" if state == "0" else "completed",
+                    "message": "H2H payment created successfully",
                     "result": result
                 }
             else:
                 logger.error(f"❌ H2H payment failed: {result.get('error')}")
                 return {
                     "success": False,
+                    "auth_key": None,
+                    "transaction_id": None,
                     "payment_id": None,
-                    "status": None,
+                    "status": "failed",
+                    "message": result.get('error', 'H2H payment failed'),
                     "result": result
                 }
             
         except Exception as e:
             logger.error(f"H2H payment failed: {str(e)}")
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False, 
+                "auth_key": None,
+                "transaction_id": None,
+                "error": str(e)
+            }
 
     async def create_token_payment(self, amount_kgs: float, client_id: str, card_token: str) -> Dict[str, Any]:
         """
