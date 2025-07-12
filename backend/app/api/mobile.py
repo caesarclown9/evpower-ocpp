@@ -1945,59 +1945,7 @@ async def create_card_balance_topup(
             client_id=request.client_id
         )
 
-@router.post("/balance/topup-card", response_model=H2HPaymentResponse)
-async def topup_card_balance(
-    request: H2HPaymentRequest,
-    db: Session = Depends(get_db)
-) -> H2HPaymentResponse:
-    """
-    Top up balance using card (OBANK H2H Payment with SSL Certificate)
-    
-    ВАЖНО: Требует клиентский SSL сертификат PKCS12!
-    Скачать: https://drive.google.com/file/d/17tjIhkFMK7_F3mVQGlANQHtPj19xKZmu/view?usp=sharing
-    Пароль: bPAKhpUlss
-    """
-    try:
-        logger.info(f"Card balance top-up request for client: {request.client_id}, amount: {request.amount}")
-        
-        # Prepare card data for OBANK H2H payment
-        card_data = {
-            "number": request.card_pan,
-            "holder_name": request.card_name,
-            "cvv": request.card_cvv,
-            "exp_month": request.card_month,
-            "exp_year": request.card_year
-        }
-        
-        # Create H2H payment via OBANK (XML format)
-        payment_result = await obank_service.create_h2h_payment(
-            amount_kgs=request.amount,
-            client_id=request.client_id,
-            card_data=card_data
-        )
-        
-        if payment_result.get("success"):
-            return {
-                "success": True,
-                "message": "Card payment initiated successfully",
-                "payment_id": payment_result.get("payment_id"),
-                "status": payment_result.get("status"),
-                "provider": "OBANK_H2H",
-                "amount": request.amount,
-                "currency": "KGS"
-            }
-        else:
-            logger.error(f"OBANK H2H payment failed: {payment_result}")
-            raise HTTPException(
-                status_code=400,
-                detail=f"Payment failed: {payment_result.get('error', 'Unknown error')}"
-            )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Card balance top-up error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Internal server error during card payment")
+
 
 @router.post("/payment/h2h-payment", response_model=H2HPaymentResponse)
 async def create_h2h_payment_endpoint(

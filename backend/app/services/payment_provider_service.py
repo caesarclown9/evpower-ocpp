@@ -244,7 +244,9 @@ class PaymentProviderService:
                     "holder_name": card_data.get('name', ''),
                     "cvv": card_data.get('cvv', ''),
                     "exp_year": card_data.get('year', ''),
-                    "exp_month": card_data.get('month', '')
+                    "exp_month": card_data.get('month', ''),
+                    "email": email,
+                    "phone": phone_number or '+996700000000'
                 }
             )
             

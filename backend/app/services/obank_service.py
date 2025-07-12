@@ -145,6 +145,10 @@ class OBankService:
         transaction_id = int(datetime.now().timestamp())
         current_time = datetime.now().strftime("%Y-%m-%dT%H:%M:%S+0600")
         
+        # Используем переданные email и phone или значения по умолчанию
+        email = card_data.get('email', 'test@evpower.kg')
+        phone = card_data.get('phone', '+996700000000')
+        
         xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <request point="{self.point_id}">
     <payment
@@ -162,8 +166,8 @@ class OBankService:
         <attribute name="card_cvv" value="{card_data['cvv']}"/>
         <attribute name="card_year" value="{card_data['exp_year']}"/>
         <attribute name="card_month" value="{card_data['exp_month']}"/>
-        <attribute name="email" value="test@evpower.kg"/>
-        <attribute name="phone_number" value="+996700000000"/>
+        <attribute name="email" value="{email}"/>
+        <attribute name="phone_number" value="{phone}"/>
         <attribute name="city" value="BISHKEK"/>
         <attribute name="country_code" value="KGZ"/>
     </payment>
@@ -223,6 +227,11 @@ class OBankService:
             amount_tyiyn = int(amount_kgs * 100)  # KGS to tyiyn
             
             xml_data = self._create_h2h_xml(amount_tyiyn, client_id, card_data)
+            
+            # ✅ ОТЛАДКА: Логируем генерируемый XML
+            logger.info(f"🔍 OBANK H2H XML Request:")
+            logger.info(f"💳 Card data: {card_data}")
+            logger.info(f"📄 Generated XML: {xml_data}")
             
             result = await self._make_request("/", xml_data)
             
