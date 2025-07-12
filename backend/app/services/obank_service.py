@@ -134,21 +134,74 @@ class OBankService:
                 logger.info(f"🔍 Created temp cert file: {cert_file_path}")
                 logger.info(f"🔍 Created temp key file: {key_file_path}")
                 
-                # ✅ ДИАГНОСТИКА: Тест base URL только для первого запроса
+                # ✅ РАСШИРЕННАЯ ДИАГНОСТИКА: Тестирование альтернативных endpoint'ов
                 if endpoint == "/h2h-payment":
-                    logger.info(f"🔍 Testing base server URL: {self.base_url}")
-                    try:
-                        async with httpx.AsyncClient(
-                            cert=(cert_file_path, key_file_path),
-                            verify=False,
-                            timeout=30.0
-                        ) as client:
-                            base_response = await client.get(self.base_url)
-                            logger.info(f"🔍 Base URL response: {base_response.status_code}")
-                            logger.info(f"🔍 Base URL headers: {dict(base_response.headers)}")
-                            logger.info(f"🔍 Base URL content preview: {base_response.text[:200]}")
-                    except Exception as e:
-                        logger.info(f"🔍 Base URL test failed: {str(e)}")
+                    logger.info(f"🔧 OBANK SERVER DIAGNOSTIC MODE ACTIVATED")
+                    logger.info(f"🔧 Testing multiple endpoints to find working API...")
+                    
+                    # Список endpoint'ов из документации для тестирования
+                    test_endpoints = [
+                        "",  # Base URL
+                        "/",  # Root
+                        "/h2h-payment",  # Наш основной endpoint
+                        "/PaymentPage",  # Платежная страница
+                        "/status",  # Статус
+                        "/token-Create",  # Создание токена
+                        "/Sertifikat",  # Сертификат endpoint
+                    ]
+                    
+                    results = {}
+                    
+                    async with httpx.AsyncClient(
+                        cert=(cert_file_path, key_file_path),
+                        verify=False,
+                        timeout=15.0
+                    ) as client:
+                        
+                        for test_endpoint in test_endpoints:
+                            try:
+                                url = f"{self.base_url}{test_endpoint}"
+                                logger.info(f"🔧 Testing: {url}")
+                                
+                                # Пробуем GET запрос
+                                get_response = await client.get(url)
+                                get_status = get_response.status_code
+                                get_content = get_response.text[:100] if get_response.text else ""
+                                
+                                # Пробуем POST запрос с нашим XML
+                                post_response = await client.post(
+                                    url,
+                                    content=xml_data,
+                                    headers={
+                                        "Content-Type": "application/xml; charset=utf-8",
+                                        "Accept": "application/xml"
+                                    }
+                                )
+                                post_status = post_response.status_code
+                                post_content = post_response.text[:100] if post_response.text else ""
+                                
+                                results[test_endpoint or "ROOT"] = {
+                                    "GET": {"status": get_status, "content": get_content},
+                                    "POST": {"status": post_status, "content": post_content}
+                                }
+                                
+                                logger.info(f"🔧 {test_endpoint or 'ROOT'}: GET={get_status}, POST={post_status}")
+                                
+                                # Если нашли working endpoint с хорошим ответом
+                                if post_status == 200 and post_response.text.strip():
+                                    logger.info(f"🎯 FOUND WORKING ENDPOINT: {url}")
+                                    logger.info(f"🎯 POST Response: {post_response.text}")
+                                    return self._parse_xml_response(post_response.text)
+                                    
+                            except Exception as e:
+                                results[test_endpoint or "ROOT"] = {"error": str(e)}
+                                logger.info(f"🔧 {test_endpoint or 'ROOT'}: ERROR - {str(e)}")
+                    
+                    # Логируем итоговые результаты диагностики
+                    logger.info(f"🔧 === OBANK SERVER DIAGNOSTIC RESULTS ===")
+                    for endpoint_name, result in results.items():
+                        logger.info(f"🔧 {endpoint_name}: {result}")
+                    logger.info(f"🔧 === END DIAGNOSTIC ===")
                 
                 # Основной запрос с SSL сертификатом
                 async with httpx.AsyncClient(
