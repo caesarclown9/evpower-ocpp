@@ -224,7 +224,7 @@ class OBankService:
             
             xml_data = self._create_h2h_xml(amount_tyiyn, client_id, card_data)
             
-            result = await self._make_request("/h2h-payment", xml_data)
+            result = await self._make_request("/", xml_data)
             
             return {
                 "success": "error" not in result,
@@ -246,7 +246,7 @@ class OBankService:
             
             xml_data = self._create_token_payment_xml(amount_tyiyn, client_id, card_token)
             
-            result = await self._make_request("/token-payment", xml_data)
+            result = await self._make_request("/", xml_data)
             
             return {
                 "success": "error" not in result,
@@ -284,7 +284,7 @@ class OBankService:
         try:
             xml_data = self._create_status_xml(transaction_id)
             
-            result = await self._make_request("/h2hstatus", xml_data)
+            result = await self._make_request("/", xml_data)
             
             return {
                 "success": "error" not in result,
