@@ -83,6 +83,23 @@ class OBankService:
             logger.info(f"🔍 SSL cert path: {self.cert_path}")
             logger.info(f"🔍 SSL cert exists: {self.cert_path.exists()}")
             
+            # ✅ ДИАГНОСТИКА: Проверяем base URL сервера
+            if endpoint == "/h2h-payment":  # только для первого запроса
+                logger.info(f"🔍 Testing base server URL: {self.base_url}")
+                try:
+                    cert_data, key_data = await self._load_pkcs12_certificate()
+                    async with httpx.AsyncClient(
+                        cert=(cert_data, key_data),
+                        verify=False,
+                        timeout=30.0
+                    ) as client:
+                        base_response = await client.get(self.base_url)
+                        logger.info(f"🔍 Base URL response: {base_response.status_code}")
+                        logger.info(f"🔍 Base URL headers: {dict(base_response.headers)}")
+                        logger.info(f"🔍 Base URL content preview: {base_response.text[:200]}")
+                except Exception as e:
+                    logger.info(f"🔍 Base URL test failed: {str(e)}")
+            
             # Проверяем наличие сертификата
             if not self.cert_path.exists():
                 logger.error(f"🚨 SSL certificate missing! Using HTTP fallback for testing...")
@@ -100,98 +117,76 @@ class OBankService:
                     )
                     
                     logger.info(f"🔍 HTTP fallback response status: {response.status_code}")
-                    logger.info(f"🔍 HTTP fallback response: '{response.text}'")
+                    logger.info(f"🔍 HTTP fallback response headers: {dict(response.headers)}")
+                    logger.info(f"🔍 HTTP fallback response content: {response.text}")
                     
-                    if response.status_code == 200:
-                        root = ET.fromstring(response.text)
-                        return self._parse_xml_response(root)
-                    else:
-                        return {"error": f"HTTP {response.status_code}", "detail": response.text}
-            
-            # Load certificate
-            cert_pem, key_pem = self._load_pkcs12_certificate()
-            
-            logger.info(f"🔍 SSL cert loaded: {len(cert_pem)} bytes")
-            logger.info(f"🔍 SSL key loaded: {len(key_pem)} bytes")
-            
-            # Create temporary files for cert and key
-            cert_file_path = None
-            key_file_path = None
-            
-            with tempfile.NamedTemporaryFile(mode='wb', suffix='.crt', delete=False) as cert_file:
-                cert_file.write(cert_pem)
-                cert_file_path = cert_file.name
-                
-            with tempfile.NamedTemporaryFile(mode='wb', suffix='.key', delete=False) as key_file:
-                key_file.write(key_pem)
-                key_file_path = key_file.name
-            
-            # Create SSL context for mutual TLS
-            ssl_context = ssl.create_default_context()
-            ssl_context.load_cert_chain(cert_file_path, key_file_path)
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = ssl.CERT_NONE
-            
-            async with httpx.AsyncClient(
-                verify=ssl_context,
-                timeout=30.0,
-                limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
-            ) as client:
+                    if response.status_code != 200:
+                        return {"error": f"HTTP {response.status_code}", "details": response.text}
                     
-                response = await client.post(
-                    f"{self.base_url}{endpoint}",
-                    content=xml_data,
-                    headers={
-                        "Content-Type": "application/xml; charset=utf-8",
-                        "Accept": "application/xml"
-                    }
-                )
+                    return self._parse_xml_response(response.text)
+            else:
+                logger.info(f"✅ SSL certificate found: {self.cert_path}")
                 
-                logger.info(f"🔍 OBANK response status: {response.status_code}")
-                logger.info(f"🔍 OBANK response headers: {dict(response.headers)}")
-                logger.info(f"🔍 OBANK response content: '{response.text}'")
-                logger.info(f"🔍 OBANK response length: {len(response.text)} chars")
+                cert_data, key_data = await self._load_pkcs12_certificate()
                 
-                if response.status_code == 200:
-                    # Парсинг XML ответа
-                    root = ET.fromstring(response.text)
-                    return self._parse_xml_response(root)
-                else:
-                    logger.error(f"❌ OBANK API error: {response.status_code}")
-                    logger.error(f"❌ OBANK response: '{response.text}'")
-                    logger.error(f"❌ OBANK headers: {dict(response.headers)}")
-                    return {"error": f"HTTP {response.status_code}", "detail": response.text}
+                logger.info(f"🔍 SSL cert loaded: {len(cert_data)} bytes")
+                logger.info(f"🔍 SSL key loaded: {len(key_data)} bytes")
+                
+                async with httpx.AsyncClient(
+                    cert=(cert_data, key_data),
+                    verify=False,  # Skip SSL verification for test server
+                    timeout=30.0
+                ) as client:
+                    response = await client.post(
+                        f"{self.base_url}{endpoint}",
+                        content=xml_data,
+                        headers={
+                            "Content-Type": "application/xml; charset=utf-8",
+                            "Accept": "application/xml"
+                        }
+                    )
+                    
+                    logger.info(f"🔍 OBANK response status: {response.status_code}")
+                    logger.info(f"🔍 OBANK response headers: {dict(response.headers)}")
+                    logger.info(f"🔍 OBANK response content: '{response.text}'")
+                    logger.info(f"🔍 OBANK response length: {len(response.text)} chars")
+                    
+                    if response.status_code != 200:
+                        logger.error(f"❌ OBANK API error: {response.status_code}")
+                        logger.error(f"❌ OBANK response: '{response.text}'")
+                        logger.error(f"❌ OBANK headers: {dict(response.headers)}")
+                        return {"error": f"HTTP {response.status_code}", "details": response.text}
+                    
+                    return self._parse_xml_response(response.text)
                     
         except Exception as e:
-            logger.error(f"OBANK request failed: {str(e)}")
-            return {"error": "Connection failed", "detail": str(e)}
-        finally:
-            # Cleanup temporary files
-            try:
-                if cert_file_path:
-                    os.unlink(cert_file_path)
-                if key_file_path:
-                    os.unlink(key_file_path)
-            except:
-                pass
+            logger.error(f"❌ OBANK request failed: {str(e)}")
+            return {"error": str(e)}
 
-    def _parse_xml_response(self, root: ET.Element) -> Dict[str, Any]:
+    def _parse_xml_response(self, xml_text: str) -> Dict[str, Any]:
         """Parse XML response from OBANK API"""
-        result = {}
+        import xml.etree.ElementTree as ET
         
-        # Парсинг result элемента
-        result_elem = root.find("result")
-        if result_elem is not None:
-            result.update(result_elem.attrib)
+        try:
+            root = ET.fromstring(xml_text)
+            result = {}
             
-            # Парсинг data элементов
-            data_elem = result_elem.find("data")
-            if data_elem is not None:
-                result["data"] = []
-                for input_elem in data_elem.findall("input"):
-                    result["data"].append(input_elem.attrib)
-        
-        return result
+            # Парсинг result элемента
+            result_elem = root.find("result")
+            if result_elem is not None:
+                result.update(result_elem.attrib)
+                
+                # Парсинг data элементов
+                data_elem = result_elem.find("data")
+                if data_elem is not None:
+                    result["data"] = []
+                    for input_elem in data_elem.findall("input"):
+                        result["data"].append(input_elem.attrib)
+            
+            return result
+        except Exception as e:
+            logger.error(f"❌ XML parsing failed: {str(e)}")
+            return {"error": "XML parsing failed", "details": str(e)}
     
     def _create_h2h_xml(self, amount_tyiyn: int, client_id: str, card_data: Dict[str, str]) -> str:
         """Create XML for H2H payment request"""
