@@ -78,27 +78,16 @@ class OBankService:
         """
         Make authenticated request to OBANK API with client SSL certificate
         """
+        import tempfile
+        import os
+        
+        cert_file_path = None
+        key_file_path = None
+        
         try:
             logger.info(f"🔍 OBANK request: {self.base_url}{endpoint}")
             logger.info(f"🔍 SSL cert path: {self.cert_path}")
             logger.info(f"🔍 SSL cert exists: {self.cert_path.exists()}")
-            
-            # ✅ ДИАГНОСТИКА: Проверяем base URL сервера
-            if endpoint == "/h2h-payment":  # только для первого запроса
-                logger.info(f"🔍 Testing base server URL: {self.base_url}")
-                try:
-                    cert_data, key_data = self._load_pkcs12_certificate()
-                    async with httpx.AsyncClient(
-                        cert=(cert_data, key_data),
-                        verify=False,
-                        timeout=30.0
-                    ) as client:
-                        base_response = await client.get(self.base_url)
-                        logger.info(f"🔍 Base URL response: {base_response.status_code}")
-                        logger.info(f"🔍 Base URL headers: {dict(base_response.headers)}")
-                        logger.info(f"🔍 Base URL content preview: {base_response.text[:200]}")
-                except Exception as e:
-                    logger.info(f"🔍 Base URL test failed: {str(e)}")
             
             # Проверяем наличие сертификата
             if not self.cert_path.exists():
@@ -127,13 +116,43 @@ class OBankService:
             else:
                 logger.info(f"✅ SSL certificate found: {self.cert_path}")
                 
+                # Загружаем сертификат и ключ
                 cert_data, key_data = self._load_pkcs12_certificate()
                 
                 logger.info(f"🔍 SSL cert loaded: {len(cert_data)} bytes")
                 logger.info(f"🔍 SSL key loaded: {len(key_data)} bytes")
                 
+                # ✅ ИСПРАВЛЕНО: Создаём временные файлы для httpx
+                with tempfile.NamedTemporaryFile(mode='wb', suffix='.crt', delete=False) as cert_file:
+                    cert_file.write(cert_data)
+                    cert_file_path = cert_file.name
+                    
+                with tempfile.NamedTemporaryFile(mode='wb', suffix='.key', delete=False) as key_file:
+                    key_file.write(key_data)
+                    key_file_path = key_file.name
+                
+                logger.info(f"🔍 Created temp cert file: {cert_file_path}")
+                logger.info(f"🔍 Created temp key file: {key_file_path}")
+                
+                # ✅ ДИАГНОСТИКА: Тест base URL только для первого запроса
+                if endpoint == "/h2h-payment":
+                    logger.info(f"🔍 Testing base server URL: {self.base_url}")
+                    try:
+                        async with httpx.AsyncClient(
+                            cert=(cert_file_path, key_file_path),
+                            verify=False,
+                            timeout=30.0
+                        ) as client:
+                            base_response = await client.get(self.base_url)
+                            logger.info(f"🔍 Base URL response: {base_response.status_code}")
+                            logger.info(f"🔍 Base URL headers: {dict(base_response.headers)}")
+                            logger.info(f"🔍 Base URL content preview: {base_response.text[:200]}")
+                    except Exception as e:
+                        logger.info(f"🔍 Base URL test failed: {str(e)}")
+                
+                # Основной запрос с SSL сертификатом
                 async with httpx.AsyncClient(
-                    cert=(cert_data, key_data),
+                    cert=(cert_file_path, key_file_path),
                     verify=False,  # Skip SSL verification for test server
                     timeout=30.0
                 ) as client:
@@ -162,6 +181,17 @@ class OBankService:
         except Exception as e:
             logger.error(f"❌ OBANK request failed: {str(e)}")
             return {"error": str(e)}
+        finally:
+            # ✅ ОЧИСТКА: Удаляем временные файлы
+            try:
+                if cert_file_path and os.path.exists(cert_file_path):
+                    os.unlink(cert_file_path)
+                    logger.info(f"🧹 Cleaned up temp cert file: {cert_file_path}")
+                if key_file_path and os.path.exists(key_file_path):
+                    os.unlink(key_file_path)
+                    logger.info(f"🧹 Cleaned up temp key file: {key_file_path}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Cleanup failed: {str(cleanup_error)}")
 
     def _parse_xml_response(self, xml_text: str) -> Dict[str, Any]:
         """Parse XML response from OBANK API"""
