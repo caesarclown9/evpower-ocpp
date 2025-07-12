@@ -22,11 +22,11 @@ logger = logging.getLogger(__name__)
 
 class OBankService:
     def __init__(self):
-        self.base_url = "https://test-rakhmet.dengi.kg:4431/external/extended-cert"
-        self.point_id = 4354  # Из документации
-        self.service_id = 1331  # Из документации
-        self.cert_path = Path(__file__).parent.parent.parent / "certificates" / "obank_client.p12"
-        self.cert_password = "bPAKhpUlss"
+        self.base_url = settings.current_obank_api_url
+        self.point_id = int(settings.current_obank_point_id)
+        self.service_id = int(settings.current_obank_service_id)
+        self.cert_path = Path(settings.OBANK_CERT_PATH) if settings.OBANK_CERT_PATH else Path(__file__).parent.parent.parent / "certificates" / "obank_client.p12"
+        self.cert_password = settings.OBANK_CERT_PASSWORD
         
     def _load_pkcs12_certificate(self):
         """Load PKCS12 certificate and extract cert + key"""
@@ -137,7 +137,7 @@ class OBankService:
                 timeout=30.0,
                 limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
             ) as client:
-                
+                    
                 response = await client.post(
                     f"{self.base_url}{endpoint}",
                     content=xml_data,
