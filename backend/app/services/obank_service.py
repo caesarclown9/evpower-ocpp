@@ -87,7 +87,7 @@ class OBankService:
             if endpoint == "/h2h-payment":  # только для первого запроса
                 logger.info(f"🔍 Testing base server URL: {self.base_url}")
                 try:
-                    cert_data, key_data = await self._load_pkcs12_certificate()
+                    cert_data, key_data = self._load_pkcs12_certificate()
                     async with httpx.AsyncClient(
                         cert=(cert_data, key_data),
                         verify=False,
@@ -127,7 +127,7 @@ class OBankService:
             else:
                 logger.info(f"✅ SSL certificate found: {self.cert_path}")
                 
-                cert_data, key_data = await self._load_pkcs12_certificate()
+                cert_data, key_data = self._load_pkcs12_certificate()
                 
                 logger.info(f"🔍 SSL cert loaded: {len(cert_data)} bytes")
                 logger.info(f"🔍 SSL key loaded: {len(key_data)} bytes")
