@@ -2072,3 +2072,68 @@ async def check_h2h_payment_status(
     except Exception as e:
         logger.error(f"Status check error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Status check failed: {str(e)}")
+
+@router.post("/payment/cancel/{invoice_id}")
+async def cancel_payment_manually(
+    invoice_id: str,
+    db: Session = Depends(get_db)
+):
+    """❌ Ручная отмена платежа (для тестирования)"""
+    try:
+        # 1. Ищем платеж
+        payment_check = db.execute(text("""
+            SELECT id, client_id, status, requested_amount, payment_provider
+            FROM balance_topups WHERE invoice_id = :invoice_id
+        """), {"invoice_id": invoice_id})
+        
+        payment = payment_check.fetchone()
+        if not payment:
+            return {
+                "success": False,
+                "error": "payment_not_found",
+                "message": "Платеж не найден"
+            }
+        
+        payment_id, client_id, current_status, amount, provider = payment
+        
+        # 2. Проверяем можно ли отменить
+        if current_status != "processing":
+            return {
+                "success": False,
+                "error": "cannot_cancel",
+                "message": f"Платеж нельзя отменить, текущий статус: {current_status}",
+                "current_status": current_status
+            }
+        
+        # 3. Отменяем платеж
+        db.execute(text("""
+            UPDATE balance_topups 
+            SET status = 'canceled', 
+                completed_at = NOW(),
+                needs_status_check = false
+            WHERE invoice_id = :invoice_id
+        """), {"invoice_id": invoice_id})
+        
+        db.commit()
+        
+        logger.info(f"❌ Платеж {invoice_id} отменен вручную (клиент: {client_id}, сумма: {amount})")
+        
+        return {
+            "success": True,
+            "message": "Платеж успешно отменен",
+            "invoice_id": invoice_id,
+            "client_id": client_id,
+            "amount": float(amount),
+            "previous_status": current_status,
+            "new_status": "canceled",
+            "provider": provider
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Ошибка отмены платежа {invoice_id}: {e}")
+        return {
+            "success": False,
+            "error": "internal_error",
+            "message": f"Ошибка отмены: {str(e)}"
+        }
