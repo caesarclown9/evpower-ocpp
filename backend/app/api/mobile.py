@@ -1670,19 +1670,25 @@ async def create_qr_balance_topup(
                 client_id=request.client_id
             )
 
-        # 2. Проверяем существующие processing платежи (защита от дублирования)
+        # 2. Отменяем существующие активные QR коды (улучшенный UX)
         existing_pending = db.execute(text("""
             SELECT invoice_id FROM balance_topups 
             WHERE client_id = :client_id AND status = 'processing' 
             AND invoice_expires_at > NOW()
-        """), {"client_id": request.client_id}).fetchone()
+        """), {"client_id": request.client_id}).fetchall()
         
         if existing_pending:
-            return BalanceTopupResponse(
-                success=False,
-                error="pending_payment_exists",
-                client_id=request.client_id
-            )
+            # Отменяем все активные QR коды клиента
+            cancelled_invoices = [row.invoice_id for row in existing_pending]
+            db.execute(text("""
+                UPDATE balance_topups 
+                SET status = 'cancelled', updated_at = NOW()
+                WHERE client_id = :client_id AND status = 'processing'
+                AND invoice_expires_at > NOW()
+            """), {"client_id": request.client_id})
+            
+            logger.info(f"🔄 Отменены активные QR коды для клиента {request.client_id}: {cancelled_invoices}")
+            db.commit()
 
         # 3. Генерация безопасного order_id
         order_id = f"qr_topup_{request.client_id}_{int(datetime.now(timezone.utc).timestamp())}"
