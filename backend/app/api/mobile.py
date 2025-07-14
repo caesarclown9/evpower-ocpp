@@ -1725,8 +1725,8 @@ async def create_qr_balance_topup(
         qr_data = raw_response.get("data", {})
         
         # По документации ODENGI ответ должен содержать invoice_id и qr поля
-        qr_code_data = qr_data.get("qr")  # Прямые данные QR кода
-        qr_code_url = qr_data.get("qr_url") or f"https://api.dengi.o.kg/qr.php?type=emvQr&data={qr_code_data}" if qr_code_data else None
+        qr_code_data = qr_data.get("qr")  # URL изображения QR кода
+        qr_code_url = qr_data.get("qr") or f"https://api.dengi.o.kg/qr.php?type=emvQr&data={qr_code_data}" if qr_code_data else None
         app_link_url = qr_data.get("link_app") or qr_data.get("app_link")
         
         logger.info(f"📱 ODENGI ответ: qr_data={qr_code_data[:50] if qr_code_data else None}...")
