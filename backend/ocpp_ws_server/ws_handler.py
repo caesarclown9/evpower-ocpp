@@ -312,22 +312,22 @@ class OCPPChargePoint(CP):
                 # Генерируем transaction_id
                 transaction_id = int(datetime.utcnow().timestamp())
                 
-                # 🆕 УЛУЧШЕННОЕ СВЯЗЫВАНИЕ: Находим клиента по номеру телефона
+                # 🆕 ПРАВИЛЬНОЕ СВЯЗЫВАНИЕ: Находим клиента через ocpp_authorization
                 charging_session_id = None
                 client_id = None
                 
-                # Поиск клиента по номеру телефона (idTag)
-                client_query = text("""
-                    SELECT id FROM clients 
-                    WHERE phone = :phone 
+                # ИСПРАВЛЕНО: Поиск клиента через таблицу ocpp_authorization вместо прямого поиска по phone
+                auth_query = text("""
+                    SELECT client_id FROM ocpp_authorization 
+                    WHERE id_tag = :id_tag AND client_id IS NOT NULL
                     LIMIT 1
                 """)
-                client_result = db.execute(client_query, {"phone": id_tag})
-                client_row = client_result.fetchone()
+                auth_result = db.execute(auth_query, {"id_tag": id_tag})
+                auth_row = auth_result.fetchone()
                 
-                if client_row:
-                    client_id = client_row[0]
-                    self.logger.info(f"🔍 НАЙДЕН КЛИЕНТ: phone={id_tag} -> client_id={client_id}")
+                if auth_row:
+                    client_id = auth_row[0]
+                    self.logger.info(f"🔍 НАЙДЕН КЛИЕНТ ЧЕРЕЗ АВТОРИЗАЦИЮ: id_tag={id_tag} -> client_id={client_id}")
                     
                     # Ищем активную мобильную сессию для клиента
                     find_session_query = text("""
@@ -357,7 +357,7 @@ class OCPPChargePoint(CP):
                     else:
                         self.logger.warning(f"⚠️ Активная мобильная сессия для клиента {client_id} не найдена")
                 else:
-                    self.logger.warning(f"⚠️ Клиент с номером {id_tag} не найден")
+                    self.logger.warning(f"⚠️ Клиент не найден для id_tag: {id_tag}")
                 
                 # Создаем OCPP транзакцию с связкой
                 transaction = OCPPTransactionService.start_transaction(
