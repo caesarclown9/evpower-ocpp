@@ -260,7 +260,7 @@ async def health_check():
 async def health_check_force():
     """Принудительная диагностика с пересозданием Redis подключения"""
     import os
-    from ocpp_ws_server.redis_manager import RedisManager
+    from ocpp_ws_server.redis_manager import RedisOcppManager
     
     try:
         # Принудительно создаем новый Redis manager
@@ -268,7 +268,7 @@ async def health_check_force():
         logger.info(f"🔄 FORCE CHECK - Creating new Redis connection to: {redis_url}")
         
         # Создаем новый экземпляр для тестирования
-        test_redis = RedisManager(redis_url)
+        test_redis = RedisOcppManager()
         
         # Пытаемся подключиться
         ping_result = await test_redis.ping()

@@ -56,8 +56,7 @@ class User(Base):
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
     admin_id = Column(String, nullable=True)
     
-    # Relationships
-    charging_sessions = relationship("ChargingSession", back_populates="user")
+    # Убираем неправильную связь с charging_sessions (они связаны с clients, не users)
 
 class Client(Base):
     __tablename__ = 'clients'
@@ -70,7 +69,8 @@ class Client(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
     
-    # Убираем несуществующие поля: email, address, contract_*, hashed_password
+    # Relationships
+    charging_sessions = relationship("ChargingSession", back_populates="client")
 
 class Location(Base):
     __tablename__ = 'locations'
@@ -191,8 +191,8 @@ class ChargingSession(Base):
     limit_value = Column(Float, nullable=True)  # значение лимита
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
-    # Relationships
-    user = relationship("User", back_populates="charging_sessions")
+    # Relationships - ИСПРАВЛЕНО: связь с Client, а не User
+    client = relationship("Client", back_populates="charging_sessions")
     station = relationship("Station", back_populates="charging_sessions")
 
 class OCPPStationStatus(Base):
@@ -272,12 +272,14 @@ class OCPPAuthorization(Base):
     parent_id_tag = Column(String)
     expiry_date = Column(DateTime(timezone=True))
     status = Column(String, nullable=False, default="Accepted")  # Accepted, Blocked, Expired, etc.
-    user_id = Column(String, ForeignKey("users.id"))
+    user_id = Column(String, ForeignKey("users.id"), nullable=True)  # Связь с сотрудниками
+    client_id = Column(String, ForeignKey("clients.id"), nullable=True)  # ДОБАВЛЕНО: связь с клиентами
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
     # Relationships
     user = relationship("User")
+    client = relationship("Client")
 
 class OCPPConfiguration(Base):
     """OCPP Configuration - конфигурация станций"""
