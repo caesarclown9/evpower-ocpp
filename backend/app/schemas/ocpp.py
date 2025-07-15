@@ -98,17 +98,13 @@ class User(UserBase):
 
 # Client schemas
 class ClientBase(BaseModel):
-    name: str
-    email: str
+    name: Optional[str] = None  # В БД nullable=True
     phone: Optional[str] = None
-    address: Optional[str] = None
-    contract_number: Optional[str] = None
-    contract_start_date: Optional[datetime] = None
-    contract_end_date: Optional[datetime] = None
+    balance: Optional[float] = 0.0  # ДОБАВЛЕНО: поле из БД
     status: ClientStatus
 
 class ClientCreate(ClientBase):
-    password: str
+    pass  # Убираем password - его нет в БД
 
 class Client(ClientBase):
     id: str
@@ -124,7 +120,7 @@ class LocationBase(BaseModel):
     country: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
-    client_id: Optional[str] = None
+    user_id: str  # ИСПРАВЛЕНО: user_id вместо client_id (сотрудники управляют локациями)
 
 class LocationCreate(LocationBase):
     pass
@@ -189,7 +185,7 @@ class StationBase(BaseModel):
     installation_date: Optional[str] = None
     firmware_version: Optional[str] = None
     status: StationStatus
-    admin_id: str
+    user_id: str  # ИСПРАВЛЕНО: user_id вместо admin_id (сотрудники владеют станциями)
     connectors_count: int = 1
     tariff_plan_id: Optional[str] = None
     price_per_kwh: Decimal = Decimal('0')
@@ -249,15 +245,17 @@ class ChargingSession(ChargingSessionBase):
 # ============================================================================
 
 class PaymentStatus(str, Enum):
-    PROCESSING = "processing"
-    APPROVED = "approved"
-    CANCELED = "canceled"
-    REFUNDED = "refunded"
-    PARTIAL_REFUND = "partial_refund"
+    processing = "processing"
+    approved = "approved"
+    canceled = "canceled"
+    refunded = "refunded"
+    partial_refund = "partial_refund"
 
 class PaymentType(str, Enum):
-    BALANCE_TOPUP = "balance_topup"
-    CHARGING_PAYMENT = "charging_payment"
+    balance_topup = "balance_topup"      # Пополнение баланса
+    charge_reserve = "charge_reserve"    # Резерв при зарядке
+    charge_refund = "charge_refund"      # Возврат после зарядки  
+    charge_payment = "charge_payment"    # Доплата за превышение резерва
 
 # ===== REQUEST SCHEMAS =====
 

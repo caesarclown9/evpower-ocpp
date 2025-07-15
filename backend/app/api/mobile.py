@@ -276,7 +276,7 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
 
         # 11. Логируем транзакцию резервирования
         payment_service.create_payment_transaction(
-            db, request.client_id, "balance_topup",
+            db, request.client_id, "charge_reserve",
             -Decimal(str(reservation_amount)), current_balance, new_balance,
             f"Резервирование средств для сессии {session_id}",
             charging_session_id=session_id
@@ -457,7 +457,7 @@ async def stop_charging(request: ChargingStopRequest, db: Session = Depends(get_
                 # Логируем дополнительную транзакцию
                 balance_after_additional = payment_service.get_client_balance(db, user_id)
                 payment_service.create_payment_transaction(
-                    db, user_id, "charging_payment",
+                    db, user_id, "charge_payment",
                     -additional_charge,  # Отрицательная сумма для списания
                     current_balance, balance_after_additional,
                     f"Доплата за сессию {session_id}: превышение резерва на {additional_charge} сом",
@@ -487,7 +487,7 @@ async def stop_charging(request: ChargingStopRequest, db: Session = Depends(get_
             
             # Логируем транзакцию возврата
             payment_service.create_payment_transaction(
-                db, user_id, "balance_topup",
+                db, user_id, "charge_refund",
                 refund_amount,  # Положительная сумма для возврата
                 current_balance, new_balance,
                 f"Возврат за сессию {session_id}: потреблено {actual_energy_consumed} кВт⋅ч",
@@ -1277,10 +1277,15 @@ async def get_client_balance(client_id: str, db: Session = Depends(get_db)) -> C
         
         last_topup_date = last_topup.fetchone()
         
-        # Подсчитываем общую потраченную сумму
+        # Подсчитываем общую потраченную сумму (резерв минус возвраты плюс доплаты)
         total_spent = db.execute(text("""
-            SELECT COALESCE(SUM(amount), 0) FROM payment_transactions_odengi 
-            WHERE client_id = :client_id AND transaction_type = 'charging_payment'
+            SELECT COALESCE(SUM(CASE 
+                WHEN transaction_type = 'charge_reserve' THEN ABS(amount)
+                WHEN transaction_type = 'charge_refund' THEN -ABS(amount) 
+                WHEN transaction_type = 'charge_payment' THEN ABS(amount)
+                ELSE 0 END), 0) 
+            FROM payment_transactions_odengi 
+            WHERE client_id = :client_id AND transaction_type IN ('charge_reserve', 'charge_refund', 'charge_payment')
         """), {"client_id": client_id})
         
         spent_amount = total_spent.fetchone()[0]

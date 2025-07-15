@@ -63,17 +63,14 @@ class Client(Base):
     __tablename__ = 'clients'
     
     id = Column(String, primary_key=True)
-    name = Column(String, nullable=False)
-    email = Column(String, nullable=False)
+    name = Column(String, nullable=True)  # В БД nullable=True
     phone = Column(String, nullable=True)
-    address = Column(String, nullable=True)
-    contract_number = Column(String, nullable=True)
-    contract_start_date = Column(DateTime(timezone=True), nullable=True)
-    contract_end_date = Column(DateTime(timezone=True), nullable=True)
-    status = Column(SqlEnum(ClientStatus), nullable=False)
-    hashed_password = Column(String, nullable=False)
+    balance = Column(Float, nullable=True, default=0.0)  # ДОБАВЛЕНО: отсутствующее поле
+    status = Column(SqlEnum(ClientStatus), nullable=False, default=ClientStatus.active)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Убираем несуществующие поля: email, address, contract_*, hashed_password
 
 class Location(Base):
     __tablename__ = 'locations'
@@ -85,7 +82,8 @@ class Location(Base):
     country = Column(String, nullable=True)
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
-    client_id = Column(String, nullable=True)
+    user_id = Column(String, ForeignKey('users.id'), nullable=False)  # ИСПРАВЛЕНО: user_id связан с users (сотрудники)
+    # ПРИМЕЧАНИЕ: В БД также есть admin_id который дублирует user_id (используется RLS политиками)
     stations_count = Column(Integer, default=0)
     connectors_count = Column(Integer, default=0)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -145,7 +143,7 @@ class Station(Base):
     installation_date = Column(String, nullable=True)
     firmware_version = Column(String, nullable=True)
     status = Column(SqlEnum(StationStatus), nullable=False)
-    admin_id = Column(String, nullable=False)
+    user_id = Column(String, ForeignKey('users.id'), nullable=False)  # ИСПРАВЛЕНО: user_id вместо admin_id
     connectors_count = Column(Integer, default=1)
     tariff_plan_id = Column(String, ForeignKey('tariff_plans.id'), nullable=True)
     price_per_kwh = Column(Numeric, default=0)
@@ -181,7 +179,7 @@ class ChargingSession(Base):
     __tablename__ = 'charging_sessions'
     
     id = Column(String, primary_key=True)
-    user_id = Column(String, ForeignKey('users.id'), nullable=False)
+    user_id = Column(String, ForeignKey('clients.id'), nullable=False)  # ИСПРАВЛЕНО: clients.id вместо users.id
     station_id = Column(String, ForeignKey('stations.id'), nullable=False)
     start_time = Column(DateTime(timezone=True), server_default=func.now())
     stop_time = Column(DateTime(timezone=True), nullable=True)
@@ -309,6 +307,9 @@ class PaymentStatus(str, enum.Enum):
 
 class PaymentType(str, enum.Enum):
     balance_topup = "balance_topup"     # Пополнение баланса
+    charge_reserve = "charge_reserve"   # Резерв при зарядке
+    charge_refund = "charge_refund"     # Возврат после зарядки
+    charge_payment = "charge_payment"   # Доплата за превышение резерва
 
 class BalanceTopup(Base):
     """Пополнения баланса клиентов через O!Dengi"""
@@ -356,9 +357,9 @@ class BalanceTopup(Base):
     # Relationships
     client = relationship("Client")
 
-class PaymentTransaction(Base):
-    """Лог всех операций с балансом и платежами"""
-    __tablename__ = "payment_transactions"
+class PaymentTransactionOdengi(Base):
+    """Лог всех операций с балансом и платежами (реальная таблица в БД)"""
+    __tablename__ = "payment_transactions_odengi"
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     
@@ -367,8 +368,8 @@ class PaymentTransaction(Base):
     
     # Суммы
     amount = Column(Numeric, nullable=False)
-    balance_before = Column(Numeric, nullable=False)
-    balance_after = Column(Numeric, nullable=False)
+    balance_before = Column(Numeric, nullable=False, default=0)
+    balance_after = Column(Numeric, nullable=False, default=0)
     currency = Column(String(3), default="KGS")
     
     # Связанные объекты
@@ -383,3 +384,9 @@ class PaymentTransaction(Base):
     client = relationship("Client")
     balance_topup = relationship("BalanceTopup")
     charging_session = relationship("ChargingSession")
+
+# УСТАРЕЛО: модель для несуществующей таблицы payment_transactions
+# Оставляем для совместимости, но используем PaymentTransactionOdengi
+class PaymentTransaction(PaymentTransactionOdengi):
+    """DEPRECATED: Используйте PaymentTransactionOdengi"""
+    pass
