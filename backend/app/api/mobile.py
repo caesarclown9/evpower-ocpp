@@ -1687,7 +1687,7 @@ async def create_qr_balance_topup(
             cancelled_invoices = [row.invoice_id for row in existing_pending]
             db.execute(text("""
                 UPDATE balance_topups 
-                SET status = 'cancelled'
+                SET status = 'canceled'
                 WHERE client_id = :client_id AND status = 'processing'
                 AND invoice_expires_at > NOW()
             """), {"client_id": request.client_id})
