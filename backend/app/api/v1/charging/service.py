@@ -638,61 +638,6 @@ class ChargingService:
                 logger.info(f"✅ Команда остановки отправлена на станцию {station_id}")
         
         return is_online
-            )
-            
-            # 5. Обработка дополнительных списаний или возвратов
-            balance_update = await self._process_balance_adjustment(
-                session_data['user_id'],
-                cost_calculation,
-                session_id
-            )
-            
-            # 6. Обновление сессии и освобождение коннектора
-            self._finalize_session(session_id, actual_energy_consumed, cost_calculation['actual_cost'])
-            
-            # 7. Отправка команды остановки через OCPP
-            station_online = await self._send_stop_command(redis_manager, session_data, session_id)
-            
-            # 8. Коммит всех изменений
-            self.db.commit()
-            
-            logger.info(f"✅ Зарядка остановлена: сессия {session_id}, потреблено {actual_energy_consumed} кВт⋅ч, "
-                       f"списано {cost_calculation['actual_cost']} сом, возвращено {cost_calculation['refund_amount']} сом")
-            
-            return {
-                "success": True,
-                "session_id": session_id,
-                "station_id": session_data['station_id'],
-                "client_id": session_data['user_id'],
-                "start_time": session_data['start_time'].isoformat() if session_data['start_time'] else None,
-                "stop_time": datetime.now(timezone.utc).isoformat(),
-                "energy_consumed": actual_energy_consumed,
-                "rate_per_kwh": rate_per_kwh,
-                "reserved_amount": float(session_data['reserved_amount']),
-                "actual_cost": cost_calculation['actual_cost'],
-                "refund_amount": float(cost_calculation['refund_amount']),
-                "new_balance": float(balance_update['new_balance']),
-                "message": f"Зарядка завершена. Потреблено {actual_energy_consumed} кВт⋅ч, "
-                          f"списано {cost_calculation['actual_cost']} сом, возвращено {cost_calculation['refund_amount']} сом",
-                "station_online": station_online
-            }
-            
-        except ValueError as e:
-            self.db.rollback()
-            logger.error(f"Ошибка баланса при остановке зарядки: {e}")
-            return {
-                "success": False,
-                "error": "balance_error",
-                "message": "Ошибка получения баланса"
-            }
-        except Exception as e:
-            self.db.rollback()
-            logger.error(f"Ошибка остановки зарядки: {e}")
-            return {
-                "success": False,
-                "error": "internal_error", 
-                "message": "Внутренняя ошибка сервера"
-            }
     
     async def get_charging_status(self, session_id: str) -> Dict[str, Any]:
         """Получить полный статус сессии зарядки с OCPP данными"""
