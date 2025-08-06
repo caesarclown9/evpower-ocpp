@@ -1,5 +1,8 @@
 # requirements.txt
-# Зависимости для FastAPI, работы с PostgreSQL (например, Neon.tech), JWT и асинхронности
+# Backend только для операций пополнения счета и зарядки
+# Аутентификация происходит через FlutterFlow
+
+# --- Core зависимости ---
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
 sqlalchemy>=2.0.0
@@ -7,9 +10,6 @@ pydantic>=2.5.0
 pydantic-settings>=2.1.0
 python-dotenv
 httpx>=0.24.0
-email-validator
-passlib[bcrypt]
-pyjwt
 
 # --- Для OCPP WebSocket сервера ---
 ocpp
@@ -17,11 +17,12 @@ websockets
 redis
 psycopg2-binary
 
-# --- Для Alembic (миграции БД) ---
-alembic
-
-# --- Для загрузки файлов через FastAPI ---
-python-multipart
+# --- УДАЛЕНО: Не используются ---
+# email-validator - нет валидации email
+# passlib[bcrypt] - нет хеширования паролей  
+# pyjwt - нет JWT токенов
+# alembic - миграции делаются через SQL напрямую в Supabase
+# python-multipart - нет загрузки файлов
 
 # --- Для O!Dengi интеграции ---
 cryptography>=3.4.8

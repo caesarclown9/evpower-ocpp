@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field, validator
 
 from app.services.payment_provider_service import get_payment_provider_service, get_qr_payment_service, get_card_payment_service
 from app.services.obank_service import obank_service
+# Аутентификация убрана - client_id передается напрямую из FlutterFlow
 
 # ============================================================================
 # ПЛАТЕЖНЫЕ ENDPOINTS O!DENGI
@@ -64,8 +65,14 @@ class ChargingStopRequest(BaseModel):
 # ================== API Endpoints ==================
 
 @router.post("/charging/start")
-async def start_charging(request: ChargingStartRequest, db: Session = Depends(get_db)):
+async def start_charging(
+    request: ChargingStartRequest, 
+    db: Session = Depends(get_db)
+):
     """🔌 Начать зарядку с проверкой баланса и снятием средств"""
+    # Логируем запрос
+    logger.info(f"Starting charging: client_id={request.client_id}, station_id={request.station_id}")
+    
     try:
         # 1. Проверяем существование клиента и его баланс
         client_check = db.execute(text("SELECT id, balance FROM clients WHERE id = :client_id"), 
@@ -351,7 +358,7 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
         return {
             "success": False,
             "error": "balance_error",
-            "message": str(e)
+            "message": "Ошибка получения баланса"
         }
     except Exception as e:
         db.rollback()
@@ -359,11 +366,14 @@ async def start_charging(request: ChargingStartRequest, db: Session = Depends(ge
         return {
             "success": False,
             "error": "internal_error",
-            "message": f"Ошибка: {str(e)}"
+            "message": "Внутренняя ошибка сервера"
         }
 
 @router.post("/charging/stop")
-async def stop_charging(request: ChargingStopRequest, db: Session = Depends(get_db)):
+async def stop_charging(
+    request: ChargingStopRequest, 
+    db: Session = Depends(get_db)
+):
     """⏹️ Остановить зарядку с расчетом и возвратом средств"""
     try:
         # 1. Ищем активную сессию
@@ -572,7 +582,7 @@ async def stop_charging(request: ChargingStopRequest, db: Session = Depends(get_
         return {
             "success": False,
             "error": "balance_error",
-            "message": str(e)
+            "message": "Ошибка получения баланса"
         }
     except Exception as e:
         db.rollback()
@@ -580,11 +590,14 @@ async def stop_charging(request: ChargingStopRequest, db: Session = Depends(get_
         return {
             "success": False,
             "error": "internal_error", 
-            "message": f"Ошибка: {str(e)}"
+            "message": "Внутренняя ошибка сервера"
         }
 
 @router.get("/charging/status/{session_id}")
-async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
+async def get_charging_status(
+    session_id: str, 
+    db: Session = Depends(get_db)
+):
     """📊 Проверить статус зарядки с полными данными из OCPP"""
     try:
         # Расширенный запрос с JOIN к OCPP транзакциям
@@ -848,11 +861,14 @@ async def get_charging_status(session_id: str, db: Session = Depends(get_db)):
         return {
             "success": False,
             "error": "internal_error",
-            "message": f"Ошибка: {str(e)}"
+            "message": "Внутренняя ошибка сервера"
         }
 
 @router.get("/station/status/{station_id}") 
-async def get_station_status(station_id: str, db: Session = Depends(get_db)):
+async def get_station_status(
+    station_id: str, 
+    db: Session = Depends(get_db)
+):
     """🏢 Статус станции и коннекторов"""
     try:
         # Получаем данные станции с локацией через JOIN
@@ -981,7 +997,7 @@ async def get_station_status(station_id: str, db: Session = Depends(get_db)):
         return {
             "success": False,
             "error": "internal_error",
-            "message": f"Ошибка: {str(e)}"
+            "message": "Внутренняя ошибка сервера"
         }
 
 # ============================================================================
@@ -1104,7 +1120,7 @@ async def get_payment_status(
             success=False,
             status=0,
             status_text="Ошибка проверки статуса",
-            error=f"internal_error: {str(e)}"
+            error="internal_error"
         )
 
 @router.post("/payment/status-check/{invoice_id}")
@@ -1256,7 +1272,10 @@ async def handle_payment_webhook(
         raise HTTPException(status_code=500, detail="Webhook processing failed")
 
 @router.get("/balance/{client_id}", response_model=ClientBalanceInfo)
-async def get_client_balance(client_id: str, db: Session = Depends(get_db)) -> ClientBalanceInfo:
+async def get_client_balance(
+    client_id: str, 
+    db: Session = Depends(get_db)
+) -> ClientBalanceInfo:
     """💰 Получение информации о балансе клиента"""
     try:
         # Получаем информацию о клиенте и балансе
@@ -1445,7 +1464,7 @@ async def create_h2h_payment(
         return H2HPaymentResponse(
             success=False,
             client_id=request.client_id,
-            error=f"internal_error: {str(e)}"
+            error="internal_error"
         )
 
 @router.post("/balance/token-payment", response_model=TokenPaymentResponse)
@@ -1565,7 +1584,7 @@ async def create_token_payment(
         return TokenPaymentResponse(
             success=False,
             client_id=request.client_id,
-            error=f"internal_error: {str(e)}"
+            error="internal_error"
         )
 
 @router.post("/payment/create-token", response_model=CreateTokenResponse)
@@ -1609,7 +1628,7 @@ async def create_card_token(
         logger.error(f"Ошибка создания токена: {e}")
         return CreateTokenResponse(
             success=False,
-            error=f"internal_error: {str(e)}"
+            error="internal_error"
         )
 
 # ============================================================================
@@ -1839,7 +1858,7 @@ async def create_card_balance_topup(
     
     Принудительно использует OBANK для H2H платежей
     """
-    logger.info(f"💳 Card Topup request: client_id={request.client_id}, amount={request.amount}")
+    logger.info(f"Card Topup request received for client: {request.client_id}")
     
     try:
         # 1. Проверяем существование клиента
@@ -1998,7 +2017,7 @@ async def create_h2h_payment_endpoint(
         
     except Exception as e:
         logger.error(f"H2H payment error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"H2H payment failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Ошибка создания платежа")
 
 @router.post("/payment/create-token")
 async def create_payment_token(
@@ -2022,7 +2041,7 @@ async def create_payment_token(
         
     except Exception as e:
         logger.error(f"Token creation error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Token creation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Ошибка создания токена")
 
 @router.post("/payment/token-payment")
 async def token_payment(
@@ -2052,7 +2071,7 @@ async def token_payment(
         
     except Exception as e:
         logger.error(f"Token payment error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Token payment failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Ошибка токен-платежа")
 
 @router.get("/payment/h2h-status/{transaction_id}")
 async def check_h2h_payment_status(
@@ -2076,7 +2095,7 @@ async def check_h2h_payment_status(
         
     except Exception as e:
         logger.error(f"Status check error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Status check failed: {str(e)}")
+        raise HTTPException(status_code=500, detail="Ошибка проверки статуса")
 
 @router.post("/payment/cancel/{invoice_id}")
 async def cancel_payment_manually(

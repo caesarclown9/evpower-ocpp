@@ -32,6 +32,7 @@ from app.crud.ocpp_service import (
 from app.db.models.ocpp import OCPPTransaction
 from sqlalchemy import text
 from decimal import Decimal
+from app.core.station_auth import station_auth
 
 logger = logging.getLogger(__name__)
 
@@ -1197,6 +1198,31 @@ class OCPPWebSocketHandler:
         self.logger.info(f"🔌 НОВОЕ ПОДКЛЮЧЕНИЕ: Station {self.station_id} от IP {client_ip}")
         
         try:
+            # Проверяем API ключ станции
+            api_key = self.websocket.query_params.get("token", "")
+            if not api_key:
+                # Пробуем из заголовков
+                headers = dict(self.websocket.headers)
+                api_key = headers.get("authorization", "").replace("Bearer ", "")
+            
+            is_authorized = await station_auth.verify_station_connection(
+                self.station_id, 
+                api_key, 
+                self.websocket
+            )
+            
+            if not is_authorized:
+                self.logger.warning(f"❌ Неавторизованное подключение станции {self.station_id}")
+                await self.websocket.close(code=1008, reason="Unauthorized")
+                return
+            
+            # Логируем успешную аутентификацию
+            await station_auth.log_station_connection(
+                self.station_id, 
+                "connected",
+                {"ip": client_ip, "auth_method": "api_key" if api_key else "unknown"}
+            )
+            
             # Принимаем WebSocket подключение с OCPP 1.6 subprotocol
             self.logger.debug(f"Принимаем WebSocket для {self.station_id}")
             await self.websocket.accept(subprotocol="ocpp1.6")

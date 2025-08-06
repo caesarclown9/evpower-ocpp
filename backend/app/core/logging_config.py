@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Any, Dict
 import sys
 from contextvars import ContextVar
+from .secure_logging import SecureFormatter, setup_secure_logging, sanitize_dict
 
 # Context variable для correlation ID
 correlation_id: ContextVar[str] = ContextVar('correlation_id', default='')
@@ -62,8 +63,11 @@ class StructuredFormatter(logging.Formatter):
                 if hasattr(record, field):
                     log_data[field] = self._safe_serialize(getattr(record, field))
             
+            # Маскируем чувствительные данные перед сериализацией
+            sanitized_data = sanitize_dict(log_data)
+            
             # Безопасная сериализация всего объекта
-            return json.dumps(self._safe_serialize(log_data), ensure_ascii=False, separators=(',', ':'))
+            return json.dumps(self._safe_serialize(sanitized_data), ensure_ascii=False, separators=(',', ':'))
             
         except Exception as e:
             # Fallback в случае ошибки сериализации

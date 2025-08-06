@@ -33,6 +33,8 @@ venv.bak/
 .env.local
 .env.production
 .env.staging
+.env.security
+backend/.env.security
 
 # Database
 *.db
@@ -52,6 +54,11 @@ logs/
 *.swo
 *~
 
+# Claude AI specific
+.claude/
+.mcp.json
+claude.json
+
 # OS
 .DS_Store
 Thumbs.db
@@ -59,40 +66,8 @@ Thumbs.db
 # Coverage
 htmlcov/
 .coverage
-.coverage.*PS D:\Projects\EvPower-Backend> Invoke-RestMethod -Uri "http://193.176.239.218:8180/api/mobile/charging/start" `
->>   -Method POST `
->>   -ContentType "application/json" `
->>   -Body '{
->>     "station_id": "BIS_LOC_0001_ST0001",
->>     "client_id": "test_user_001",
->>     "connector_id": 1,
->>     "energy_kwh": 25.5,
->>     "amount_rub": 500.0
->>   }'
-
-success error          message
-------- -----          -------
-  False internal_error ÐÑÐ¸Ð±ÐºÐ° ÑÐµÑÐ²ÐµÑÐ°: (psycopg2.errors.ForeignKeyViolation) insert or update on table "ocpp_authorization" violates foreign key constraint "ocpp...      
-
-
-PS D:\Projects\EvPower-Backend> 
-coverage.xmlPS D:\Projects\EvPower-Backend> Invoke-RestMethod -Uri "http://193.176.239.218:8180/api/mobile/charging/start" `
->>   -Method POST `
->>   -ContentType "application/json" `
->>   -Body '{
->>     "station_id": "BIS_LOC_0001_ST0001",
->>     "client_id": "test_user_001",
->>     "connector_id": 1,
->>     "energy_kwh": 25.5,
->>     "amount_rub": 500.0
->>   }'
-
-success error          message
-------- -----          -------
-  False internal_error ÐÑÐ¸Ð±ÐºÐ° ÑÐµÑÐ²ÐµÑÐ°: (psycopg2.errors.ForeignKeyViolation) insert or update on table "ocpp_authorization" violates foreign key constraint "ocpp...      
-
-
-PS D:\Projects\EvPower-Backend> 
+.coverage.*
+coverage.xml
 *.cover
 
 # Testing
@@ -127,20 +102,33 @@ nginx.conf.local
 *.service.local
 
 # === Project-specific ===
-# Инструкции и документация (кроме README.md)
+
+# Security migrations (содержат чувствительные данные)
+SUPABASE_SECURITY_MIGRATIONS.sql
+*_SECURITY_*.sql
+backend/migrations/
+
+# Документация для разработки (временная)
+CRITICAL_SECURITY_FIXES.md
+CLEANUP_SUMMARY.md
+API_CONTRACTS_FLUTTERFLOW.md
+CLAUDE.md
+COOLIFY_SETUP.md
+CRITICAL_PATHS_ANALYSIS.md
+PHASE_0_COMPLETION_SUMMARY.md
+PHASE_1_COMPLETION_SUMMARY.md
+README_temp.md
+REFACTORING_PLAN.md
+SECURITY_IMPLEMENTATION_GUIDE.md
+SECURITY_RECOMMENDATIONS.md
+backend/OCPP_LOGGING_GUIDE.md
+
+# Временные папки документации и скриптов
 docs/
-instructions/
-*.md
-!README.md
+scripts/
 
 # Локальный OCPP сервер и тестовые клиенты
-
-
-# Локальные скрипты, временные и тестовые файлы
-scripts/
 test_*
-*.bak
-*.tmp
 *.test
 
 # Не коммитить Postman коллекции, если они только для локального теста
@@ -154,4 +142,9 @@ Add-To-PowerShell-Profile.ps1
 claude-code-launcher.ps1
 web-bundles/
 
-API20.05 (2).html
+# Временные HTML файлы
+*.html
+!templates/*.html
+
+# Старые версии БД
+bester/

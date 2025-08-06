@@ -19,7 +19,8 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "EvPower OCPP Backend"
     
     # Security
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "")
+    # SECRET_KEY больше не используется - аутентификация через FlutterFlow
+    # SECRET_KEY: str = os.getenv("SECRET_KEY", "")
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
@@ -117,8 +118,9 @@ class Settings(BaseSettings):
         missing_vars = []
         
         # Базовые переменные проверяем только если они критичны
-        if not self.SECRET_KEY:
-            missing_vars.append("SECRET_KEY")
+        # SECRET_KEY больше не проверяется - аутентификация через FlutterFlow
+        # if not self.SECRET_KEY:
+        #     missing_vars.append("SECRET_KEY")
         
         # DATABASE_URL должен быть обязательно
         if not self.DATABASE_URL:

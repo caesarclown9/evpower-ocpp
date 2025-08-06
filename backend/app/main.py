@@ -13,9 +13,11 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.core.logging_config import setup_logging
 from app.core.security_middleware import SecurityMiddleware
+from app.core.payment_audit import PaymentAuditMiddleware
 from ocpp_ws_server.ws_handler import OCPPWebSocketHandler
 from ocpp_ws_server.redis_manager import redis_manager
-from app.api import mobile  # Импорт mobile API
+from app.api import mobile  # Импорт mobile API (будет постепенно заменен)
+# from app.api.v1 import router as v1_router  # Новая модульная структура (раскомментировать после тестирования)
 
 # Настройка улучшенного логирования
 setup_logging()
@@ -191,6 +193,10 @@ if not allowed_origins or allowed_origins == [""]:
 security_middleware = SecurityMiddleware()
 app.middleware("http")(security_middleware)
 
+# Добавляем Payment Audit Middleware
+payment_audit_middleware = PaymentAuditMiddleware()
+app.middleware("http")(payment_audit_middleware)
+
 # Добавляем поддержку WebSocket в CORS (только production домены)
 production_origins = [
     "https://ocpp.evpower.kg",
@@ -198,12 +204,22 @@ production_origins = [
     "https://app.flutterflow.io"
 ]
 
+# В режиме разработки добавляем localhost
+if os.getenv("APP_ENV", "development") == "development":
+    production_origins.extend([
+        "http://localhost:3000",
+        "http://localhost:9210",
+        "ws://localhost:9210"
+    ])
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=production_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["*"],
+    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+    expose_headers=["X-Correlation-ID"],
+    max_age=86400  # 24 часа кэш для preflight запросов
 )
 
 # ============================================================================
