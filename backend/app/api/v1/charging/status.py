@@ -6,7 +6,6 @@ from sqlalchemy.orm import Session
 import logging
 
 from app.db.session import get_db
-from app.core.auth import optional_authentication
 
 from .schemas import ChargingStatusResponse
 from .service import ChargingService
@@ -18,8 +17,7 @@ router = APIRouter()
 @router.get("/charging/status/{session_id}", response_model=ChargingStatusResponse)
 async def get_charging_status(
     session_id: str, 
-    db: Session = Depends(get_db),
-    current_user: dict = Depends(optional_authentication)
+    db: Session = Depends(get_db)
 ):
     """📊 Проверить статус зарядки с полными данными из OCPP"""
     
