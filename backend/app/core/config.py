@@ -18,11 +18,8 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     PROJECT_NAME: str = "EvPower OCPP Backend"
     
-    # Security
-    # SECRET_KEY больше не используется - аутентификация через FlutterFlow
-    # SECRET_KEY: str = os.getenv("SECRET_KEY", "")
-    ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    # Security - аутентификация через FlutterFlow
+    # Удалено: SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES (не используются)
     
     # App settings - правильные порты для production
     APP_HOST: str = os.getenv("APP_HOST", "0.0.0.0")

@@ -387,8 +387,4 @@ class PaymentTransactionOdengi(Base):
     balance_topup = relationship("BalanceTopup")
     charging_session = relationship("ChargingSession")
 
-# УСТАРЕЛО: модель для несуществующей таблицы payment_transactions
-# Оставляем для совместимости, но используем PaymentTransactionOdengi
-class PaymentTransaction(PaymentTransactionOdengi):
-    """DEPRECATED: Используйте PaymentTransactionOdengi"""
-    pass
+# PaymentTransaction удален - используется только PaymentTransactionOdengi

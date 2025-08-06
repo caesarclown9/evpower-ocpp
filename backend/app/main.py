@@ -17,7 +17,7 @@ from app.core.payment_audit import PaymentAuditMiddleware
 from ocpp_ws_server.ws_handler import OCPPWebSocketHandler
 from ocpp_ws_server.redis_manager import redis_manager
 from app.api import mobile  # Импорт mobile API (будет постепенно заменен)
-# from app.api.v1 import router as v1_router  # Новая модульная структура (раскомментировать после тестирования)
+from app.api.v1 import router as v1_router  # Новая модульная структура
 
 # Настройка улучшенного логирования
 setup_logging()
@@ -226,8 +226,11 @@ app.add_middleware(
 # ПОДКЛЮЧЕНИЕ API РОУТЕРОВ
 # ============================================================================
 
-# Mobile API для FlutterFlow
+# Mobile API для FlutterFlow (legacy, постепенно мигрирует в v1)
 app.include_router(mobile.router)
+
+# V1 API - новая модульная структура
+app.include_router(v1_router)
 
 # ============================================================================
 # HEALTH CHECK ENDPOINT (единственный HTTP endpoint)
