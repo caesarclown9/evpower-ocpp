@@ -197,27 +197,18 @@ app.middleware("http")(security_middleware)
 payment_audit_middleware = PaymentAuditMiddleware()
 app.middleware("http")(payment_audit_middleware)
 
-# Добавляем поддержку WebSocket в CORS (только production домены)
-production_origins = [
-    "https://ocpp.evpower.kg",
-    "wss://ocpp.evpower.kg", 
-    "https://app.flutterflow.io"
-]
+# Получаем CORS origins из настроек (берется из env переменной CORS_ORIGINS)
+cors_origins = settings.CORS_ORIGINS.split(",") if settings.CORS_ORIGINS else ["*"]
+cors_origins = [origin.strip() for origin in cors_origins]  # Убираем пробелы
 
-# В режиме разработки добавляем localhost
-if os.getenv("APP_ENV", "development") == "development":
-    production_origins.extend([
-        "http://localhost:3000",
-        "http://localhost:9210",
-        "ws://localhost:9210"
-    ])
+logger.info(f"📋 CORS настройки загружены из env: {cors_origins}")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=production_origins,
+    allow_origins=cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+    allow_methods=["GET", "POST", "OPTIONS", "PUT", "DELETE"],  # Добавил PUT и DELETE для полноты
+    allow_headers=["*"],  # Разрешаем все заголовки для гибкости
     expose_headers=["X-Correlation-ID"],
     max_age=86400  # 24 часа кэш для preflight запросов
 )

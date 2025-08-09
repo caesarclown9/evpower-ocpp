@@ -36,6 +36,16 @@ class Settings(BaseSettings):
         "http://localhost:3000,http://localhost:9210,https://app.flutterflow.io,https://ocpp.evpower.kg,http://ocpp.evpower.kg,ws://ocpp.evpower.kg,wss://ocpp.evpower.kg"
     )
     
+    # Content Security Policy настройки
+    CSP_CONNECT_SRC: str = os.getenv(
+        "CSP_CONNECT_SRC",
+        "'self' wss://ocpp.evpower.kg https://ocpp.evpower.kg https://app.evpower.kg https://*.supabase.co"
+    )
+    CSP_SCRIPT_SRC: str = os.getenv(
+        "CSP_SCRIPT_SRC",
+        "'self' 'unsafe-inline' https://app.flutterflow.io"
+    )
+    
     # Domain для webhook URLs
     DOMAIN: str = os.getenv("DOMAIN", "https://ocpp.evpower.kg")
     

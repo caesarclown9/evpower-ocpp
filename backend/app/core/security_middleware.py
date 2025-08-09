@@ -8,6 +8,7 @@ from collections import defaultdict, deque
 from datetime import datetime, timedelta
 
 from .logging_config import set_correlation_id, log_security_event
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -107,7 +108,10 @@ class SecurityMiddleware:
             response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
             response.headers["X-Correlation-ID"] = correlation_id
             response.headers["Permissions-Policy"] = "accelerometer=(), camera=(), geolocation=(), gyroscope=(), magnetometer=(), microphone=(), payment=(), usb=()"
-            response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' https://app.flutterflow.io; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self' wss://ocpp.evpower.kg https://ocpp.evpower.kg"
+            # Используем CSP настройки из env переменных
+            csp_connect = settings.CSP_CONNECT_SRC
+            csp_script = settings.CSP_SCRIPT_SRC
+            response.headers["Content-Security-Policy"] = f"default-src 'self'; script-src {csp_script}; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src {csp_connect}"
             
             return response
             
