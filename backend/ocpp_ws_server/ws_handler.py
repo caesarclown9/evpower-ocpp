@@ -1198,30 +1198,20 @@ class OCPPWebSocketHandler:
         self.logger.info(f"🔌 НОВОЕ ПОДКЛЮЧЕНИЕ: Station {self.station_id} от IP {client_ip}")
         
         try:
-            # Проверяем API ключ станции
-            api_key = self.websocket.query_params.get("token", "")
-            if not api_key:
-                # Пробуем из заголовков
-                headers = dict(self.websocket.headers)
-                api_key = headers.get("authorization", "").replace("Bearer ", "")
+            # Проверяем только существование станции в БД
+            with next(get_db()) as db:
+                result = db.execute(text("""
+                    SELECT id, status FROM stations 
+                    WHERE id = :station_id AND status = 'active'
+                """), {"station_id": self.station_id})
+                
+                station = result.fetchone()
+                if not station:
+                    self.logger.warning(f"❌ Станция {self.station_id} не найдена или неактивна")
+                    await self.websocket.close(code=1008, reason="Unknown station")
+                    return
             
-            is_authorized = await station_auth.verify_station_connection(
-                self.station_id, 
-                api_key, 
-                self.websocket
-            )
-            
-            if not is_authorized:
-                self.logger.warning(f"❌ Неавторизованное подключение станции {self.station_id}")
-                await self.websocket.close(code=1008, reason="Unauthorized")
-                return
-            
-            # Логируем успешную аутентификацию
-            await station_auth.log_station_connection(
-                self.station_id, 
-                "connected",
-                {"ip": client_ip, "auth_method": "api_key" if api_key else "unknown"}
-            )
+            self.logger.info(f"✅ Станция {self.station_id} найдена и активна")
             
             # Принимаем WebSocket подключение с OCPP 1.6 subprotocol
             self.logger.debug(f"Принимаем WebSocket для {self.station_id}")
