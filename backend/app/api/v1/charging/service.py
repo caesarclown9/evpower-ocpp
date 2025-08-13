@@ -642,6 +642,8 @@ class ChargingService:
     async def get_charging_status(self, session_id: str) -> Dict[str, Any]:
         """Получить полный статус сессии зарядки с OCPP данными"""
         
+        logger.info(f"📊 Запрос статуса зарядки для сессии: {session_id}")
+        
         try:
             # Расширенный запрос с JOIN к OCPP транзакциям
             session_query = text("""
@@ -659,15 +661,19 @@ class ChargingService:
                 WHERE cs.id = :session_id
             """)
             
+            logger.debug(f"Выполняем SQL запрос для сессии {session_id}")
             session_result = self.db.execute(session_query, {"session_id": session_id})
             session = session_result.fetchone()
             
             if not session:
+                logger.warning(f"Сессия {session_id} не найдена в БД")
                 return {
                     "success": False,
                     "error": "session_not_found",
                     "message": "Сессия зарядки не найдена"
                 }
+            
+            logger.debug(f"Найдена сессия: status={session[7]}, station={session[2]}")
             
             # Парсинг данных сессии
             session_data = self._parse_session_data(session)
@@ -684,10 +690,19 @@ class ChargingService:
             # Проверка статуса станции онлайн
             station_online = await self._check_station_online(session_data['station_id'])
             
+            logger.info(f"✅ Статус получен: energy={energy_data.get('energy_consumed_kwh', 0)} кВт⋅ч, online={station_online}")
+            
             return self._build_status_response(session_data, energy_data, progress, meter_data, station_online)
             
+        except ValueError as e:
+            logger.error(f"Ошибка валидации данных: {e}")
+            return {
+                "success": False,
+                "error": "data_error",
+                "message": str(e)
+            }
         except Exception as e:
-            logger.error(f"Ошибка при получении статуса зарядки: {e}")
+            logger.error(f"Критическая ошибка при получении статуса зарядки: {e}", exc_info=True)
             return {
                 "success": False,
                 "error": "internal_error",
@@ -900,24 +915,28 @@ class ChargingService:
     
     def _parse_session_data(self, session: tuple) -> Dict[str, Any]:
         """Парсинг данных сессии из результата запроса"""
-        return {
-            "session_id": session[0],
-            "user_id": session[1],
-            "station_id": session[2],
-            "start_time": session[3],
-            "stop_time": session[4],
-            "energy": session[5] or 0,
-            "amount": session[6] or 0,
-            "status": session[7],
-            "transaction_id": session[8],
-            "limit_type": session[9],
-            "limit_value": session[10] or 0,
-            "ocpp_transaction_id": session[11],
-            "meter_start": session[12],
-            "meter_stop": session[13],
-            "ocpp_status": session[14],
-            "price_per_kwh": session[15] or 9.0
-        }
+        try:
+            return {
+                "session_id": session[0] if session[0] is not None else "",
+                "user_id": session[1] if session[1] is not None else "",
+                "station_id": session[2] if session[2] is not None else "",
+                "start_time": session[3],
+                "stop_time": session[4],
+                "energy": float(session[5]) if session[5] is not None else 0.0,
+                "amount": float(session[6]) if session[6] is not None else 0.0,
+                "status": session[7] if session[7] is not None else "unknown",
+                "transaction_id": session[8],
+                "limit_type": session[9] if session[9] is not None else "none",
+                "limit_value": float(session[10]) if session[10] is not None else 0.0,
+                "ocpp_transaction_id": session[11],
+                "meter_start": session[12],
+                "meter_stop": session[13],
+                "ocpp_status": session[14],
+                "price_per_kwh": float(session[15]) if session[15] is not None else 9.0
+            }
+        except (IndexError, TypeError, ValueError) as e:
+            logger.error(f"Ошибка парсинга данных сессии: {e}, данные: {session[:5] if session else 'None'}")
+            raise ValueError(f"Некорректные данные сессии: {e}")
     
     def _calculate_energy_from_ocpp(self, session_data: Dict[str, Any], session_id: str) -> Dict[str, Any]:
         """Расчет реальных энергетических данных из OCPP"""
