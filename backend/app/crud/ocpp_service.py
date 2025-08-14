@@ -1,6 +1,7 @@
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
+import logging
 from app.db.models.ocpp import (
     OCPPStationStatus, 
     OCPPTransaction, 
@@ -49,7 +50,7 @@ class OCPPStationService:
     
     @staticmethod
     def update_heartbeat(db: Session, station_id: str) -> OCPPStationStatus:
-        """Обновляет время последнего heartbeat"""
+        """Обновляет время последнего heartbeat и активирует станцию"""
         station_status = db.query(OCPPStationStatus).filter(
             OCPPStationStatus.station_id == station_id
         ).first()
@@ -63,6 +64,13 @@ class OCPPStationService:
         
         station_status.last_heartbeat = datetime.utcnow()
         station_status.updated_at = datetime.utcnow()
+        
+        # Обновляем статус станции на active при получении heartbeat
+        from app.db.models.ocpp import Station
+        station = db.query(Station).filter(Station.id == station_id).first()
+        if station and station.status != 'active':
+            station.status = 'active'
+            logger.info(f"✅ Станция {station_id} активирована после heartbeat")
         
         db.commit()
         db.refresh(station_status)

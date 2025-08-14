@@ -18,6 +18,9 @@ from ocpp_ws_server.ws_handler import OCPPWebSocketHandler
 from ocpp_ws_server.redis_manager import redis_manager
 from app.api import mobile  # Импорт mobile API (будет постепенно заменен)
 from app.api.v1 import router as v1_router  # Новая модульная структура
+from app.services.station_status_manager import StationStatusManager
+from app.db.session import get_db
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Настройка улучшенного логирования
 setup_logging()
@@ -167,7 +170,38 @@ async def lifespan(app: FastAPI):
     logger.info("🧹 Payment cleanup task started (1 час между проверками)")
     logger.info("🔍 Payment status checks будут запускаться при создании платежей")
     
+    # Запуск scheduler для обновления статусов станций
+    scheduler = AsyncIOScheduler()
+    
+    async def update_station_statuses_job():
+        """Фоновая задача для обновления статусов станций"""
+        try:
+            with next(get_db()) as db:
+                result = StationStatusManager.update_all_station_statuses(db)
+                if result["deactivated"] or result["activated"]:
+                    logger.info(f"📊 Обновлены статусы станций: "
+                              f"активировано {len(result['activated'])}, "
+                              f"деактивировано {len(result['deactivated'])}")
+        except Exception as e:
+            logger.error(f"Ошибка в фоновой задаче обновления статусов: {e}")
+    
+    # Запускаем каждые 2 минуты (чаще чем heartbeat timeout для надежности)
+    scheduler.add_job(
+        update_station_statuses_job,
+        'interval',
+        minutes=2,
+        id='update_station_statuses',
+        name='Update Station Statuses',
+        misfire_grace_time=30
+    )
+    
+    scheduler.start()
+    logger.info("⏰ Scheduler для обновления статусов станций запущен (каждые 2 минуты)")
+    
     yield
+    
+    # Остановка scheduler
+    scheduler.shutdown()
     
     # Отмена background tasks при остановке
     payment_cleanup_task_ref.cancel()
