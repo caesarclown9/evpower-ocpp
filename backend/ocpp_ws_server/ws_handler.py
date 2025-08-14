@@ -1198,20 +1198,20 @@ class OCPPWebSocketHandler:
         self.logger.info(f"🔌 НОВОЕ ПОДКЛЮЧЕНИЕ: Station {self.station_id} от IP {client_ip}")
         
         try:
-            # Проверяем только существование станции в БД
+            # Проверяем только существование станции в БД (разрешаем подключение всем существующим станциям)
             with next(get_db()) as db:
                 result = db.execute(text("""
                     SELECT id, status FROM stations 
-                    WHERE id = :station_id AND status = 'active'
+                    WHERE id = :station_id
                 """), {"station_id": self.station_id})
                 
                 station = result.fetchone()
                 if not station:
-                    self.logger.warning(f"❌ Станция {self.station_id} не найдена или неактивна")
+                    self.logger.warning(f"❌ Станция {self.station_id} не найдена в базе данных")
                     await self.websocket.close(code=1008, reason="Unknown station")
                     return
             
-            self.logger.info(f"✅ Станция {self.station_id} найдена и активна")
+            self.logger.info(f"✅ Станция {self.station_id} найдена (статус: {station[1]})")
             
             # Принимаем WebSocket подключение с OCPP 1.6 subprotocol
             self.logger.debug(f"Принимаем WebSocket для {self.station_id}")

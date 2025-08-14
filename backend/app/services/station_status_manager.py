@@ -34,13 +34,13 @@ class StationStatusManager:
         }
         
         try:
-            # 1. Деактивируем станции без heartbeat более 5 минут
+            # 1. Делаем недоступными станции без heartbeat более 5 минут
             deactivate_query = text("""
                 UPDATE stations s
-                SET status = 'inactive', updated_at = NOW()
+                SET is_available = false, updated_at = NOW()
                 FROM ocpp_station_status oss
                 WHERE s.id = oss.station_id
-                  AND s.status = 'active'
+                  AND s.is_available = true
                   AND (oss.last_heartbeat IS NULL OR oss.last_heartbeat < NOW() - INTERVAL :timeout)
                 RETURNING s.id, s.serial_number
             """)
@@ -52,13 +52,13 @@ class StationStatusManager:
             
             result["deactivated"] = [(s[0], s[1]) for s in deactivated]
             
-            # 2. Активируем станции с недавним heartbeat
+            # 2. Делаем доступными станции с недавним heartbeat
             activate_query = text("""
                 UPDATE stations s
-                SET status = 'active', updated_at = NOW()
+                SET is_available = true, updated_at = NOW()
                 FROM ocpp_station_status oss
                 WHERE s.id = oss.station_id
-                  AND s.status = 'inactive'
+                  AND s.is_available = false
                   AND oss.last_heartbeat >= NOW() - INTERVAL :timeout
                 RETURNING s.id, s.serial_number
             """)
@@ -70,11 +70,11 @@ class StationStatusManager:
             
             result["activated"] = [(s[0], s[1]) for s in activated]
             
-            # 3. Деактивируем станции без записи в ocpp_station_status
+            # 3. Делаем недоступными станции без записи в ocpp_station_status
             no_status_query = text("""
                 UPDATE stations
-                SET status = 'inactive', updated_at = NOW()
-                WHERE status = 'active'
+                SET is_available = false, updated_at = NOW()
+                WHERE is_available = true
                   AND id NOT IN (
                     SELECT station_id 
                     FROM ocpp_station_status 

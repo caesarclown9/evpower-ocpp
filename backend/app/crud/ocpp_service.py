@@ -1,4 +1,5 @@
 from sqlalchemy.orm import Session
+from sqlalchemy import text
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta, timezone
 import logging
@@ -65,12 +66,16 @@ class OCPPStationService:
         station_status.last_heartbeat = datetime.utcnow()
         station_status.updated_at = datetime.utcnow()
         
-        # Обновляем статус станции на active при получении heartbeat
-        from app.db.models.ocpp import Station
-        station = db.query(Station).filter(Station.id == station_id).first()
-        if station and station.status != 'active':
-            station.status = 'active'
-            logger.info(f"✅ Станция {station_id} активирована после heartbeat")
+        # Обновляем доступность станции при получении heartbeat
+        # НЕ меняем status (это административный статус), а обновляем is_available и last_heartbeat_at
+        db.execute(text("""
+            UPDATE stations 
+            SET is_available = true,
+                last_heartbeat_at = NOW(),
+                updated_at = NOW()
+            WHERE id = :station_id
+        """), {"station_id": station_id})
+        logger.debug(f"✅ Станция {station_id} отметилась как доступная (heartbeat)")
         
         db.commit()
         db.refresh(station_status)

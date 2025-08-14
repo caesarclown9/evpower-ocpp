@@ -135,8 +135,10 @@ class ChargingService:
     
     def _validate_station(self, station_id: str) -> Dict[str, Any]:
         """Проверка станции и получение тарифа"""
+        # Проверяем и административный статус (active) и доступность (is_available)
         result = self.db.execute(text("""
-            SELECT s.id, s.status, s.price_per_kwh, tp.id as tariff_plan_id
+            SELECT s.id, s.status, s.price_per_kwh, tp.id as tariff_plan_id, 
+                   s.is_available, s.last_heartbeat_at
             FROM stations s
             LEFT JOIN tariff_plans tp ON s.tariff_plan_id = tp.id
             WHERE s.id = :station_id AND s.status = 'active'
@@ -145,9 +147,27 @@ class ChargingService:
         if not result:
             return {
                 "success": False,
-                "error": "station_unavailable",
-                "message": "Станция недоступна"
+                "error": "station_not_found",
+                "message": "Станция не найдена или отключена администратором"
             }
+        
+        # Проверяем доступность по heartbeat
+        if not result[4]:  # is_available = false
+            last_heartbeat = result[5]
+            if last_heartbeat:
+                from datetime import datetime, timezone
+                minutes_ago = (datetime.now(timezone.utc) - last_heartbeat).total_seconds() / 60
+                return {
+                    "success": False,
+                    "error": "station_offline",
+                    "message": f"Станция недоступна (офлайн {int(minutes_ago)} минут)"
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": "station_never_connected",
+                    "message": "Станция никогда не подключалась к системе"
+                }
         
         # Определение тарифа: приоритет станции над тарифным планом
         rate_per_kwh = 9.0  # fallback
