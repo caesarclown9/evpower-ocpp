@@ -2,13 +2,15 @@
 Сервисный слой для операций зарядки
 """
 from typing import Optional, Dict, Any
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import logging
+import json
 
 from app.crud.ocpp_service import payment_service
+from app.services.pricing_service import PricingService
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +19,7 @@ class ChargingService:
     
     def __init__(self, db: Session):
         self.db = db
+        self.pricing_service = PricingService(db)
     
     async def start_charging_session(
         self,
@@ -35,16 +38,18 @@ class ChargingService:
             return client
         
         # 2. Проверка станции и тарифов
-        station_info = self._validate_station(station_id)
+        station_info = self._validate_station(station_id, connector_id, client_id)
         if not station_info['success']:
             return station_info
         
         # 3. Расчет стоимости и резервирования
         reservation = self._calculate_reservation(
             client['balance'],
-            station_info['rate_per_kwh'],
+            station_info['pricing_result'],
             energy_kwh,
-            amount_som
+            amount_som,
+            promo_code=None,  # TODO: добавить поддержку промо-кодов в API
+            client_id=client_id
         )
         if not reservation['success']:
             return reservation
@@ -77,6 +82,7 @@ class ChargingService:
             client_id,
             station_id,
             reservation,
+            station_info['pricing_result'],
             energy_kwh,
             amount_som
         )
@@ -105,7 +111,7 @@ class ChargingService:
             "client_id": client_id,
             "connector_id": connector_id,
             "energy_kwh": energy_kwh,
-            "rate_per_kwh": station_info['rate_per_kwh'],
+            "pricing": station_info['pricing'],  # Уже конвертирован в dict через to_dict()
             "estimated_cost": reservation['amount'],
             "reserved_amount": reservation['amount'],
             "new_balance": float(new_balance),
@@ -133,14 +139,14 @@ class ChargingService:
             "balance": Decimal(str(result[1]))
         }
     
-    def _validate_station(self, station_id: str) -> Dict[str, Any]:
-        """Проверка станции и получение тарифа"""
+    def _validate_station(self, station_id: str, connector_type: Optional[str] = None, client_id: Optional[str] = None) -> Dict[str, Any]:
+        """Проверка станции и получение динамического тарифа"""
         # Проверяем и административный статус (active) и доступность (is_available)
         result = self.db.execute(text("""
-            SELECT s.id, s.status, s.price_per_kwh, tp.id as tariff_plan_id, 
-                   s.is_available, s.last_heartbeat_at
+            SELECT s.id, s.status, s.is_available, s.last_heartbeat_at,
+                   c.connector_type, c.power_kw
             FROM stations s
-            LEFT JOIN tariff_plans tp ON s.tariff_plan_id = tp.id
+            LEFT JOIN connectors c ON s.id = c.station_id AND c.connector_number = 1
             WHERE s.id = :station_id AND s.status = 'active'
         """), {"station_id": station_id}).fetchone()
         
@@ -152,10 +158,9 @@ class ChargingService:
             }
         
         # Проверяем доступность по heartbeat
-        if not result[4]:  # is_available = false
-            last_heartbeat = result[5]
+        if not result[2]:  # is_available = false
+            last_heartbeat = result[3]
             if last_heartbeat:
-                from datetime import datetime, timezone
                 minutes_ago = (datetime.now(timezone.utc) - last_heartbeat).total_seconds() / 60
                 return {
                     "success": False,
@@ -169,42 +174,71 @@ class ChargingService:
                     "message": "Станция никогда не подключалась к системе"
                 }
         
-        # Определение тарифа: приоритет станции над тарифным планом
-        rate_per_kwh = 9.0  # fallback
-        
-        if result[2]:  # price_per_kwh станции
-            rate_per_kwh = float(result[2])
-        elif result[3]:  # tariff_plan_id
-            tariff = self.db.execute(text("""
-                SELECT price FROM tariff_rules 
-                WHERE tariff_plan_id = :tariff_plan_id 
-                AND tariff_type = 'per_kwh' 
-                AND is_active = true
-                ORDER BY priority DESC LIMIT 1
-            """), {"tariff_plan_id": result[3]}).fetchone()
+        # Получаем динамические тарифы через улучшенный PricingService
+        try:
+            pricing_result = self.pricing_service.calculate_pricing(
+                station_id=station_id,
+                connector_type=connector_type or result[4],
+                power_kw=result[5],
+                client_id=client_id  # Учитываем клиентские тарифы
+            )
             
-            if tariff:
-                rate_per_kwh = float(tariff[0])
-        
-        return {
-            "success": True,
-            "id": result[0],
-            "status": result[1],
-            "rate_per_kwh": rate_per_kwh
-        }
+            return {
+                "success": True,
+                "id": result[0],
+                "status": result[1],
+                "pricing_result": pricing_result,
+                "pricing": pricing_result.to_dict(),  # Для совместимости
+                "connector_type": result[4],
+                "power_kw": result[5]
+            }
+        except Exception as e:
+            logger.error(f"Ошибка расчета тарифа для станции {station_id}: {e}")
+            # Используем метод базового тарифа из сервиса
+            default_pricing = self.pricing_service._get_default_pricing()
+            return {
+                "success": True,
+                "id": result[0],
+                "status": result[1],
+                "pricing_result": default_pricing,
+                "pricing": default_pricing.to_dict()
+            }
     
     def _calculate_reservation(
         self,
         balance: Decimal,
-        rate_per_kwh: float,
+        pricing_result,  # Теперь используем PricingResult объект
         energy_kwh: Optional[float],
-        amount_som: Optional[float]
+        amount_som: Optional[float],
+        promo_code: Optional[str] = None,
+        client_id: Optional[str] = None,
+        estimated_duration: int = 60  # Предполагаемая длительность в минутах
     ) -> Dict[str, Any]:
-        """Расчет суммы резервирования и лимитов"""
+        """Расчет суммы резервирования и лимитов с учетом полного тарифа"""
+        
+        # Используем новый метод расчета стоимости сессии
+        session_cost = None
+        if energy_kwh:
+            session_cost = self.pricing_service.calculate_session_cost(
+                energy_kwh=energy_kwh,
+                duration_minutes=estimated_duration,
+                pricing=pricing_result,
+                promo_code=promo_code,
+                client_id=client_id
+            )
+            estimated_cost = float(session_cost.final_amount)
+            base_amount = float(session_cost.base_amount)
+            discount_amount = float(session_cost.discount_amount)
+        else:
+            # Если энергия не указана, делаем примерный расчет
+            estimated_cost = float(pricing_result.session_fee)
+            if pricing_result.rate_per_minute > 0:
+                estimated_cost += float(pricing_result.rate_per_minute * estimated_duration)
+            base_amount = estimated_cost
+            discount_amount = 0
         
         if energy_kwh and amount_som:
             # Режим 1: Лимит по энергии + максимальная сумма
-            estimated_cost = energy_kwh * rate_per_kwh
             reservation_amount = min(estimated_cost, amount_som)
             limit_type = 'energy'
             limit_value = energy_kwh
@@ -225,13 +259,15 @@ class ChargingService:
             
         elif energy_kwh:
             # Режим 3: Лимит только по энергии
-            reservation_amount = energy_kwh * rate_per_kwh
+            reservation_amount = (energy_kwh * rate_per_kwh) + session_fee
+            if rate_per_minute > 0:
+                reservation_amount += estimated_duration * rate_per_minute
             limit_type = 'energy'
             limit_value = energy_kwh
             
         else:
             # Режим 4: Безлимитная зарядка
-            max_reservation = 200.0
+            max_reservation = 200.0 + session_fee
             reservation_amount = min(float(balance), max_reservation)
             
             if balance <= 0:
@@ -269,7 +305,9 @@ class ChargingService:
             "success": True,
             "amount": reservation_amount,
             "limit_type": limit_type,
-            "limit_value": limit_value
+            "limit_value": limit_value,
+            "base_amount": base_amount,
+            "discount_amount": discount_amount
         }
     
     def _validate_connector(self, station_id: str, connector_id: int) -> Dict[str, Any]:
@@ -340,14 +378,51 @@ class ChargingService:
         client_id: str,
         station_id: str,
         reservation: Dict[str, Any],
+        pricing_result,  # PricingResult объект
         energy_kwh: Optional[float],
         amount_som: Optional[float]
     ) -> str:
-        """Создание сессии зарядки в БД"""
+        """Создание сессии зарядки в БД с сохранением тарифа"""
+        
+        # Сохраняем историю тарифа сначала
+        pricing_history_id = None
+        if pricing_result:
+            try:
+                pricing_history_result = self.db.execute(text("""
+                    INSERT INTO pricing_history 
+                    (station_id, tariff_plan_id, rule_id, calculation_time,
+                     rate_per_kwh, rate_per_minute, session_fee, parking_fee_per_minute,
+                     currency, rule_name, rule_details)
+                    VALUES (:station_id, :tariff_plan_id, :rule_id, :calculation_time,
+                            :rate_per_kwh, :rate_per_minute, :session_fee, :parking_fee,
+                            :currency, :rule_name, :rule_details)
+                    RETURNING id
+                """), {
+                    "station_id": station_id,
+                    "tariff_plan_id": pricing_result.tariff_plan_id,
+                    "rule_id": pricing_result.rule_id,
+                    "calculation_time": datetime.now(timezone.utc),
+                    "rate_per_kwh": pricing_result.rate_per_kwh,
+                    "rate_per_minute": pricing_result.rate_per_minute,
+                    "session_fee": pricing_result.session_fee,
+                    "parking_fee": pricing_result.parking_fee_per_minute,
+                    "currency": pricing_result.currency,
+                    "rule_name": pricing_result.active_rule,
+                    "rule_details": json.dumps(pricing_result.rule_details)
+                }).fetchone()
+                
+                if pricing_history_result:
+                    pricing_history_id = pricing_history_result[0]
+            except Exception as e:
+                logger.warning(f"Не удалось сохранить историю тарифа: {e}")
+        
+        # Сохраняем сессию с ссылкой на историю тарифа
         result = self.db.execute(text("""
             INSERT INTO charging_sessions 
-            (user_id, station_id, start_time, status, limit_type, limit_value, amount)
-            VALUES (:user_id, :station_id, :start_time, 'started', :limit_type, :limit_value, :amount)
+            (user_id, station_id, start_time, status, limit_type, limit_value, 
+             amount, pricing_history_id, base_amount, final_amount)
+            VALUES (:user_id, :station_id, :start_time, 'started', :limit_type, :limit_value,
+                    :amount, :pricing_history_id, :base_amount, :final_amount)
             RETURNING id
         """), {
             "user_id": client_id,
@@ -355,8 +430,22 @@ class ChargingService:
             "start_time": datetime.now(timezone.utc),
             "limit_type": reservation['limit_type'],
             "limit_value": reservation['limit_value'],
-            "amount": reservation['amount']
+            "amount": reservation['amount'],
+            "pricing_history_id": pricing_history_id,
+            "base_amount": reservation.get('base_amount', reservation['amount']),
+            "final_amount": reservation['amount']
         }).fetchone()[0]
+        
+        # Обновляем ссылку на сессию в истории тарифа
+        if pricing_history_id:
+            self.db.execute(text("""
+                UPDATE pricing_history
+                SET session_id = :session_id
+                WHERE id = :pricing_history_id
+            """), {
+                "session_id": result,
+                "pricing_history_id": pricing_history_id
+            })
         
         # Логируем транзакцию резервирования
         current_balance = self._validate_client(client_id)['balance']
