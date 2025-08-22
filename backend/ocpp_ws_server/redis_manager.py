@@ -7,16 +7,24 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
-
-# 🔍 DEBUG: выводим реальный Redis URL
-logger.info(f"🔍 REDIS_MANAGER DEBUG: REDIS_URL = {REDIS_URL}")
-
 class RedisOcppManager:
     def __init__(self):
-        # 🔍 DEBUG: выводим URL при инициализации
-        logger.info(f"🔍 REDIS_MANAGER INIT: Using REDIS_URL = {REDIS_URL}")
-        self.redis = redis.from_url(REDIS_URL, decode_responses=True)
+        # Получаем настройки из config
+        try:
+            from app.core.config import settings
+            redis_url = settings.REDIS_URL
+            redis_password = settings.REDIS_PASSWORD
+        except ImportError:
+            # Fallback если config недоступен
+            redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
+            redis_password = os.getenv("REDIS_PASSWORD", None)
+        
+        # Логируем конфигурацию для отладки
+        logger.info(f"🔍 REDIS_MANAGER INIT: Using REDIS_URL = {redis_url}")
+        logger.info(f"🔍 REDIS_MANAGER INIT: REDIS_PASSWORD configured = {bool(redis_password)}")
+        
+        # Создаем соединение без принудительной аутентификации
+        self.redis = redis.from_url(redis_url, decode_responses=True)
 
     async def ping(self) -> bool:
         """Проверка соединения с Redis"""
