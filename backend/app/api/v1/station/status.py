@@ -32,7 +32,8 @@ async def get_station_status(
                 s.currency,
                 l.name as location_name,
                 l.address as location_address,
-                l.status as location_status
+                l.status as location_status,
+                s.location_id
             FROM stations s
             LEFT JOIN locations l ON s.location_id = l.id
             WHERE s.id = :station_id
@@ -113,6 +114,7 @@ async def get_station_status(
             "available_for_charging": is_online and station_data[4] == "active" and available_count > 0,
             
             # Локация
+            "location_id": station_data[14],  # Добавляем location_id
             "location_name": station_data[11],
             "location_address": station_data[12],
             

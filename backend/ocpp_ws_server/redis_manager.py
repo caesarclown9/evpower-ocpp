@@ -66,5 +66,29 @@ class RedisOcppManager:
                 txs = await self.redis.lrange(key, 0, -1)
                 all_txs.extend([json.loads(tx) for tx in txs])
             return all_txs
+    
+    # Методы для кэширования данных
+    async def cache_data(self, key: str, value: str, ttl: int = 30):
+        """Кэширование данных с TTL"""
+        await self.redis.setex(key, ttl, value)
+    
+    async def get_cached_data(self, key: str):
+        """Получение данных из кэша"""
+        return await self.redis.get(key)
+    
+    async def delete(self, key: str):
+        """Удаление ключа из кэша"""
+        await self.redis.delete(key)
+    
+    # Методы для Pub/Sub (для realtime обновлений)
+    async def publish(self, channel: str, message: str):
+        """Публикация сообщения в канал"""
+        await self.redis.publish(channel, message)
+    
+    async def get_message(self, channel: str):
+        """Получение сообщения из канала (неблокирующее)"""
+        # Это упрощенная версия - в реальности нужен более сложный механизм
+        # Но для текущей реализации достаточно
+        return None
 
 redis_manager = RedisOcppManager() 

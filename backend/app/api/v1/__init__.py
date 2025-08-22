@@ -5,7 +5,7 @@ from fastapi import APIRouter
 
 # Импортируем роутеры из модулей
 from .charging import start_router, stop_router, status_router
-from . import balance, payment, station
+from . import balance, payment, station, locations
 
 # Создаем общий роутер для v1
 router = APIRouter(prefix="/api/v1")
@@ -19,5 +19,6 @@ router.include_router(status_router, tags=["charging"])
 router.include_router(balance.router, tags=["balance"])
 router.include_router(payment.router, tags=["payment"])
 router.include_router(station.router, tags=["station"])
+router.include_router(locations.router, tags=["locations"])
 
 __all__ = ["router"]

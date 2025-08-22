@@ -158,6 +158,18 @@ class OCPPChargePoint(CP):
             with next(get_db()) as db:
                 OCPPStationService.update_heartbeat(db, self.id)
                 
+                # Инвалидируем кэш локации при heartbeat (станция стала online)
+                location_query = text("""
+                    SELECT location_id FROM stations 
+                    WHERE id = :station_id
+                """)
+                location_result = db.execute(location_query, {"station_id": self.id}).fetchone()
+                
+                if location_result:
+                    location_id = location_result[0]
+                    from app.services.location_status_service import LocationStatusService
+                    asyncio.create_task(LocationStatusService.invalidate_cache(location_id))
+                
             return call_result.Heartbeat(
                 current_time=datetime.utcnow().isoformat() + 'Z'
             )
@@ -265,6 +277,21 @@ class OCPPChargePoint(CP):
                     "station_id": self.id, 
                     "connector_id": connector_id
                 })
+                
+                # Инвалидируем кэш локаций при изменении статуса
+                # Получаем location_id для станции
+                location_query = text("""
+                    SELECT location_id FROM stations 
+                    WHERE id = :station_id
+                """)
+                location_result = db.execute(location_query, {"station_id": self.id}).fetchone()
+                
+                if location_result:
+                    location_id = location_result[0]
+                    # Импортируем и вызываем инвалидацию кэша асинхронно
+                    from app.services.location_status_service import LocationStatusService
+                    asyncio.create_task(LocationStatusService.invalidate_cache(location_id))
+                    self.logger.debug(f"Инвалидирован кэш для локации {location_id}")
                 
                 db.commit()
                 
