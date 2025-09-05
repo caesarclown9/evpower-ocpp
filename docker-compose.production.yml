@@ -40,6 +40,13 @@ services:
       - "traefik.http.middlewares.evpower-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
       - "traefik.http.middlewares.evpower-headers.headers.customrequestheaders.X-Forwarded-For="
       - "traefik.http.routers.evpower-backend.middlewares=evpower-headers"
+      # Дополнительный роутер для ws:// (HTTP) без редиректа
+      - "traefik.http.routers.evpower-backend-web.rule=Host(`ocpp.evpower.kg`)"
+      - "traefik.http.routers.evpower-backend-web.entrypoints=web"
+      - "traefik.http.routers.evpower-backend-web.service=evpower-backend"
+      - "traefik.http.routers.evpower-backend-web.tls=false"
+      - "traefik.http.middlewares.evpower-ws-http.headers.customrequestheaders.X-Forwarded-Proto=http"
+      - "traefik.http.routers.evpower-backend-web.middlewares=evpower-ws-http@docker"
       
       # Coolify метки
       - "coolify.managed=true"
