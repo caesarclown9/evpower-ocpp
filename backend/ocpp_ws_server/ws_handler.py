@@ -1240,10 +1240,24 @@ class OCPPWebSocketHandler:
             
             self.logger.info(f"✅ Станция {self.station_id} найдена (статус: {station[1]})")
             
-            # Принимаем WebSocket подключение с OCPP 1.6 subprotocol
+            # Принимаем WebSocket подключение с гибкой договоренностью субпротокола
             self.logger.debug(f"Принимаем WebSocket для {self.station_id}")
-            await self.websocket.accept(subprotocol="ocpp1.6")
-            self.logger.debug(f"WebSocket принят для {self.station_id} с протоколом ocpp1.6")
+            requested_proto_header = self.websocket.headers.get('sec-websocket-protocol')
+            chosen_subprotocol = None
+            if requested_proto_header:
+                requested_list = [p.strip() for p in requested_proto_header.split(',') if p.strip()]
+                acceptable = {"ocpp1.6", "ocpp1.6j", "ocpp1.6-json"}
+                for proto in requested_list:
+                    if proto.lower() in acceptable:
+                        chosen_subprotocol = proto
+                        break
+            if chosen_subprotocol:
+                await self.websocket.accept(subprotocol=chosen_subprotocol)
+                self.logger.debug(f"WebSocket принят для {self.station_id} с протоколом {chosen_subprotocol}")
+            else:
+                # Клиент не запросил субпротокол — принимаем без него для совместимости
+                await self.websocket.accept()
+                self.logger.debug(f"WebSocket принят для {self.station_id} без субпротокола (совместимость)")
             
             # Создаем адаптер для OCPP библиотеки
             adapter = WebSocketAdapter(self.websocket)
