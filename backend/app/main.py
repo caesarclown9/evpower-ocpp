@@ -359,7 +359,9 @@ async def health_check_force():
 @app.websocket("/ocpp/{station_id}")
 @app.websocket("/ws/{station_id}/")
 @app.websocket("/ocpp/{station_id}/")
-async def websocket_endpoint(websocket: WebSocket, station_id: str):
+@app.websocket("/ws/{station_id}/{rest_path:path}")
+@app.websocket("/ocpp/{station_id}/{rest_path:path}")
+async def websocket_endpoint(websocket: WebSocket, station_id: str, rest_path: str = ""):
     """
     WebSocket endpoint для подключения зарядных станций по протоколу OCPP 1.6
     
