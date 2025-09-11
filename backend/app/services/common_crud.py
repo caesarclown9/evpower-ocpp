@@ -59,7 +59,7 @@ class CommonCrudService:
                 "power_capacity": station[5],
                 "connector_types": station[6],
                 "connectors_count": station[7],
-                "price_per_kwh": float(station[8]) if station[8] else 9.0,
+                "price_per_kwh": float(station[8]) if station[8] else 13.5,
                 "session_fee": float(station[9]) if station[9] else 0.0,
                 "currency": station[10] or "KGS"
             }
@@ -78,7 +78,7 @@ class CommonCrudService:
             {"station_id": station_id}
         )
         tariff = result.fetchone()
-        return float(tariff[0]) if tariff else 9.0
+        return float(tariff[0]) if tariff else 13.5
     
     def get_connector_status(self, station_id: str, connector_id: int) -> Optional[str]:
         """Получить статус коннектора"""

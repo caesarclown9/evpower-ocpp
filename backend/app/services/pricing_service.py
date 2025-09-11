@@ -542,7 +542,7 @@ class PricingService:
     def _get_default_pricing(self) -> PricingResult:
         """Возвращает базовый тариф"""
         return PricingResult(
-            rate_per_kwh=Decimal('9.0'),
+            rate_per_kwh=Decimal('13.5'),
             rate_per_minute=Decimal('0'),
             session_fee=Decimal('0'),
             parking_fee_per_minute=Decimal('0'),

@@ -102,7 +102,7 @@ async def start_charging(
             }
         
         # 3. Определяем тариф: ПРИОРИТЕТ СТАНЦИИ над тарифным планом
-        rate_per_kwh = 9.0  # fallback по умолчанию
+        rate_per_kwh = 13.5  # fallback по умолчанию
         
         # Сначала проверяем тариф станции
         if station[2]:  # Если у станции есть price_per_kwh
@@ -642,7 +642,7 @@ async def get_charging_status(
         meter_start = session[12]
         meter_stop = session[13]
         ocpp_status = session[14]
-        price_per_kwh = session[15] or 9.0
+        price_per_kwh = session[15] or 13.5
         
         # 🆕 УЛУЧШЕНИЕ: Расчет реальных данных из OCPP
         actual_energy_consumed = float(energy_consumed)
@@ -983,7 +983,7 @@ async def get_station_status(
             "faulted_connectors": faulted_count,
             
             # Тарифы
-            "tariff_rub_kwh": float(station_data[8]) if station_data[8] else 9.0,
+            "tariff_rub_kwh": float(station_data[8]) if station_data[8] else 13.5,
             "session_fee": float(station_data[9]) if station_data[9] else 0.0,
             "currency": station_data[10] or "KGS",
             "working_hours": "Круглосуточно",

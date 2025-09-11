@@ -637,7 +637,7 @@ class ChargingService:
             if result:
                 return float(result[0])
         
-        return 9.0  # Default rate
+        return 13.5  # Default rate
     
     def _calculate_refund_or_charge(
         self,
@@ -1041,7 +1041,7 @@ class ChargingService:
                 "meter_start": session[12],
                 "meter_stop": session[13],
                 "ocpp_status": session[14],
-                "price_per_kwh": float(session[15]) if session[15] is not None else 9.0
+                "price_per_kwh": float(session[15]) if session[15] is not None else 13.5
             }
         except (IndexError, TypeError, ValueError) as e:
             logger.error(f"Ошибка парсинга данных сессии: {e}, данные: {session[:5] if session else 'None'}")

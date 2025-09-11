@@ -126,7 +126,7 @@ async def get_station_status(
             "faulted_connectors": faulted_count,
             
             # Тарифы
-            "tariff_rub_kwh": float(station_data[8]) if station_data[8] else 9.0,
+            "tariff_rub_kwh": float(station_data[8]) if station_data[8] else 13.5,
             "session_fee": float(station_data[9]) if station_data[9] else 0.0,
             "currency": station_data[10] or "KGS",
             "working_hours": "Круглосуточно",
