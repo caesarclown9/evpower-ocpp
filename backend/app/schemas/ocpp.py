@@ -261,13 +261,11 @@ class PaymentType(str, Enum):
 
 class BalanceTopupRequest(BaseModel):
     """Запрос на пополнение баланса"""
-    client_id: str = Field(..., min_length=1, description="ID клиента")
     amount: float = Field(..., gt=0, le=100000, description="Сумма пополнения в сомах")
     description: Optional[str] = Field(None, description="Описание платежа")
 
 class H2HPaymentRequest(BaseModel):
     """Запрос на H2H платеж картой"""
-    client_id: str = Field(..., min_length=1, description="ID клиента")
     amount: float = Field(..., gt=0, le=100000, description="Сумма платежа в сомах")
     card_pan: str = Field(..., min_length=12, max_length=19, description="Номер карты")
     card_name: str = Field(..., min_length=1, max_length=100, description="Имя владельца карты")
@@ -280,7 +278,6 @@ class H2HPaymentRequest(BaseModel):
 
 class TokenPaymentRequest(BaseModel):
     """Запрос на платеж по токену карты"""
-    client_id: str = Field(..., min_length=1, description="ID клиента")
     amount: float = Field(..., gt=0, le=100000, description="Сумма платежа в сомах")
     card_token: str = Field(..., min_length=1, description="Токен сохраненной карты")
     email: str = Field(..., description="Email клиента")

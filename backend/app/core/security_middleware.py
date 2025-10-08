@@ -41,7 +41,12 @@ class SecurityMiddleware:
     """Middleware для безопасности"""
     
     def __init__(self):
-        self.rate_limiter = RateLimiter(max_requests=100, window_seconds=60)
+        # Основной лимит и окно из ENV
+        default_rpm = int(settings.__dict__.get("RATE_LIMIT_DEFAULT_PER_MINUTE", 60))
+        self.rate_limiter = RateLimiter(max_requests=default_rpm, window_seconds=60)
+        # Критичный лимит для денежных/старт/стоп операций
+        self.critical_rpm = int(settings.__dict__.get("RATE_LIMIT_CRITICAL_PER_MINUTE", 10))
+        self.critical_rate_limiter = RateLimiter(max_requests=self.critical_rpm, window_seconds=60)
         self.suspicious_ips = set()
         self.blocked_ips = set()
         
@@ -66,12 +71,31 @@ class SecurityMiddleware:
                 content={"error": "Access denied"}
             )
         
-        # Rate limiting
-        if not self.rate_limiter.is_allowed(client_ip):
+        # Rate limiting (персональный идентификатор - client_id если есть)
+        client_id = getattr(request.state, "client_id", None)
+        identifier = client_id or client_ip
+        # Определяем критичный маршрут
+        path_lower = str(request.url.path).lower()
+        is_critical = request.method.upper() == "POST" and (
+            path_lower.endswith("/charging/start")
+            or path_lower.endswith("/charging/stop")
+            or path_lower.endswith("/balance/topup-qr")
+            or path_lower.endswith("/balance/topup-card")
+        )
+
+        if is_critical:
+            if not self.critical_rate_limiter.is_allowed(identifier):
+                log_security_event("rate_limit_exceeded_critical", source_ip=client_ip)
+                return JSONResponse(
+                    status_code=429,
+                    content={"success": False, "error": "too_many_requests", "message": "Rate limit exceeded (critical)"}
+                )
+
+        if not self.rate_limiter.is_allowed(identifier):
             log_security_event("rate_limit_exceeded", source_ip=client_ip)
             return JSONResponse(
                 status_code=429,
-                content={"error": "Too many requests"}
+                content={"success": False, "error": "too_many_requests", "message": "Rate limit exceeded"}
             )
         
         # Проверяем на подозрительные запросы

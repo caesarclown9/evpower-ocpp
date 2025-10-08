@@ -1,7 +1,7 @@
 """
 API endpoint для начала зарядки
 """
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from datetime import datetime, timezone
@@ -20,20 +20,30 @@ router = APIRouter()
 
 @router.post("/charging/start")
 async def start_charging(
-    request: ChargingStartRequest, 
-    db: Session = Depends(get_db)
+    request: ChargingStartRequest,
+    db: Session = Depends(get_db),
+    http_request: Request = None
 ):
     """🔌 Начать зарядку с проверкой баланса и снятием средств"""
     
+    # Аутентификация: client_id из JWT/HMAC middleware
+    client_id = getattr(http_request.state, "client_id", None)
+    if not client_id:
+        return {
+            "success": False,
+            "error": "unauthorized",
+            "message": "Missing or invalid authentication"
+        }
+
     # Логируем запрос
-    logger.info(f"Starting charging: client_id={request.client_id}, station_id={request.station_id}")
+    logger.info(f"Starting charging: client_id={client_id}, station_id={request.station_id}")
     
     service = ChargingService(db)
     
     try:
         # Делегируем бизнес-логику в сервис
         result = await service.start_charging_session(
-            client_id=request.client_id,
+            client_id=client_id,
             station_id=request.station_id,
             connector_id=request.connector_id,
             energy_kwh=request.energy_kwh,

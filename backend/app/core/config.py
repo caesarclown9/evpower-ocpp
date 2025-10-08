@@ -8,6 +8,8 @@ class Settings(BaseSettings):
     SUPABASE_URL: str = os.getenv("SUPABASE_URL", "")
     SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
     SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    SUPABASE_JWKS_URL: str = os.getenv("SUPABASE_JWKS_URL", "")
+    CLIENT_FALLBACK_SECRET: str = os.getenv("CLIENT_FALLBACK_SECRET", "")
     
     # PostgreSQL connection URL for Supabase
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
@@ -37,6 +39,10 @@ class Settings(BaseSettings):
         "CORS_ORIGINS", 
         "http://localhost:3000,http://localhost:9210,https://app.flutterflow.io,https://ocpp.evpower.kg,http://ocpp.evpower.kg,ws://ocpp.evpower.kg,wss://ocpp.evpower.kg"
     )
+
+    # Rate limiting
+    RATE_LIMIT_DEFAULT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_DEFAULT_PER_MINUTE", "60"))
+    RATE_LIMIT_CRITICAL_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_CRITICAL_PER_MINUTE", "10"))
     
     # Content Security Policy настройки
     CSP_CONNECT_SRC: str = os.getenv(

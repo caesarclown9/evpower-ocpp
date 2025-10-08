@@ -6,7 +6,6 @@ from typing import Optional
 
 class ChargingStartRequest(BaseModel):
     """🔌 Запрос на начало зарядки"""
-    client_id: str = Field(..., min_length=1, description="ID клиента")
     station_id: str = Field(..., min_length=1, description="ID станции")
     connector_id: int = Field(..., ge=1, description="Номер коннектора")
     energy_kwh: Optional[float] = Field(None, gt=0, le=200, description="Энергия для зарядки в кВт⋅ч")

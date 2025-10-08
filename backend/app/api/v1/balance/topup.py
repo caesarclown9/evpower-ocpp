@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import logging
@@ -18,22 +18,26 @@ logger = logging.getLogger(__name__)
 
 @router.post("/balance/topup-qr", response_model=BalanceTopupResponse)
 async def create_qr_balance_topup(
-    request: BalanceTopupRequest, 
-    db: Session = Depends(get_db)
+    request: BalanceTopupRequest,
+    db: Session = Depends(get_db),
+    http_request: Request = None
 ) -> BalanceTopupResponse:
     """🔥 Пополнение баланса через QR код (O!Dengi) - полная реализация"""
-    logger.info(f"🔥 QR Topup request: client_id={request.client_id}, amount={request.amount}")
+    client_id = getattr(http_request.state, "client_id", None)
+    if not client_id:
+        return BalanceTopupResponse(success=False, error="unauthorized", client_id="")
+
+    logger.info(f"🔥 QR Topup request: client_id={client_id}, amount={request.amount}")
     
     try:
         # 1. Проверяем существование клиента
-        client_check = db.execute(text("SELECT id, balance FROM clients WHERE id = :client_id"), 
-                                {"client_id": request.client_id})
+        client_check = db.execute(text("SELECT id, balance FROM clients WHERE id = :client_id"), {"client_id": client_id})
         client = client_check.fetchone()
         if not client:
             return BalanceTopupResponse(
                 success=False,
                 error="client_not_found",
-                client_id=request.client_id
+                client_id=client_id
             )
 
         # 2. Отменяем существующие активные QR коды
@@ -56,7 +60,7 @@ async def create_qr_balance_topup(
             db.commit()
 
         # 3. Генерация безопасного order_id
-        order_id = f"qr_topup_{request.client_id}_{int(datetime.now(timezone.utc).timestamp())}"
+        order_id = f"qr_topup_{client_id}_{int(datetime.now(timezone.utc).timestamp())}"
         
         # 4. Описание платежа
         description = request.description or f"Пополнение баланса через QR код: {request.amount} сом"
@@ -69,18 +73,18 @@ async def create_qr_balance_topup(
         payment_response = await qr_payment_provider.create_payment(
             amount=Decimal(str(request.amount)),
             order_id=order_id,
-            email=request.client_id + "@evpower.local",
+            email=client_id + "@evpower.local",
             notify_url=notify_url,
             redirect_url=redirect_url,
             description=description,
-            client_id=request.client_id
+            client_id=client_id
         )
         
         if not payment_response.get("success"):
             return BalanceTopupResponse(
                 success=False,
                 error="payment_provider_error",
-                client_id=request.client_id
+                client_id=client_id
             )
 
         # 6. Получаем QR код из ODENGI ответа
@@ -126,7 +130,7 @@ async def create_qr_balance_topup(
             "invoice_id": payment_response.get("invoice_id", payment_response.get("auth_key")),
             "order_id": order_id,
             "merchant_id": "ODENGI",
-            "client_id": request.client_id,
+            "client_id": client_id,
             "requested_amount": request.amount,
             "currency": settings.DEFAULT_CURRENCY,
             "description": description,
@@ -168,7 +172,7 @@ async def create_qr_balance_topup(
             qr_code_url=qr_code_url,
             app_link=app_link_url,
             amount=request.amount,
-            client_id=request.client_id,
+            client_id=client_id,
             current_balance=float(client[1]),
             qr_expires_at=qr_expires_at,
             invoice_expires_at=invoice_expires_at,
@@ -182,34 +186,38 @@ async def create_qr_balance_topup(
         return BalanceTopupResponse(
             success=False,
             error="internal_error",
-            client_id=request.client_id
+            client_id=client_id or ""
         )
 
 @router.post("/balance/topup-card", response_model=H2HPaymentResponse)
 async def create_card_balance_topup(
     request: H2HPaymentRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    http_request: Request = None
 ) -> H2HPaymentResponse:
     """💳 Пополнение баланса банковской картой (OBANK) - полная реализация"""
-    logger.info(f"Card Topup request received for client: {request.client_id}")
+    client_id = getattr(http_request.state, "client_id", None)
+    if not client_id:
+        return H2HPaymentResponse(success=False, error="unauthorized", client_id="")
+
+    logger.info(f"Card Topup request received for client: {client_id}")
     
     try:
         # 1. Проверяем существование клиента
-        client_check = db.execute(text("SELECT id, balance FROM clients WHERE id = :client_id"), 
-                                {"client_id": request.client_id})
+        client_check = db.execute(text("SELECT id, balance FROM clients WHERE id = :client_id"), {"client_id": client_id})
         client = client_check.fetchone()
         if not client:
             return H2HPaymentResponse(
                 success=False,
                 error="client_not_found",
-                client_id=request.client_id
+                client_id=client_id
             )
 
         # 2. Принудительно используем OBANK для карт
         card_payment_provider = get_card_payment_service()
         
         # 3. Генерация безопасного order_id
-        order_id = f"card_topup_{request.client_id}_{int(datetime.now(timezone.utc).timestamp())}"
+        order_id = f"card_topup_{client_id}_{int(datetime.now(timezone.utc).timestamp())}"
         
         # 4. Описание платежа
         description = request.description or f"Пополнение баланса картой: {request.amount} сом"
@@ -258,7 +266,7 @@ async def create_card_balance_topup(
             "invoice_id": auth_key,  # Для OBANK используем auth_key как invoice_id
             "order_id": order_id,
             "merchant_id": "OBANK",
-            "client_id": request.client_id,
+            "client_id": client_id,
             "requested_amount": request.amount,
             "currency": settings.DEFAULT_CURRENCY,
             "description": description,
@@ -293,7 +301,7 @@ async def create_card_balance_topup(
             transaction_id=transaction_id,
             order_id=order_id,
             amount=request.amount,
-            client_id=request.client_id,
+            client_id=client_id,
             current_balance=float(client[1]),
             redirect_url=h2h_response.get("redirect_url"),
             payment_url=h2h_response.get("payment_url")
@@ -305,5 +313,5 @@ async def create_card_balance_topup(
         return H2HPaymentResponse(
             success=False,
             error="internal_error",
-            client_id=request.client_id
+            client_id=client_id or ""
         )

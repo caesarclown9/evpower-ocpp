@@ -13,6 +13,8 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.core.logging_config import setup_logging
 from app.core.security_middleware import SecurityMiddleware
+from app.core.auth_middleware import AuthMiddleware
+from app.core.idempotency_middleware import IdempotencyMiddleware
 from app.core.payment_audit import PaymentAuditMiddleware
 from ocpp_ws_server.ws_handler import OCPPWebSocketHandler
 from ocpp_ws_server.redis_manager import redis_manager
@@ -223,7 +225,11 @@ allowed_origins = os.getenv("ALLOWED_HOSTS", "").split(",")
 if not allowed_origins or allowed_origins == [""]:
     allowed_origins = ["*"]
 
-# Добавляем Security Middleware
+# Подключаем аутентификацию и идемпотентность до бизнес-логики
+app.add_middleware(AuthMiddleware)
+app.add_middleware(IdempotencyMiddleware)
+
+# Добавляем Security Middleware (заголовки, базовый rate limiting)
 security_middleware = SecurityMiddleware()
 app.middleware("http")(security_middleware)
 
