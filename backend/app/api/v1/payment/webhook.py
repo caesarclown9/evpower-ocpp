@@ -75,8 +75,15 @@ async def handle_payment_webhook(
 ):
     """🔔 Обработка webhook уведомлений от платежных провайдеров - полная реализация"""
     try:
-        # 1. Получение сырых данных
+        # 1. Получение сырых данных + защита от реплея
         payload = await request.body()
+        ts_header = request.headers.get('X-Timestamp', '')
+        try:
+            ts = int(ts_header) if ts_header else 0
+        except Exception:
+            ts = 0
+        if ts and abs(int(time.time()) - ts) > 300:
+            raise HTTPException(status_code=400, detail="stale_timestamp")
         
         # 2. Определяем провайдера и верифицируем подпись
         provider_name = get_payment_provider_service().get_provider_name()

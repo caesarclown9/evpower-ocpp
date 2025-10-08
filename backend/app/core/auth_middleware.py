@@ -75,12 +75,16 @@ class AuthMiddleware:
                 if not key:
                     return await self._unauthorized(send, "unauthorized", "JWKS key not found")
 
+                options = {"verify_aud": bool(settings.JWT_VERIFY_AUD)}
+                audience = settings.JWT_VERIFY_AUD or None
+                issuer = settings.JWT_VERIFY_ISS or None
                 payload = jwt.decode(
                     token,
                     key,
                     algorithms=[key.get("alg", "RS256"), "RS256", "ES256"],
-                    audience=None,
-                    options={"verify_aud": False},
+                    audience=audience,
+                    options=options,
+                    issuer=issuer if issuer else None,
                 )
 
                 client_id = (

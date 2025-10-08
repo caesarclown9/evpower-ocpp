@@ -216,8 +216,8 @@ app = FastAPI(
     description="Минимальный OCPP 1.6 WebSocket сервер только для ЭЗС. HTTP endpoints реализованы в FlutterFlow.",
     version="1.0.0",
     lifespan=lifespan,
-    docs_url=None,  # Отключаем Swagger UI
-    redoc_url=None  # Отключаем ReDoc
+    docs_url=("/docs" if settings.ENABLE_SWAGGER else None),
+    redoc_url=("/redoc" if settings.ENABLE_SWAGGER else None)
 )
 
 # CORS настройки для WebSocket и HTTP
@@ -356,6 +356,17 @@ async def health_check_force():
             "redis_url": os.getenv('REDIS_URL', 'NOT SET'),
             "note": f"Принудительная проверка не удалась: {e}"
         }
+
+# Readiness endpoint (зависимости готовы)
+@app.get("/readyz", summary="Готовность сервера")
+async def ready_check():
+    try:
+        redis_status = await redis_manager.ping()
+        if not redis_status:
+            raise Exception("Redis недоступен")
+        return {"status": "ready"}
+    except Exception as e:
+        return {"status": "not_ready", "error": str(e)}
 
 # ============================================================================
 # OCPP WEBSOCKET ENDPOINT (основная функциональность)

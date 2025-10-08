@@ -10,6 +10,8 @@ class Settings(BaseSettings):
     SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     SUPABASE_JWKS_URL: str = os.getenv("SUPABASE_JWKS_URL", "")
     CLIENT_FALLBACK_SECRET: str = os.getenv("CLIENT_FALLBACK_SECRET", "")
+    JWT_VERIFY_ISS: str = os.getenv("JWT_VERIFY_ISS", "")  # например: https://<project>.supabase.co/auth/v1
+    JWT_VERIFY_AUD: str = os.getenv("JWT_VERIFY_AUD", "authenticated")
     
     # PostgreSQL connection URL for Supabase
     DATABASE_URL: str = os.getenv("DATABASE_URL", "")
@@ -43,6 +45,9 @@ class Settings(BaseSettings):
     # Rate limiting
     RATE_LIMIT_DEFAULT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_DEFAULT_PER_MINUTE", "60"))
     RATE_LIMIT_CRITICAL_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_CRITICAL_PER_MINUTE", "10"))
+
+    # Swagger UI (включать только при необходимости)
+    ENABLE_SWAGGER: bool = os.getenv("ENABLE_SWAGGER", "false").lower() == "true"
     
     # Content Security Policy настройки
     CSP_CONNECT_SRC: str = os.getenv(
