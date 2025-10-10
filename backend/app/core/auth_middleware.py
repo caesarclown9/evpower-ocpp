@@ -61,6 +61,31 @@ class AuthMiddleware:
         if auth_header.lower().startswith("bearer "):
             token = auth_header.split(" ", 1)[1].strip()
             try:
+                # Пробуем сначала с JWT_SECRET (быстрее и надежнее)
+                if settings.SUPABASE_JWT_SECRET:
+                    try:
+                        payload = jwt.decode(
+                            token,
+                            settings.SUPABASE_JWT_SECRET,
+                            algorithms=["HS256"],
+                            audience=settings.JWT_VERIFY_AUD or "authenticated",
+                            issuer=settings.JWT_VERIFY_ISS if settings.JWT_VERIFY_ISS else None,
+                        )
+
+                        client_id = (
+                            str(payload.get("sub"))
+                            or str((payload.get("user_metadata") or {}).get("client_id"))
+                        )
+                        if client_id:
+                            scope.setdefault("state", {})["client_id"] = client_id
+                            scope["state"]["auth_method"] = "jwt_secret"
+                            await self.app(scope, receive, send)
+                            return
+                    except Exception:
+                        # Если JWT_SECRET не сработал, пробуем JWKS
+                        pass
+
+                # Fallback на JWKS (если JWT_SECRET не сработал или не настроен)
                 jwks = await jwks_cache.get_jwks()
                 unverified_header = jwt.get_unverified_header(token)
                 kid = unverified_header.get("kid")
@@ -73,7 +98,7 @@ class AuthMiddleware:
                     # Иногда kid может не совпадать/отсутствовать — пробуем первый ключ
                     key = jwks["keys"][0]
                 if not key:
-                    return await self._unauthorized(send, "unauthorized", "JWKS key not found")
+                    return await self._unauthorized(scope, receive, send, "unauthorized", "JWKS key not found")
 
                 options = {"verify_aud": bool(settings.JWT_VERIFY_AUD)}
                 audience = settings.JWT_VERIFY_AUD or None
@@ -111,12 +136,12 @@ class AuthMiddleware:
                 now_ms = int(time.time() * 1000)
                 ts_ms = int(x_ts)
                 if abs(now_ms - ts_ms) > 5 * 60 * 1000:
-                    return await self._unauthorized(send, "unauthorized", "timestamp_drift")
+                    return await self._unauthorized(scope, receive, send, "unauthorized", "timestamp_drift")
 
                 msg = f"{x_client_id}.{x_ts}".encode()
                 expected = hmac.new(secret.encode(), msg, hashlib.sha256).hexdigest()
                 if not hmac.compare_digest(expected, x_sig):
-                    return await self._unauthorized(send, "unauthorized", "invalid_signature")
+                    return await self._unauthorized(scope, receive, send, "unauthorized", "invalid_signature")
 
                 client_id = x_client_id
                 scope.setdefault("state", {})["client_id"] = client_id
@@ -124,22 +149,22 @@ class AuthMiddleware:
                 await self.app(scope, receive, send)
                 return
             except Exception:
-                return await self._unauthorized(send, "unauthorized", "invalid_fallback_headers")
+                return await self._unauthorized(scope, receive, send, "unauthorized", "invalid_fallback_headers")
 
         # Если требуются защищенные эндпоинты — возвращаем 401.
         # Для публичных GET (например, /health) можно пропускать.
         path = scope.get("path", "")
         method = scope.get("method", "GET").upper()
         if method in ("POST", "PUT", "DELETE") or path.startswith("/api/v1"):
-            return await self._unauthorized(send, "unauthorized", "missing_token")
+            return await self._unauthorized(scope, receive, send, "unauthorized", "missing_token")
 
         await self.app(scope, receive, send)
 
-    async def _unauthorized(self, send, error: str, message: str):
+    async def _unauthorized(self, scope, receive, send, error: str, message: str):
         response = JSONResponse(
             status_code=401,
             content={"success": False, "error": error, "message": message},
         )
-        await response(send)
+        await response(scope, receive, send)
 
 

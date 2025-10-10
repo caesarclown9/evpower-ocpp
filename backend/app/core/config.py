@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
     SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     SUPABASE_JWKS_URL: str = os.getenv("SUPABASE_JWKS_URL", "")
+    SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "")  # JWT Secret для верификации токенов
     CLIENT_FALLBACK_SECRET: str = os.getenv("CLIENT_FALLBACK_SECRET", "")
     JWT_VERIFY_ISS: str = os.getenv("JWT_VERIFY_ISS", "")  # например: https://<project>.supabase.co/auth/v1
     JWT_VERIFY_AUD: str = os.getenv("JWT_VERIFY_AUD", "authenticated")
