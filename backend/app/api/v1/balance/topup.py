@@ -42,21 +42,21 @@ async def create_qr_balance_topup(
 
         # 2. Отменяем существующие активные QR коды
         existing_pending = db.execute(text("""
-            SELECT invoice_id FROM balance_topups 
-            WHERE client_id = :client_id AND status = 'processing' 
+            SELECT invoice_id FROM balance_topups
+            WHERE client_id = :client_id AND status = 'processing'
             AND invoice_expires_at > NOW()
-        """), {"client_id": request.client_id}).fetchall()
+        """), {"client_id": client_id}).fetchall()
         
         if existing_pending:
             cancelled_invoices = [row.invoice_id for row in existing_pending]
             db.execute(text("""
-                UPDATE balance_topups 
+                UPDATE balance_topups
                 SET status = 'canceled'
                 WHERE client_id = :client_id AND status = 'processing'
                 AND invoice_expires_at > NOW()
-            """), {"client_id": request.client_id})
-            
-            logger.info(f"🔄 Отменены активные QR коды для клиента {request.client_id}: {cancelled_invoices}")
+            """), {"client_id": client_id})
+
+            logger.info(f"🔄 Отменены активные QR коды для клиента {client_id}: {cancelled_invoices}")
             db.commit()
 
         # 3. Генерация безопасного order_id
@@ -243,7 +243,7 @@ async def create_card_balance_topup(
             return H2HPaymentResponse(
                 success=False,
                 error=h2h_response.get("error", "payment_provider_error"),
-                client_id=request.client_id
+                client_id=client_id
             )
         
         # 6. Сохраняем платеж в balance_topups с данными OBANK
