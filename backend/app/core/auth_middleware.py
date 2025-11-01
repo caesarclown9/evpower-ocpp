@@ -98,7 +98,11 @@ class AuthMiddleware:
                     scope["state"]["auth_method"] = "jwt"
                     await self.app(scope, receive, send)
                     return
-            except Exception:
+            except Exception as e:
+                # ВРЕМЕННО: Логируем ошибку JWT валидации
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f"❌ JWT validation failed: {e}", exc_info=True)
                 # Падаем в фоллбек ниже
                 pass
 
