@@ -204,16 +204,17 @@ class ChargingService:
             "status": client_status
         }
     
-    def _validate_station(self, station_id: str, connector_type: Optional[str] = None, client_id: Optional[str] = None) -> Dict[str, Any]:
+    def _validate_station(self, station_id: str, connector_id: Optional[int] = None, client_id: Optional[str] = None) -> Dict[str, Any]:
         """Проверка станции и получение динамического тарифа"""
         # Проверяем и административный статус (active) и доступность (is_available)
         result = self.db.execute(text("""
             SELECT s.id, s.status, s.is_available, s.last_heartbeat_at,
                    c.connector_type, c.power_kw
             FROM stations s
-            LEFT JOIN connectors c ON s.id = c.station_id AND c.connector_number = 1
+            LEFT JOIN connectors c ON s.id = c.station_id
+                AND c.connector_number = COALESCE(:connector_id, 1)
             WHERE s.id = :station_id AND s.status = 'active'
-        """), {"station_id": station_id}).fetchone()
+        """), {"station_id": station_id, "connector_id": connector_id}).fetchone()
         
         if not result:
             return {
@@ -243,7 +244,7 @@ class ChargingService:
         try:
             pricing_result = self.pricing_service.calculate_pricing(
                 station_id=station_id,
-                connector_type=connector_type or result[4],
+                connector_type=result[4],  # connector_type из таблицы connectors (VARCHAR)
                 power_kw=result[5],
                 client_id=client_id  # Учитываем клиентские тарифы
             )
