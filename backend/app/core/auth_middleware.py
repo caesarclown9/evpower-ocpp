@@ -64,33 +64,52 @@ class AuthMiddleware:
         if auth_header.lower().startswith("bearer "):
             token = auth_header.split(" ", 1)[1].strip()
             try:
-                # Используем только JWKS для безопасности (без JWT_SECRET)
-                # Это предотвращает компрометацию всех токенов при утечке .env файла
-                jwks = await jwks_cache.get_jwks()
+                # Проверяем алгоритм токена
                 unverified_header = jwt.get_unverified_header(token)
-                kid = unverified_header.get("kid")
-                key = None
-                for k in jwks.get("keys", []):
-                    if k.get("kid") == kid:
-                        key = k
-                        break
-                if key is None and jwks.get("keys"):
-                    # Иногда kid может не совпадать/отсутствовать — пробуем первый ключ
-                    key = jwks["keys"][0]
-                if not key:
-                    return await self._unauthorized(scope, receive, send, "unauthorized", "JWKS key not found")
+                alg = unverified_header.get("alg", "HS256")
 
-                options = {"verify_aud": bool(settings.JWT_VERIFY_AUD)}
-                audience = settings.JWT_VERIFY_AUD or None
-                issuer = settings.JWT_VERIFY_ISS or None
-                payload = jwt.decode(
-                    token,
-                    key,
-                    algorithms=[key.get("alg", "RS256"), "RS256", "ES256"],
-                    audience=audience,
-                    options=options,
-                    issuer=issuer if issuer else None,
-                )
+                # HS256 (legacy JWT secret) - используем shared secret
+                if alg == "HS256":
+                    if not settings.SUPABASE_JWT_SECRET:
+                        return await self._unauthorized(scope, receive, send, "unauthorized", "JWT secret not configured")
+
+                    options = {"verify_aud": bool(settings.JWT_VERIFY_AUD)}
+                    audience = settings.JWT_VERIFY_AUD or None
+                    issuer = settings.JWT_VERIFY_ISS or None
+                    payload = jwt.decode(
+                        token,
+                        settings.SUPABASE_JWT_SECRET,
+                        algorithms=["HS256"],
+                        audience=audience,
+                        options=options,
+                        issuer=issuer if issuer else None,
+                    )
+                else:
+                    # RS256/ES256 - используем JWKS для безопасности
+                    jwks = await jwks_cache.get_jwks()
+                    kid = unverified_header.get("kid")
+                    key = None
+                    for k in jwks.get("keys", []):
+                        if k.get("kid") == kid:
+                            key = k
+                            break
+                    if key is None and jwks.get("keys"):
+                        # Иногда kid может не совпадать/отсутствовать — пробуем первый ключ
+                        key = jwks["keys"][0]
+                    if not key:
+                        return await self._unauthorized(scope, receive, send, "unauthorized", "JWKS key not found")
+
+                    options = {"verify_aud": bool(settings.JWT_VERIFY_AUD)}
+                    audience = settings.JWT_VERIFY_AUD or None
+                    issuer = settings.JWT_VERIFY_ISS or None
+                    payload = jwt.decode(
+                        token,
+                        key,
+                        algorithms=[key.get("alg", "RS256"), "RS256", "ES256"],
+                        audience=audience,
+                        options=options,
+                        issuer=issuer if issuer else None,
+                    )
 
                 client_id = (
                     str(payload.get("sub"))
