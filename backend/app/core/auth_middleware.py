@@ -152,11 +152,40 @@ class AuthMiddleware:
                 return await self._unauthorized(scope, receive, send, "unauthorized", "invalid_fallback_headers")
 
         # Если требуются защищенные эндпоинты — возвращаем 401.
-        # Для публичных GET (например, /health) можно пропускать.
         path = scope.get("path", "")
         method = scope.get("method", "GET").upper()
-        if method in ("POST", "PUT", "DELETE") or path.startswith("/api/v1"):
-            return await self._unauthorized(scope, receive, send, "unauthorized", "missing_token")
+
+        # Публичные endpoints (доступны без аутентификации)
+        PUBLIC_PATHS = [
+            "/health",
+            "/readyz",
+            "/health-force",
+            "/",
+            "/api/v1/locations",  # Список локаций для карты
+            "/api/v1/station/status",  # Статус станции для карты
+        ]
+
+        # Проверяем публичные endpoints (точное совпадение или начало пути)
+        is_public = False
+        for public_path in PUBLIC_PATHS:
+            if path == public_path or (public_path.endswith("s") and path.startswith(public_path)):
+                is_public = True
+                break
+
+        # Дополнительно: разрешаем GET для /api/v1/locations/{id}
+        if path.startswith("/api/v1/locations/") and method == "GET":
+            is_public = True
+
+        # Дополнительно: разрешаем GET для /api/v1/station/status/{station_id}
+        if path.startswith("/api/v1/station/status/") and method == "GET":
+            is_public = True
+
+        # Если не публичный endpoint, требуем аутентификацию
+        if not is_public:
+            # Требуем auth для ВСЕХ /api/v1/* (кроме публичных выше)
+            # И для мутирующих методов на любых путях
+            if path.startswith("/api/v1") or method in ("POST", "PUT", "DELETE"):
+                return await self._unauthorized(scope, receive, send, "unauthorized", "missing_token")
 
         await self.app(scope, receive, send)
 

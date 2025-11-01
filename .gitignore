@@ -51,6 +51,16 @@ CLAUDE.md
 *.env.*
 !.env.example
 
+# Certificates and keys (SECURITY - NEVER COMMIT!)
+*.p12
+*.pem
+*.key
+*.crt
+*.pfx
+certificates/
+*.cer
+*.der
+
 # Assets and local scripts not for repo
 screenshots/
 scripts/

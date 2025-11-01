@@ -267,14 +267,46 @@ class BalanceTopupRequest(BaseModel):
 class H2HPaymentRequest(BaseModel):
     """Запрос на H2H платеж картой"""
     amount: float = Field(..., gt=0, le=100000, description="Сумма платежа в сомах")
-    card_pan: str = Field(..., min_length=12, max_length=19, description="Номер карты")
-    card_name: str = Field(..., min_length=1, max_length=100, description="Имя владельца карты")
-    card_cvv: str = Field(..., min_length=3, max_length=4, description="CVV код")
+    # КРИТИЧНО: Строгая валидация данных карты для защиты
+    card_pan: str = Field(
+        ...,
+        min_length=12,
+        max_length=19,
+        pattern=r"^\d{12,19}$",
+        description="Номер карты (только цифры, 12-19 символов)"
+    )
+    card_name: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Z\s]+$",
+        description="Имя владельца карты (только латиница, заглавные буквы)"
+    )
+    card_cvv: str = Field(
+        ...,
+        min_length=3,
+        max_length=4,
+        pattern=r"^\d{3,4}$",
+        description="CVV код (только цифры, 3-4 символа)"
+    )
     card_year: str = Field(..., pattern=r"^\d{2}$", description="Год истечения карты (YY)")
     card_month: str = Field(..., pattern=r"^(0[1-9]|1[0-2])$", description="Месяц истечения карты (MM)")
-    email: str = Field(..., description="Email клиента")
-    phone_number: Optional[str] = Field(None, description="Номер телефона клиента")
-    description: Optional[str] = Field(None, description="Описание платежа")
+    # Email валидация через Pydantic EmailStr (если установлен email-validator)
+    email: str = Field(
+        ...,
+        pattern=r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$",
+        description="Email клиента"
+    )
+    phone_number: Optional[str] = Field(
+        None,
+        pattern=r"^\+?\d{10,15}$",
+        description="Номер телефона клиента (10-15 цифр, опционально +)"
+    )
+    description: Optional[str] = Field(
+        None,
+        max_length=500,
+        description="Описание платежа"
+    )
 
 class TokenPaymentRequest(BaseModel):
     """Запрос на платеж по токену карты"""

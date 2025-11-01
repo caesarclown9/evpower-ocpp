@@ -293,26 +293,18 @@ class OBankService:
             
             xml_data = self._create_h2h_xml(amount_tyiyn, client_id, card_data)
             
-            # ✅ БЕЗОПАСНОЕ ЛОГИРОВАНИЕ: Скрываем чувствительные данные карт
-            safe_card_data = {
-                "number": f"****{card_data.get('number', '')[-4:]}" if card_data.get('number') else "****",
-                "holder_name": card_data.get('holder_name', ''),
-                "cvv": "***",  # Никогда не логируем CVV
-                "exp_year": card_data.get('exp_year', ''),
-                "exp_month": card_data.get('exp_month', ''),
-                "email": card_data.get('email', ''),
-                "phone": card_data.get('phone', '')
-            }
-            # Безопасная версия XML без чувствительных данных для логирования
-            safe_xml = xml_data
-            if card_data.get('number'):
-                safe_xml = safe_xml.replace(card_data['number'], f"****{card_data['number'][-4:]}")
-            if card_data.get('cvv'):
-                safe_xml = safe_xml.replace(card_data['cvv'], "***")
-            
-            logger.info(f"🔍 OBANK H2H XML Request:")
-            logger.info(f"💳 Safe card data: {safe_card_data}")
-            logger.info(f"📄 Safe XML: {safe_xml}")
+            # ✅ PCI DSS COMPLIANT: Логируем только метаданные, БЕЗ данных карт
+            # ЗАПРЕЩЕНО логировать: номера карт, CVV, email, phone, holder_name
+            logger.info(
+                "H2H payment initiated",
+                extra={
+                    "client_id": client_id,
+                    "amount_kgs": amount_kgs,
+                    "has_card_data": bool(card_data),
+                    "has_email": bool(card_data.get('email')),
+                    "has_phone": bool(card_data.get('phone'))
+                }
+            )
             
             # ✅ ИСПРАВЛЕНО: Используем base URL (диагностика показала что endpoint = "")
             result = await self._make_request("", xml_data)

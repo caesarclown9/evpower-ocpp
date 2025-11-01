@@ -1,16 +1,29 @@
 """
 Pydantic schemas для Charging API
 """
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, Field, validator, constr
 from typing import Optional
+import re
 
 class ChargingStartRequest(BaseModel):
     """🔌 Запрос на начало зарядки"""
-    station_id: str = Field(..., min_length=1, description="ID станции")
-    connector_id: int = Field(..., ge=1, description="Номер коннектора")
+    # Строгая валидация station_id: только буквы, цифры, дефис
+    # Примеры: CHR-BGK-001, STN-OSH-042
+    station_id: constr(min_length=1, max_length=50, pattern=r'^[A-Z0-9\-]+$') = Field(
+        ...,
+        description="ID станции (формат: CHR-BGK-001)"
+    )
+    connector_id: int = Field(..., ge=1, le=10, description="Номер коннектора (1-10)")
     energy_kwh: Optional[float] = Field(None, gt=0, le=200, description="Энергия для зарядки в кВт⋅ч")
-    amount_som: Optional[float] = Field(None, gt=0, description="Предоплаченная сумма в сомах")
-    
+    amount_som: Optional[float] = Field(None, gt=0, le=100000, description="Предоплаченная сумма в сомах")
+
+    @validator('station_id')
+    def validate_station_id(cls, v):
+        """Валидация формата station_id для защиты от SQL injection"""
+        if not re.match(r'^[A-Z0-9\-]+$', v):
+            raise ValueError('Invalid station_id format')
+        return v
+
     @validator('amount_som', 'energy_kwh')
     def validate_limits(cls, v, values):
         """Валидация лимитов зарядки"""
@@ -22,7 +35,19 @@ class ChargingStartRequest(BaseModel):
 
 class ChargingStopRequest(BaseModel):
     """⏹️ Запрос на остановку зарядки"""
-    session_id: str = Field(..., min_length=1, description="ID сессии зарядки")
+    # UUID формат для session_id
+    session_id: constr(
+        min_length=1,
+        max_length=100,
+        pattern=r'^[a-zA-Z0-9\-]+$'
+    ) = Field(..., description="ID сессии зарядки (UUID или alphanumeric)")
+
+    @validator('session_id')
+    def validate_session_id(cls, v):
+        """Валидация формата session_id для защиты от SQL injection"""
+        if not re.match(r'^[a-zA-Z0-9\-]+$', v):
+            raise ValueError('Invalid session_id format')
+        return v
 
 class ChargingStopResponse(BaseModel):
     """⏹️ Ответ об остановке зарядки"""
