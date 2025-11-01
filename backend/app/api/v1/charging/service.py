@@ -30,8 +30,56 @@ class ChargingService:
         amount_som: Optional[float],
         redis_manager: Any
     ) -> Dict[str, Any]:
-        """Начать сессию зарядки с резервированием средств"""
-        
+        """Начать сессию зарядки с резервированием средств
+
+        Args:
+            client_id: UUID клиента
+            station_id: ID станции (формат: CHR-BGK-001)
+            connector_id: Номер коннектора (1-10)
+            energy_kwh: Энергия для зарядки в кВт⋅ч (опционально, должна быть > 0)
+            amount_som: Предоплаченная сумма в сомах (опционально, должна быть > 0)
+            redis_manager: Redis менеджер для отправки команд
+
+        Returns:
+            Dict с результатом запуска сессии
+
+        Raises:
+            ValueError: Если параметры некорректны (отрицательные значения, неверный формат)
+        """
+
+        # 0. КРИТИЧНАЯ ВАЛИДАЦИЯ: Защита от отрицательных значений и некорректных параметров
+        if energy_kwh is not None and energy_kwh <= 0:
+            logger.warning(f"⚠️ Попытка начать зарядку с отрицательной энергией: {energy_kwh}")
+            return {
+                "success": False,
+                "error": "invalid_parameters",
+                "message": "Энергия должна быть положительным числом"
+            }
+
+        if amount_som is not None and amount_som <= 0:
+            logger.warning(f"⚠️ Попытка начать зарядку с отрицательной суммой: {amount_som}")
+            return {
+                "success": False,
+                "error": "invalid_parameters",
+                "message": "Сумма должна быть положительным числом"
+            }
+
+        if amount_som is not None and amount_som > 100000:
+            logger.warning(f"⚠️ Попытка начать зарядку с суммой выше лимита: {amount_som}")
+            return {
+                "success": False,
+                "error": "invalid_parameters",
+                "message": "Максимальная сумма резервирования: 100,000 сом"
+            }
+
+        if connector_id < 1 or connector_id > 10:
+            logger.warning(f"⚠️ Попытка начать зарядку с некорректным connector_id: {connector_id}")
+            return {
+                "success": False,
+                "error": "invalid_parameters",
+                "message": "Номер коннектора должен быть от 1 до 10"
+            }
+
         # 1. Проверка клиента и баланса
         client = self._validate_client(client_id)
         if not client['success']:
@@ -521,10 +569,23 @@ class ChargingService:
     async def stop_charging_session(
         self,
         session_id: str,
+        client_id: str,
         redis_manager: Any
     ) -> Dict[str, Any]:
-        """Остановить сессию зарядки с расчетом и возвратом средств"""
-        
+        """Остановить сессию зарядки с расчетом и возвратом средств
+
+        Args:
+            session_id: ID сессии зарядки для остановки
+            client_id: ID клиента, запрашивающего остановку (для проверки владельца)
+            redis_manager: Redis менеджер для отправки команд на станцию
+
+        Returns:
+            Dict с результатом остановки сессии
+
+        Raises:
+            HTTPException: Если клиент не является владельцем сессии (403)
+        """
+
         # 1. Получение информации о сессии
         session_info = self._get_session_info(session_id)
         if not session_info:
@@ -533,24 +594,37 @@ class ChargingService:
                 "error": "session_not_found",
                 "message": "Активная сессия зарядки не найдена"
             }
+
+        # 2. КРИТИЧНАЯ ПРОВЕРКА: Клиент должен быть владельцем сессии
+        if session_info['client_id'] != client_id:
+            logger.warning(
+                f"⚠️ Попытка остановить чужую сессию: "
+                f"session_id={session_id}, owner={session_info['client_id']}, "
+                f"requester={client_id}"
+            )
+            return {
+                "success": False,
+                "error": "access_denied",
+                "message": "У вас нет прав для остановки этой сессии"
+            }
         
-        # 2. Расчет фактического потребления
+        # 3. Расчет фактического потребления
         actual_energy = self._get_actual_energy_consumed(session_id, session_info.get('energy'))
         
-        # 3. Расчет стоимости
+        # 4. Расчет стоимости
         rate_per_kwh = self._get_session_rate(session_info)
         actual_cost = Decimal(str(actual_energy * rate_per_kwh))
         reserved_amount = Decimal(str(session_info['reserved_amount']))
-        
-        # 4. Обработка превышения резерва или возврата
+
+        # 5. Обработка превышения резерва или возврата
         refund_amount, additional_charge = self._calculate_refund_or_charge(
             session_info['client_id'],
             actual_cost,
             reserved_amount,
             session_id
         )
-        
-        # 5. Обновление баланса
+
+        # 6. Обновление баланса
         new_balance = self._process_session_payment(
             session_info['client_id'],
             refund_amount,
@@ -558,21 +632,21 @@ class ChargingService:
             session_id,
             actual_energy
         )
-        
-        # 6. Обновление сессии в БД
+
+        # 7. Обновление сессии в БД
         self._finalize_session(session_id, actual_energy, float(actual_cost))
-        
-        # 7. Освобождение коннектора
+
+        # 8. Освобождение коннектора
         self._update_connector_status(session_info['station_id'], 1, 'available')
-        
-        # 8. Отправка команды остановки
+
+        # 9. Отправка команды остановки
         station_online = await self._send_stop_command(
             redis_manager,
             session_info['station_id'],
             session_id
         )
-        
-        # 9. Коммит транзакции
+
+        # 10. Коммит транзакции
         self.db.commit()
         
         logger.info(f"✅ Зарядка остановлена: сессия {session_id}, потреблено {actual_energy} кВт⋅ч")
@@ -1374,7 +1448,8 @@ class ChargingService:
                 )
 
                 # Останавливаем сессию с автоматическим расчетом
-                stop_result = await self.stop_charging_session(session_id, redis_manager)
+                # Передаем client_id владельца для авторизации операции
+                stop_result = await self.stop_charging_session(session_id, client_id, redis_manager)
 
                 if stop_result.get("success"):
                     stopped_sessions.append({

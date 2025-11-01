@@ -1,7 +1,7 @@
 """
 API endpoint для остановки зарядки
 """
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 import logging
 
@@ -16,16 +16,30 @@ router = APIRouter()
 
 @router.post("/charging/stop")
 async def stop_charging(
-    request: ChargingStopRequest, 
-    db: Session = Depends(get_db)
+    request: ChargingStopRequest,
+    db: Session = Depends(get_db),
+    http_request: Request = None
 ):
     """⏹️ Остановить зарядку с расчетом и возвратом средств"""
-    
+
+    # Аутентификация: client_id из JWT/HMAC middleware
+    client_id = getattr(http_request.state, "client_id", None)
+    if not client_id:
+        return {
+            "success": False,
+            "error": "unauthorized",
+            "message": "Missing or invalid authentication"
+        }
+
+    # Логируем запрос
+    logger.info(f"Stopping charging: client_id={client_id}, session_id={request.session_id}")
+
     service = ChargingService(db)
-    
+
     try:
         result = await service.stop_charging_session(
             session_id=request.session_id,
+            client_id=client_id,
             redis_manager=redis_manager
         )
         
