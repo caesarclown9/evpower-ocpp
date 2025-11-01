@@ -23,8 +23,11 @@ class JWKSCache:
         if self.jwks and (now - self.fetched_at) < self.ttl_seconds:
             return self.jwks
         jwks_url = settings.SUPABASE_JWKS_URL or f"{settings.SUPABASE_URL}/auth/v1/jwks"
+        headers = {
+            "apikey": settings.SUPABASE_ANON_KEY
+        }
         async with httpx.AsyncClient(timeout=5) as client:
-            resp = await client.get(jwks_url)
+            resp = await client.get(jwks_url, headers=headers)
             resp.raise_for_status()
             self.jwks = resp.json()
             self.fetched_at = now
