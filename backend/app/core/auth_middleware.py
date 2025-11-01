@@ -61,31 +61,8 @@ class AuthMiddleware:
         if auth_header.lower().startswith("bearer "):
             token = auth_header.split(" ", 1)[1].strip()
             try:
-                # Пробуем сначала с JWT_SECRET (быстрее и надежнее)
-                if settings.SUPABASE_JWT_SECRET:
-                    try:
-                        payload = jwt.decode(
-                            token,
-                            settings.SUPABASE_JWT_SECRET,
-                            algorithms=["HS256"],
-                            audience=settings.JWT_VERIFY_AUD or "authenticated",
-                            issuer=settings.JWT_VERIFY_ISS if settings.JWT_VERIFY_ISS else None,
-                        )
-
-                        client_id = (
-                            str(payload.get("sub"))
-                            or str((payload.get("user_metadata") or {}).get("client_id"))
-                        )
-                        if client_id:
-                            scope.setdefault("state", {})["client_id"] = client_id
-                            scope["state"]["auth_method"] = "jwt_secret"
-                            await self.app(scope, receive, send)
-                            return
-                    except Exception:
-                        # Если JWT_SECRET не сработал, пробуем JWKS
-                        pass
-
-                # Fallback на JWKS (если JWT_SECRET не сработал или не настроен)
+                # Используем только JWKS для безопасности (без JWT_SECRET)
+                # Это предотвращает компрометацию всех токенов при утечке .env файла
                 jwks = await jwks_cache.get_jwks()
                 unverified_header = jwt.get_unverified_header(token)
                 kid = unverified_header.get("kid")

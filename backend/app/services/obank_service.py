@@ -140,7 +140,7 @@ class OBankService:
                 # Основной запрос с SSL сертификатом
                 async with httpx.AsyncClient(
                     cert=(cert_file_path, key_file_path),
-                    verify=False,  # Skip SSL verification for test server
+                    verify=True,  # SSL verification включен для production безопасности
                     timeout=30.0
                 ) as client:
                     response = await client.post(

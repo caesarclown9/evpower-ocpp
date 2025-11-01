@@ -70,7 +70,7 @@ class Settings(BaseSettings):
     OBANK_POINT_ID: str = os.getenv("OBANK_POINT_ID", "4354")  # Terminal ID
     OBANK_SERVICE_ID: str = os.getenv("OBANK_SERVICE_ID", "1331")  # Service ID
     OBANK_CERT_PATH: str = os.getenv("OBANK_CERT_PATH", "")  # Path to PKCS12 certificate
-    OBANK_CERT_PASSWORD: str = os.getenv("OBANK_CERT_PASSWORD", "bPAKhpUlss")  # Certificate password (тестовый)
+    OBANK_CERT_PASSWORD: str = os.getenv("OBANK_CERT_PASSWORD", "")  # Certificate password (ОБЯЗАТЕЛЬНО для production!)
     OBANK_USE_PRODUCTION: bool = os.getenv("OBANK_USE_PRODUCTION", "false").lower() == "true"
     
     # OBANK Production настройки

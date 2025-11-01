@@ -122,21 +122,38 @@ class ChargingService:
     def _validate_client(self, client_id: str) -> Dict[str, Any]:
         """Проверка существования клиента и его баланса"""
         result = self.db.execute(
-            text("SELECT id, balance FROM clients WHERE id = :client_id"),
+            text("SELECT id, balance, status FROM clients WHERE id = :client_id"),
             {"client_id": client_id}
         ).fetchone()
-        
+
         if not result:
             return {
                 "success": False,
                 "error": "client_not_found",
                 "message": "Клиент не найден"
             }
-        
+
+        # Проверка статуса клиента
+        client_status = result[2] if len(result) > 2 else None
+        if client_status == "pending_deletion":
+            return {
+                "success": False,
+                "error": "account_deletion_pending",
+                "message": "Ваш аккаунт находится в процессе удаления. Операции заблокированы."
+            }
+
+        if client_status == "blocked":
+            return {
+                "success": False,
+                "error": "account_blocked",
+                "message": "Ваш аккаунт заблокирован. Обратитесь в поддержку."
+            }
+
         return {
             "success": True,
             "id": result[0],
-            "balance": Decimal(str(result[1]))
+            "balance": Decimal(str(result[1])),
+            "status": client_status
         }
     
     def _validate_station(self, station_id: str, connector_type: Optional[str] = None, client_id: Optional[str] = None) -> Dict[str, Any]:
@@ -1304,3 +1321,101 @@ class ChargingService:
             return int(value)
         except (ValueError, TypeError):
             return default
+
+    async def check_and_stop_hanging_sessions(self, redis_manager: Any, max_hours: int = 12) -> Dict[str, Any]:
+        """
+        Автоматически останавливает зависшие сессии зарядки
+
+        Args:
+            redis_manager: Redis менеджер для отправки команд
+            max_hours: Максимальное время зарядки в часах (по умолчанию 12)
+
+        Returns:
+            Dict с информацией о завершенных сессиях
+        """
+        cutoff_time = datetime.now(timezone.utc) - timedelta(hours=max_hours)
+
+        # Находим зависшие сессии
+        hanging_sessions_query = text("""
+            SELECT id, user_id, station_id, start_time, amount
+            FROM charging_sessions
+            WHERE status = 'started'
+            AND start_time < :cutoff_time
+            ORDER BY start_time ASC
+        """)
+
+        result = self.db.execute(hanging_sessions_query, {"cutoff_time": cutoff_time})
+        hanging_sessions = result.fetchall()
+
+        if not hanging_sessions:
+            logger.info(f"✅ Зависших сессий не найдено (проверка за {max_hours} часов)")
+            return {
+                "success": True,
+                "stopped_count": 0,
+                "sessions": []
+            }
+
+        stopped_sessions = []
+        errors = []
+
+        for session in hanging_sessions:
+            session_id = session[0]
+            client_id = session[1]
+            station_id = session[2]
+            start_time = session[3]
+            reserved_amount = session[4]
+
+            duration_hours = (datetime.now(timezone.utc) - start_time).total_seconds() / 3600
+
+            try:
+                logger.warning(
+                    f"⚠️ ЗАВИСШАЯ СЕССИЯ обнаружена: session_id={session_id}, "
+                    f"client={client_id}, длительность={duration_hours:.1f}ч"
+                )
+
+                # Останавливаем сессию с автоматическим расчетом
+                stop_result = await self.stop_charging_session(session_id, redis_manager)
+
+                if stop_result.get("success"):
+                    stopped_sessions.append({
+                        "session_id": session_id,
+                        "client_id": client_id,
+                        "station_id": station_id,
+                        "duration_hours": round(duration_hours, 1),
+                        "energy_consumed": stop_result.get("energy_consumed", 0),
+                        "actual_cost": stop_result.get("actual_cost", 0),
+                        "refund_amount": stop_result.get("refund_amount", 0)
+                    })
+                    logger.info(
+                        f"✅ Зависшая сессия {session_id} остановлена автоматически. "
+                        f"Потреблено: {stop_result.get('energy_consumed', 0)} кВт⋅ч"
+                    )
+                else:
+                    errors.append({
+                        "session_id": session_id,
+                        "error": stop_result.get("error", "unknown_error"),
+                        "message": stop_result.get("message", "Неизвестная ошибка")
+                    })
+                    logger.error(f"❌ Не удалось остановить зависшую сессию {session_id}: {stop_result.get('message')}")
+
+            except Exception as e:
+                logger.error(f"❌ Критическая ошибка при остановке зависшей сессии {session_id}: {e}", exc_info=True)
+                errors.append({
+                    "session_id": session_id,
+                    "error": "exception",
+                    "message": str(e)
+                })
+
+        logger.info(
+            f"🔄 Проверка зависших сессий завершена: "
+            f"найдено={len(hanging_sessions)}, остановлено={len(stopped_sessions)}, ошибок={len(errors)}"
+        )
+
+        return {
+            "success": True,
+            "stopped_count": len(stopped_sessions),
+            "error_count": len(errors),
+            "sessions": stopped_sessions,
+            "errors": errors,
+            "max_hours": max_hours
+        }

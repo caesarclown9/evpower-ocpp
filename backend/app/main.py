@@ -186,7 +186,41 @@ async def lifespan(app: FastAPI):
                               f"деактивировано {len(result['deactivated'])}")
         except Exception as e:
             logger.error(f"Ошибка в фоновой задаче обновления статусов: {e}")
-    
+
+    async def check_hanging_sessions_job():
+        """Фоновая задача для автоматической остановки зависших сессий зарядки"""
+        try:
+            from app.api.v1.charging.service import ChargingService
+            from app.db.session import get_session_local
+
+            SessionLocal = get_session_local()
+            db = SessionLocal()
+
+            try:
+                charging_service = ChargingService(db)
+                result = await charging_service.check_and_stop_hanging_sessions(
+                    redis_manager=redis_manager,
+                    max_hours=12  # Максимум 12 часов зарядки
+                )
+
+                if result.get("stopped_count", 0) > 0:
+                    logger.warning(f"⚠️ Автоматически остановлено {result['stopped_count']} зависших сессий")
+                    for session in result.get("sessions", []):
+                        logger.info(f"  - Сессия {session['session_id']}: "
+                                  f"{session['duration_hours']}ч, "
+                                  f"{session['energy_consumed']} кВт⋅ч, "
+                                  f"{session['actual_cost']} сом")
+
+                db.commit()
+            except Exception as e:
+                logger.error(f"Ошибка при проверке зависших сессий: {e}", exc_info=True)
+                db.rollback()
+            finally:
+                db.close()
+
+        except Exception as e:
+            logger.error(f"Критическая ошибка в задаче проверки зависших сессий: {e}", exc_info=True)
+
     # Запускаем каждые 2 минуты (чаще чем heartbeat timeout для надежности)
     scheduler.add_job(
         update_station_statuses_job,
@@ -196,9 +230,21 @@ async def lifespan(app: FastAPI):
         name='Update Station Statuses',
         misfire_grace_time=30
     )
+
+    # Проверка зависших сессий каждые 30 минут
+    scheduler.add_job(
+        check_hanging_sessions_job,
+        'interval',
+        minutes=30,
+        id='check_hanging_sessions',
+        name='Check and Stop Hanging Charging Sessions',
+        misfire_grace_time=60
+    )
     
     scheduler.start()
-    logger.info("⏰ Scheduler для обновления статусов станций запущен (каждые 2 минуты)")
+    logger.info("⏰ Scheduler запущен:")
+    logger.info("  - Обновление статусов станций: каждые 2 минуты")
+    logger.info("  - Проверка зависших сессий зарядки: каждые 30 минут (макс. 12 часов)")
     
     yield
     

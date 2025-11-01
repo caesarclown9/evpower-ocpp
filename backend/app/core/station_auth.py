@@ -88,9 +88,8 @@ class StationAuth:
                 logger.warning(f"Station {station_id} has no API key configured")
                 return False
             
-            # Простая проверка совпадения
-            # В production используйте хеширование
-            if api_key != stored_api_key:
+            # Используем hmac.compare_digest для защиты от timing attacks
+            if not hmac.compare_digest(api_key, stored_api_key):
                 logger.warning(f"Station {station_id} invalid API key")
                 return False
             

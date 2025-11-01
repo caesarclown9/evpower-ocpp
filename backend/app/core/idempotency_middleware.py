@@ -1,5 +1,6 @@
 import hashlib
 import json
+import uuid
 from typing import Optional
 
 from fastapi import Request
@@ -47,12 +48,9 @@ class IdempotencyMiddleware:
         request = Request(scope, receive=receive)
         idem_key = request.headers.get("idempotency-key")
         if not idem_key:
-            response = JSONResponse(
-                status_code=400,
-                content={"success": False, "error": "invalid_request", "message": "Missing Idempotency-Key"},
-            )
-            await response(send)
-            return
+            # Генерируем UUID автоматически если клиент не передал
+            # Это обеспечивает совместимость с мобильным приложением
+            idem_key = f"auto-{uuid.uuid4()}"
 
         # Читаем тело запроса и восстанавливаем для downstream
         body_bytes = await request.body()
