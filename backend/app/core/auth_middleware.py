@@ -22,7 +22,7 @@ class JWKSCache:
         now = time.time()
         if self.jwks and (now - self.fetched_at) < self.ttl_seconds:
             return self.jwks
-        jwks_url = settings.SUPABASE_JWKS_URL or f"{settings.SUPABASE_URL}/.well-known/jwks.json"
+        jwks_url = settings.SUPABASE_JWKS_URL or f"{settings.SUPABASE_URL}/auth/v1/.well-known/jwks.json"
         headers = {
             "apikey": settings.SUPABASE_ANON_KEY
         }
