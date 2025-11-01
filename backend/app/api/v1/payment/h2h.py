@@ -19,15 +19,21 @@ async def create_h2h_payment(
     request: H2HPaymentRequest,
     db: Session = Depends(get_db)
 ) -> H2HPaymentResponse:
-    """💳 Host2Host платеж картой (прямой ввод данных карты) - полная реализация"""
+    """
+    💳 Host2Host платеж картой (прямой ввод данных карты)
+
+    ⚠️ ВРЕМЕННО ОТКЛЮЧЕНО: OBANK интеграция в разработке
+    H2H платежи будут доступны после завершения настройки OBANK
+    """
     try:
-        # Проверяем что используется OBANK
-        if settings.PAYMENT_PROVIDER != "OBANK":
+        # Проверяем что OBANK включен и используется
+        if not settings.OBANK_ENABLED or settings.PAYMENT_PROVIDER != "OBANK":
+            logger.warning(f"H2H payment attempt while OBANK disabled (OBANK_ENABLED={settings.OBANK_ENABLED})")
             return H2HPaymentResponse(
                 success=False,
                 client_id=request.client_id,
-                error="h2h_not_supported",
-                message="H2H платежи поддерживаются только через OBANK"
+                error="h2h_not_available",
+                message="H2H платежи временно недоступны. Используйте QR-код пополнение через O!Dengi."
             )
 
         # 1. Проверяем существование клиента

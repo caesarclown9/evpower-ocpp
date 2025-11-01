@@ -87,9 +87,18 @@ async def handle_payment_webhook(
         
         # 2. Определяем провайдера и верифицируем подпись
         provider_name = get_payment_provider_service().get_provider_name()
-        
+
         if provider_name == "OBANK":
-            # OBANK использует SSL сертификаты для аутентификации
+            # ⚠️ OBANK временно отключен
+            if not settings.OBANK_ENABLED:
+                logger.warning(f"OBANK webhook received while OBANK disabled (from {request.client.host})")
+                raise HTTPException(status_code=503, detail="OBANK temporarily disabled")
+
+            # TODO: КРИТИЧНО - Реализовать проверку OBANK webhook при включении:
+            # 1. IP whitelist для OBANK серверов
+            # 2. SSL client certificate verification (mutual TLS)
+            # 3. HMAC signature проверка (если OBANK предоставляет)
+            logger.warning("OBANK webhook authentication not implemented - accepting without verification")
             is_valid = True
         else:  # O!Dengi
             webhook_signature = request.headers.get('X-O-Dengi-Signature', '')

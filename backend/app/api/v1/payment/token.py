@@ -18,14 +18,19 @@ logger = logging.getLogger(__name__)
 async def create_payment_token(
     db: Session = Depends(get_db)
 ):
-    """🔐 Создание токена для платежей - полная реализация"""
+    """
+    🔐 Создание токена для платежей
+
+    ⚠️ ВРЕМЕННО ОТКЛЮЧЕНО: OBANK интеграция в разработке
+    """
     try:
-        # Проверяем что используется OBANK
-        if settings.PAYMENT_PROVIDER != "OBANK":
+        # Проверяем что OBANK включен
+        if not settings.OBANK_ENABLED or settings.PAYMENT_PROVIDER != "OBANK":
+            logger.warning(f"Token creation attempt while OBANK disabled")
             return CreateTokenResponse(
                 success=False,
-                error="token_not_supported",
-                message="Token платежи поддерживаются только через OBANK"
+                error="token_not_available",
+                message="Token платежи временно недоступны"
             )
         
         # Создание токена через OBANK
@@ -59,15 +64,20 @@ async def create_token_payment(
     request: TokenPaymentRequest,
     db: Session = Depends(get_db)
 ) -> TokenPaymentResponse:
-    """🔐 Токен-платеж для пополнения баланса - полная реализация"""
+    """
+    🔐 Токен-платеж для пополнения баланса
+
+    ⚠️ ВРЕМЕННО ОТКЛЮЧЕНО: OBANK интеграция в разработке
+    """
     try:
-        # Проверяем что используется OBANK
-        if settings.PAYMENT_PROVIDER != "OBANK":
+        # Проверяем что OBANK включен
+        if not settings.OBANK_ENABLED or settings.PAYMENT_PROVIDER != "OBANK":
+            logger.warning(f"Token payment attempt while OBANK disabled")
             return TokenPaymentResponse(
                 success=False,
                 client_id=request.client_id,
-                error="token_not_supported",
-                message="Token платежи поддерживаются только через OBANK"
+                error="token_not_available",
+                message="Token платежи временно недоступны. Используйте QR-код пополнение."
             )
 
         # 1. Проверяем существование клиента

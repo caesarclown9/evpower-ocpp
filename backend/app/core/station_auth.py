@@ -59,8 +59,8 @@ class StationAuth:
             logger.warning(f"Station {station_id} connection attempt without API key")
             return False
         
-        # Проверяем master ключ
-        if self.master_api_key and api_key == self.master_api_key:
+        # Проверяем master ключ (используем constant-time сравнение для защиты от timing attacks)
+        if self.master_api_key and hmac.compare_digest(api_key, self.master_api_key):
             logger.info(f"Station {station_id} authenticated with master key")
             return True
         

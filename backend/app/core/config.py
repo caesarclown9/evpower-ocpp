@@ -46,6 +46,7 @@ class Settings(BaseSettings):
     # Rate limiting
     RATE_LIMIT_DEFAULT_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_DEFAULT_PER_MINUTE", "60"))
     RATE_LIMIT_CRITICAL_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_CRITICAL_PER_MINUTE", "10"))
+    RATE_LIMIT_WEBHOOK_PER_MINUTE: int = int(os.getenv("RATE_LIMIT_WEBHOOK_PER_MINUTE", "30"))  # Защита webhook от DDoS
 
     # Swagger UI (включать только при необходимости)
     ENABLE_SWAGGER: bool = os.getenv("ENABLE_SWAGGER", "false").lower() == "true"
@@ -63,7 +64,10 @@ class Settings(BaseSettings):
     # Domain для webhook URLs
     DOMAIN: str = os.getenv("DOMAIN", "https://ocpp.evpower.kg")
     
-    # OBANK Payment API Configuration  
+    # OBANK Payment API Configuration
+    # ⚠️ ВРЕМЕННО ОТКЛЮЧЕНО: OBANK интеграция в разработке, не готова к production
+    # Используется только O!Dengi для платежей
+    OBANK_ENABLED: bool = os.getenv("OBANK_ENABLED", "false").lower() == "true"
     OBANK_API_URL: str = os.getenv("OBANK_API_URL", "https://test-rakhmet.dengi.kg:4431/external/extended-cert")
     OBANK_API_URL_HTTP: str = os.getenv("OBANK_API_URL_HTTP", "http://test-rakhmet.dengi.kg:4430/external/extended-cert")  # HTTP альтернатива
     OBANK_PRODUCTION_API_URL: str = os.getenv("OBANK_PRODUCTION_API_URL", "https://rakhmet.dengi.kg:4431/external/extended-cert")
@@ -90,7 +94,8 @@ class Settings(BaseSettings):
     ODENGI_PROD_PASSWORD: str = os.getenv("ODENGI_PROD_PASSWORD", "")
     
     # Payment Provider Selection
-    PAYMENT_PROVIDER: str = os.getenv("PAYMENT_PROVIDER", "OBANK")  # OBANK or ODENGI
+    # По умолчанию ODENGI (OBANK временно отключен)
+    PAYMENT_PROVIDER: str = os.getenv("PAYMENT_PROVIDER", "ODENGI")  # ODENGI (production) or OBANK (в разработке)
     
     # EZS Payment Settings
     EZS_SECRET_KEY: str = os.getenv("EZS_SECRET_KEY", "")
@@ -148,14 +153,15 @@ class Settings(BaseSettings):
             missing_vars.append("DATABASE_URL")
             
         # Проверяем переменные в зависимости от выбранного провайдера
-        if self.PAYMENT_PROVIDER == "OBANK":
+        if self.PAYMENT_PROVIDER == "OBANK" and self.OBANK_ENABLED:
+            # OBANK включен - проверяем обязательные переменные
             if self.OBANK_USE_PRODUCTION:
                 if not self.OBANK_PROD_POINT_ID:
                     missing_vars.append("OBANK_PROD_POINT_ID")
                 if not self.OBANK_PROD_SERVICE_ID:
                     missing_vars.append("OBANK_PROD_SERVICE_ID")
             # Для тестовой среды не требуем сертификат - можем работать без него
-                
+
         elif self.PAYMENT_PROVIDER == "ODENGI":
             # O!Dengi обязательные переменные
             if self.ODENGI_USE_PRODUCTION:

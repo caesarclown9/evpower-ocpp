@@ -89,31 +89,18 @@ class OBankService:
             logger.info(f"🔍 SSL cert path: {self.cert_path}")
             logger.info(f"🔍 SSL cert exists: {self.cert_path.exists()}")
             
-            # Проверяем наличие сертификата
+            # Проверяем наличие сертификата (обязательно для PCI DSS Requirement 4.1)
             if not self.cert_path.exists():
-                logger.error(f"🚨 SSL certificate missing! Using HTTP fallback for testing...")
-                # Временно используем HTTP endpoint для тестирования
-                http_url = self.base_url.replace("https://", "http://").replace(":4431", ":4430")
-                
-                async with httpx.AsyncClient(timeout=30.0) as client:
-                    response = await client.post(
-                        f"{http_url}{endpoint}",
-                        content=xml_data,
-                        headers={
-                            "Content-Type": "application/xml; charset=utf-8",
-                            "Accept": "application/xml"
-                        }
-                    )
-                    
-                    logger.info(f"🔍 HTTP fallback response status: {response.status_code}")
-                    logger.info(f"🔍 HTTP fallback response headers: {dict(response.headers)}")
-                    logger.info(f"🔍 HTTP fallback response content: {response.text}")
-                    
-                    if response.status_code != 200:
-                        return {"error": f"HTTP {response.status_code}", "details": response.text}
-                    
-                    return self._parse_xml_response(response.text)
-            else:
+                error_msg = (
+                    f"🚨 SSL certificate required at {self.cert_path}. "
+                    "HTTP fallback disabled for PCI DSS compliance. "
+                    "Please configure OBANK_CERT_PATH and OBANK_CERT_PASSWORD."
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+
+            # Сертификат найден, продолжаем
+            if True:
                 logger.info(f"✅ SSL certificate found: {self.cert_path}")
                 
                 # Загружаем сертификат и ключ

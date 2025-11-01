@@ -47,6 +47,9 @@ class SecurityMiddleware:
         # Критичный лимит для денежных/старт/стоп операций
         self.critical_rpm = int(settings.__dict__.get("RATE_LIMIT_CRITICAL_PER_MINUTE", 10))
         self.critical_rate_limiter = RateLimiter(max_requests=self.critical_rpm, window_seconds=60)
+        # Webhook лимит для защиты от DDoS на платежные уведомления
+        self.webhook_rpm = int(settings.__dict__.get("RATE_LIMIT_WEBHOOK_PER_MINUTE", 30))
+        self.webhook_rate_limiter = RateLimiter(max_requests=self.webhook_rpm, window_seconds=60)
         self.suspicious_ips = set()
         self.blocked_ips = set()
         
@@ -76,6 +79,22 @@ class SecurityMiddleware:
         identifier = client_id or client_ip
         # Определяем критичный маршрут
         path_lower = str(request.url.path).lower()
+
+        # Проверяем webhook endpoints (специальный лимит для защиты от DDoS)
+        is_webhook = request.method.upper() == "POST" and "/payment/webhook" in path_lower
+
+        if is_webhook:
+            # Для webhook используем IP-based rate limiting (без client_id)
+            # так как это внешние запросы от платежных провайдеров
+            if not self.webhook_rate_limiter.is_allowed(client_ip):
+                log_security_event("rate_limit_exceeded_webhook", source_ip=client_ip)
+                logger.warning(f"Webhook rate limit exceeded from {client_ip}")
+                return JSONResponse(
+                    status_code=429,
+                    content={"success": False, "error": "too_many_requests", "message": "Webhook rate limit exceeded"}
+                )
+
+        # Определяем другие критичные маршруты
         is_critical = request.method.upper() == "POST" and (
             path_lower.endswith("/charging/start")
             or path_lower.endswith("/charging/stop")
