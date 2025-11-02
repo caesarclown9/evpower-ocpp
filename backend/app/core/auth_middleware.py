@@ -56,6 +56,15 @@ class AuthMiddleware:
 
         request = Request(scope, receive=receive)
 
+        # 🔍 DEBUG: Логируем ВСЕ входящие запросы для диагностики APK проблемы
+        import logging
+        logger = logging.getLogger(__name__)
+        path = scope.get("path", "")
+        method = scope.get("method", "GET")
+        origin = request.headers.get("origin", "NO_ORIGIN")
+        user_agent = request.headers.get("user-agent", "NO_UA")
+        logger.info(f"🔍 AUTH_MIDDLEWARE: {method} {path} | Origin: {origin} | UA: {user_agent[:50]}")
+
         client_id: Optional[str] = None
         auth_method: Optional[str] = None
 
@@ -193,6 +202,13 @@ class AuthMiddleware:
         await self.app(scope, receive, send)
 
     async def _unauthorized(self, scope, receive, send, error: str, message: str):
+        # 🔍 DEBUG: Логируем все 401 ответы для диагностики APK проблемы
+        import logging
+        logger = logging.getLogger(__name__)
+        path = scope.get("path", "")
+        method = scope.get("method", "GET")
+        logger.warning(f"🚫 AUTH_BLOCKED: {method} {path} | Reason: {error} - {message}")
+
         response = JSONResponse(
             status_code=401,
             content={"success": False, "error": error, "message": message},
