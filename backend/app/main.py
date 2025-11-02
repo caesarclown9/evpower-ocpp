@@ -200,16 +200,20 @@ async def lifespan(app: FastAPI):
                 charging_service = ChargingService(db)
                 result = await charging_service.check_and_stop_hanging_sessions(
                     redis_manager=redis_manager,
-                    max_hours=12  # Максимум 12 часов зарядки
+                    max_hours=12,  # Максимум 12 часов активной зарядки
+                    connection_timeout_minutes=10  # Таймаут на подключение кабеля
                 )
 
                 if result.get("stopped_count", 0) > 0:
-                    logger.warning(f"⚠️ Автоматически остановлено {result['stopped_count']} зависших сессий")
+                    logger.warning(f"⚠️ Автоматически остановлено {result['stopped_count']} зависших сессий "
+                                 f"({result.get('no_connection_sessions_found', 0)} без подключения, "
+                                 f"{result.get('long_sessions_found', 0)} длинных)")
                     for session in result.get("sessions", []):
-                        logger.info(f"  - Сессия {session['session_id']}: "
-                                  f"{session['duration_hours']}ч, "
+                        reason_text = "НЕТ ПОДКЛЮЧЕНИЯ" if session.get('reason') == 'no_connection' else "ДОЛГО"
+                        logger.info(f"  - Сессия {session['session_id']} ({reason_text}): "
+                                  f"{session.get('duration_minutes', 0):.0f}мин, "
                                   f"{session['energy_consumed']} кВт⋅ч, "
-                                  f"{session['actual_cost']} сом")
+                                  f"возврат {session.get('refund_amount', 0)} сом")
 
                 db.commit()
             except Exception as e:
@@ -244,7 +248,9 @@ async def lifespan(app: FastAPI):
     scheduler.start()
     logger.info("⏰ Scheduler запущен:")
     logger.info("  - Обновление статусов станций: каждые 2 минуты")
-    logger.info("  - Проверка зависших сессий зарядки: каждые 30 минут (макс. 12 часов)")
+    logger.info("  - Проверка зависших сессий зарядки: каждые 30 минут")
+    logger.info("    • Автоостановка без подключения: > 10 минут")
+    logger.info("    • Автоостановка длинных сессий: > 12 часов")
     
     yield
     

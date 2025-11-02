@@ -177,7 +177,7 @@ async def create_qr_balance_topup(
             qr_expires_at=qr_expires_at,
             invoice_expires_at=invoice_expires_at,
             qr_lifetime_seconds=300,
-            invoice_lifetime_seconds=600
+            invoice_lifetime_seconds=300
         )
         
     except Exception as e:

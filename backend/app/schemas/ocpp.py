@@ -352,7 +352,7 @@ class BalanceTopupResponse(BaseModel):
     qr_expires_at: Optional[datetime] = None  # Когда истекает QR код
     invoice_expires_at: Optional[datetime] = None  # Когда истекает invoice
     qr_lifetime_seconds: int = 300  # 5 минут для QR
-    invoice_lifetime_seconds: int = 600  # 10 минут для invoice
+    invoice_lifetime_seconds: int = 300  # 5 минут для invoice (синхронизировано с QR кодом)
     
     error: Optional[str] = None
 

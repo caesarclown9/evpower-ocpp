@@ -967,39 +967,41 @@ class PaymentLifecycleService:
             
             # Если платеж оплачен - обрабатываем ПЕРЕД обновлением статуса
             payment_processed = False
-            if new_status == 1 and current_status != "approved" and existing_paid_amount is None:
-                # КРИТИЧЕСКИ ВАЖНО: Проверяем что платеж еще не был обработан
+            # 🔧 ИСПРАВЛЕНИЕ RACE CONDITION: Обрабатываем approved платежи даже если статус canceled
+            # Это защита от ситуации когда cleanup отменил платеж прямо перед приходом webhook
+            if new_status == 1 and existing_paid_amount is None:
+                # КРИТИЧЕСКИ ВАЖНО: Проверяем что платеж еще не был обработан (по existing_paid_amount)
+                # Статус может быть любым (processing, canceled) - важно только что деньги еще не зачислены
                 logger.info(f"💰 ОБРАБАТЫВАЕМ ПЛАТЕЖ {invoice_id}: new_status={new_status}, current_status={current_status}, existing_paid_amount={existing_paid_amount}, paid_amount={paid_amount}")
-                
+
+                if current_status == "canceled":
+                    logger.warning(f"⚠️ ИСПРАВЛЕНИЕ RACE CONDITION: Обрабатываем approved платеж несмотря на статус canceled (invoice: {invoice_id})")
+
                 if payment_table == "balance_topups":
                     # Обрабатываем пополнение баланса
                     current_balance = payment_service.get_client_balance(db, client_id)
                     logger.info(f"💰 Текущий баланс клиента {client_id}: {current_balance}")
-                    
+
                     new_balance = payment_service.update_client_balance(
                         db, client_id, Decimal(str(paid_amount or 0)), "add",
                         f"Пополнение баланса через {payment_provider} (invoice: {invoice_id})"
                     )
                     logger.info(f"💰 Баланс обновлен с {current_balance} до {new_balance}")
-                    
+
                     # Создаем транзакцию
                     transaction_id = payment_service.create_payment_transaction(
-                        db, client_id, "balance_topup", 
+                        db, client_id, "balance_topup",
                         Decimal(str(paid_amount or 0)), current_balance, new_balance,
                         f"Пополнение баланса через {payment_provider}",
                         balance_topup_id=payment_id
                     )
                     logger.info(f"💰 Создана транзакция {transaction_id}")
-                    
+
                     payment_processed = True
                     logger.info(f"✅ БАЛАНС ПОПОЛНЕН АВТОМАТИЧЕСКИ: клиент {client_id}, сумма {paid_amount}, новый баланс {new_balance}")
             elif new_status == 1 and existing_paid_amount is not None:
                 # Платеж уже был обработан ранее
                 logger.info(f"⚠️ Платеж {invoice_id} уже был обработан ранее (paid_amount: {existing_paid_amount})")
-                payment_processed = False
-            elif new_status == 1 and current_status == "approved":
-                # Платеж уже approved в базе
-                logger.info(f"⚠️ Платеж {invoice_id} уже имеет статус approved в базе")
                 payment_processed = False
             else:
                 # Другие случаи

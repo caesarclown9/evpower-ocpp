@@ -1397,21 +1397,28 @@ class ChargingService:
         except (ValueError, TypeError):
             return default
 
-    async def check_and_stop_hanging_sessions(self, redis_manager: Any, max_hours: int = 12) -> Dict[str, Any]:
+    async def check_and_stop_hanging_sessions(self, redis_manager: Any, max_hours: int = 12, connection_timeout_minutes: int = 10) -> Dict[str, Any]:
         """
         Автоматически останавливает зависшие сессии зарядки
+
+        Проверяет два типа зависших сессий:
+        1. Сессии длительностью > max_hours (по умолчанию 12 часов)
+        2. Сессии без OCPP transaction > connection_timeout_minutes (по умолчанию 10 минут)
+           - Пользователь нажал "начать зарядку", но не подключил кабель
 
         Args:
             redis_manager: Redis менеджер для отправки команд
             max_hours: Максимальное время зарядки в часах (по умолчанию 12)
+            connection_timeout_minutes: Таймаут на подключение кабеля в минутах (по умолчанию 10)
 
         Returns:
             Dict с информацией о завершенных сессиях
         """
         cutoff_time = datetime.now(timezone.utc) - timedelta(hours=max_hours)
+        connection_timeout = datetime.now(timezone.utc) - timedelta(minutes=connection_timeout_minutes)
 
-        # Находим зависшие сессии
-        hanging_sessions_query = text("""
+        # ПРОВЕРКА 1: Сессии длительностью > max_hours
+        long_sessions_query = text("""
             SELECT id, user_id, station_id, start_time, amount
             FROM charging_sessions
             WHERE status = 'started'
@@ -1419,21 +1426,48 @@ class ChargingService:
             ORDER BY start_time ASC
         """)
 
-        result = self.db.execute(hanging_sessions_query, {"cutoff_time": cutoff_time})
-        hanging_sessions = result.fetchall()
+        # ПРОВЕРКА 2: Сессии без OCPP транзакции (кабель не подключен)
+        no_transaction_query = text("""
+            SELECT cs.id, cs.user_id, cs.station_id, cs.start_time, cs.amount
+            FROM charging_sessions cs
+            LEFT JOIN ocpp_transactions ot ON cs.id = ot.charging_session_id
+            WHERE cs.status = 'started'
+            AND cs.start_time < :connection_timeout
+            AND ot.id IS NULL
+            ORDER BY cs.start_time ASC
+        """)
 
-        if not hanging_sessions:
-            logger.info(f"✅ Зависших сессий не найдено (проверка за {max_hours} часов)")
+        # Выполняем обе проверки
+        long_result = self.db.execute(long_sessions_query, {"cutoff_time": cutoff_time})
+        long_sessions = long_result.fetchall()
+
+        no_transaction_result = self.db.execute(no_transaction_query, {"connection_timeout": connection_timeout})
+        no_transaction_sessions = no_transaction_result.fetchall()
+
+        # Объединяем результаты (используем set для удаления дубликатов по session_id)
+        all_hanging_sessions = {}
+        for session in long_sessions:
+            all_hanging_sessions[session[0]] = ("long_duration", session)
+        for session in no_transaction_sessions:
+            if session[0] not in all_hanging_sessions:
+                all_hanging_sessions[session[0]] = ("no_connection", session)
+
+        if not all_hanging_sessions:
+            logger.info(f"✅ Зависших сессий не найдено (проверка: {max_hours}ч активных, {connection_timeout_minutes}мин без подключения)")
             return {
                 "success": True,
                 "stopped_count": 0,
-                "sessions": []
+                "sessions": [],
+                "long_sessions": 0,
+                "no_connection_sessions": 0
             }
+
+        logger.warning(f"⚠️ Найдено зависших сессий: {len(long_sessions)} длинных, {len(no_transaction_sessions)} без подключения")
 
         stopped_sessions = []
         errors = []
 
-        for session in hanging_sessions:
+        for sess_id, (reason, session) in all_hanging_sessions.items():
             session_id = session[0]
             client_id = session[1]
             station_id = session[2]
@@ -1441,12 +1475,19 @@ class ChargingService:
             reserved_amount = session[4]
 
             duration_hours = (datetime.now(timezone.utc) - start_time).total_seconds() / 3600
+            duration_minutes = duration_hours * 60
 
             try:
-                logger.warning(
-                    f"⚠️ ЗАВИСШАЯ СЕССИЯ обнаружена: session_id={session_id}, "
-                    f"client={client_id}, длительность={duration_hours:.1f}ч"
-                )
+                if reason == "no_connection":
+                    logger.warning(
+                        f"⚠️ ЗАВИСШАЯ СЕССИЯ (НЕТ ПОДКЛЮЧЕНИЯ): session_id={session_id}, "
+                        f"client={client_id}, время с создания={duration_minutes:.0f}мин, резерв={reserved_amount} сом"
+                    )
+                else:
+                    logger.warning(
+                        f"⚠️ ЗАВИСШАЯ СЕССИЯ (СЛИШКОМ ДОЛГО): session_id={session_id}, "
+                        f"client={client_id}, длительность={duration_hours:.1f}ч"
+                    )
 
                 # Останавливаем сессию с автоматическим расчетом
                 # Передаем client_id владельца для авторизации операции
@@ -1457,15 +1498,23 @@ class ChargingService:
                         "session_id": session_id,
                         "client_id": client_id,
                         "station_id": station_id,
+                        "reason": reason,
                         "duration_hours": round(duration_hours, 1),
+                        "duration_minutes": round(duration_minutes, 0),
                         "energy_consumed": stop_result.get("energy_consumed", 0),
                         "actual_cost": stop_result.get("actual_cost", 0),
                         "refund_amount": stop_result.get("refund_amount", 0)
                     })
-                    logger.info(
-                        f"✅ Зависшая сессия {session_id} остановлена автоматически. "
-                        f"Потреблено: {stop_result.get('energy_consumed', 0)} кВт⋅ч"
-                    )
+                    if reason == "no_connection":
+                        logger.info(
+                            f"✅ Зависшая сессия {session_id} остановлена (НЕТ ПОДКЛЮЧЕНИЯ за {duration_minutes:.0f}мин). "
+                            f"Возврат: {stop_result.get('refund_amount', 0)} сом"
+                        )
+                    else:
+                        logger.info(
+                            f"✅ Зависшая сессия {session_id} остановлена (СЛИШКОМ ДОЛГО: {duration_hours:.1f}ч). "
+                            f"Потреблено: {stop_result.get('energy_consumed', 0)} кВт⋅ч"
+                        )
                 else:
                     errors.append({
                         "session_id": session_id,
@@ -1484,7 +1533,8 @@ class ChargingService:
 
         logger.info(
             f"🔄 Проверка зависших сессий завершена: "
-            f"найдено={len(hanging_sessions)}, остановлено={len(stopped_sessions)}, ошибок={len(errors)}"
+            f"найдено={len(all_hanging_sessions)} ({len(long_sessions)} длинных, {len(no_transaction_sessions)} без подключения), "
+            f"остановлено={len(stopped_sessions)}, ошибок={len(errors)}"
         )
 
         return {
@@ -1493,5 +1543,8 @@ class ChargingService:
             "error_count": len(errors),
             "sessions": stopped_sessions,
             "errors": errors,
-            "max_hours": max_hours
+            "max_hours": max_hours,
+            "connection_timeout_minutes": connection_timeout_minutes,
+            "long_sessions_found": len(long_sessions),
+            "no_connection_sessions_found": len(no_transaction_sessions)
         }
