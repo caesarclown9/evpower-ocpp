@@ -68,14 +68,45 @@ class AuthMiddleware:
                 unverified_header = jwt.get_unverified_header(token)
                 alg = unverified_header.get("alg", "RS256")
 
-                # БЕЗОПАСНОСТЬ: HS256 отключен из-за риска компрометации shared secret
-                # Поддерживаем только RS256/ES256 через JWKS
+                # Подготовка общих параметров валидации
+                options = {"verify_aud": bool(settings.JWT_VERIFY_AUD)}
+                audience = settings.JWT_VERIFY_AUD or None
+                issuer = settings.JWT_VERIFY_ISS or None
+
+                # HS256 - Supabase Auth стандартный алгоритм
+                # Безопасно, т.к. JWT_SECRET хранится только на server-side
                 if alg == "HS256":
-                    import logging
-                    logger = logging.getLogger(__name__)
-                    logger.warning(f"⚠️ HS256 token rejected - only RS256/ES256 supported via JWKS")
-                    return await self._unauthorized(scope, receive, send, "unauthorized",
-                        "HS256 not supported - use RS256/ES256 tokens only")
+                    if not settings.SUPABASE_JWT_SECRET:
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.error("❌ SUPABASE_JWT_SECRET not configured for HS256 validation")
+                        return await self._unauthorized(scope, receive, send, "unauthorized",
+                            "JWT configuration error")
+
+                    try:
+                        payload = jwt.decode(
+                            token,
+                            settings.SUPABASE_JWT_SECRET,
+                            algorithms=["HS256"],
+                            audience=audience,
+                            issuer=issuer if issuer else None,
+                            options=options,
+                        )
+
+                        client_id = (
+                            str(payload.get("sub"))
+                            or str((payload.get("user_metadata") or {}).get("client_id"))
+                        )
+                        if client_id:
+                            scope.setdefault("state", {})["client_id"] = client_id
+                            scope["state"]["auth_method"] = "jwt_hs256"
+                            await self.app(scope, receive, send)
+                            return
+                    except Exception as e:
+                        import logging
+                        logger = logging.getLogger(__name__)
+                        logger.error(f"❌ HS256 JWT validation failed: {e}", exc_info=True)
+                        return await self._unauthorized(scope, receive, send, "unauthorized", "invalid_token")
 
                 # RS256/ES256 - используем JWKS для безопасности
                 jwks = await jwks_cache.get_jwks()
@@ -91,9 +122,7 @@ class AuthMiddleware:
                 if not key:
                     return await self._unauthorized(scope, receive, send, "unauthorized", "JWKS key not found")
 
-                options = {"verify_aud": bool(settings.JWT_VERIFY_AUD)}
-                audience = settings.JWT_VERIFY_AUD or None
-                issuer = settings.JWT_VERIFY_ISS or None
+                # Используем общие параметры валидации (объявлены выше)
                 payload = jwt.decode(
                     token,
                     key,
