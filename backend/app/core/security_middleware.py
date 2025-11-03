@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 from .logging_config import set_correlation_id, log_security_event
 from app.core.config import settings
-from backend.ocpp_ws_server.redis_manager import redis_manager
+from ocpp_ws_server.redis_manager import redis_manager
 
 logger = logging.getLogger(__name__)
 
