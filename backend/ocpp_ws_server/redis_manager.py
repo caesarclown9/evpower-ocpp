@@ -18,10 +18,9 @@ class RedisOcppManager:
             # Fallback если config недоступен
             redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
             redis_password = os.getenv("REDIS_PASSWORD", None)
-        
-        # Логируем конфигурацию для отладки
-        logger.info(f"🔍 REDIS_MANAGER INIT: Using REDIS_URL = {redis_url}")
-        logger.info(f"🔍 REDIS_MANAGER INIT: REDIS_PASSWORD configured = {bool(redis_password)}")
+
+        # Логируем конфигурацию без секретных данных
+        logger.info(f"Redis manager: Initializing (password: {'Yes' if redis_password else 'No'})")
         
         # Создаем соединение без принудительной аутентификации
         self.redis = redis.from_url(redis_url, decode_responses=True)
@@ -30,10 +29,10 @@ class RedisOcppManager:
         """Проверка соединения с Redis"""
         try:
             result = await self.redis.ping()
-            logger.info(f"✅ REDIS PING SUCCESS: {result}")
+            logger.debug(f"Redis ping: {result}")
             return True
         except Exception as e:
-            logger.error(f"❌ REDIS PING FAILED: {e}")
+            logger.error(f"Redis ping failed: {e}")
             return False
 
     async def register_station(self, station_id: str):

@@ -9,49 +9,125 @@ from datetime import datetime, timedelta
 
 from .logging_config import set_correlation_id, log_security_event
 from app.core.config import settings
+from backend.ocpp_ws_server.redis_manager import redis_manager
 
 logger = logging.getLogger(__name__)
 
+class RedisRateLimiter:
+    """
+    Redis-based rate limiter с sliding window алгоритмом
+
+    Использует Redis Sorted Sets для хранения timestamps запросов.
+    Поддерживает horizontal scaling - работает корректно с несколькими instances.
+    """
+
+    def __init__(self, rate_limit_type: str, max_requests: int = 100, window_seconds: int = 60):
+        """
+        Args:
+            rate_limit_type: Тип лимита (default/critical/webhook)
+            max_requests: Максимальное количество запросов в окне
+            window_seconds: Размер окна в секундах
+        """
+        self.rate_limit_type = rate_limit_type
+        self.max_requests = max_requests
+        self.window_seconds = window_seconds
+        self.redis = redis_manager
+
+    async def is_allowed(self, identifier: str) -> bool:
+        """
+        Проверяет, разрешен ли запрос для данного идентификатора
+
+        Args:
+            identifier: Идентификатор клиента (client_id или IP)
+
+        Returns:
+            bool: True если запрос разрешен
+        """
+        try:
+            now = time.time()
+            window_start = now - self.window_seconds
+            key = f"rate_limit:{self.rate_limit_type}:{identifier}"
+
+            # Используем Redis pipeline для атомарных операций
+            # 1. Удаляем старые записи (вне окна)
+            await self.redis.redis.zremrangebyscore(key, '-inf', window_start)
+
+            # 2. Считаем текущее количество запросов в окне
+            current_count = await self.redis.redis.zcard(key)
+
+            # 3. Проверяем лимит
+            if current_count >= self.max_requests:
+                logger.warning(f"Rate limit exceeded for {identifier}: {current_count}/{self.max_requests}")
+                return False
+
+            # 4. Добавляем текущий запрос (score = timestamp, member = timestamp + random)
+            # Используем timestamp + random для уникальности members
+            import random
+            member = f"{now}:{random.randint(0, 999999)}"
+            await self.redis.redis.zadd(key, {member: now})
+
+            # 5. Устанавливаем TTL на ключ (для очистки неактивных ключей)
+            await self.redis.redis.expire(key, self.window_seconds + 10)
+
+            return True
+
+        except Exception as e:
+            # Если Redis недоступен - логируем ошибку и РАЗРЕШАЕМ запрос (fail-open)
+            logger.error(f"Redis rate limiter error: {e}. Allowing request (fail-open)")
+            return True
+
 class RateLimiter:
-    """Rate limiter с использованием sliding window"""
-    
+    """
+    In-memory rate limiter с использованием sliding window (FALLBACK)
+
+    DEPRECATED: Используется только как fallback если Redis недоступен.
+    Не работает корректно при horizontal scaling.
+    """
+
     def __init__(self, max_requests: int = 100, window_seconds: int = 60):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
         self.requests: Dict[str, deque] = defaultdict(deque)
-    
+
     def is_allowed(self, identifier: str) -> bool:
         """Проверяет, разрешен ли запрос"""
         now = time.time()
         window_start = now - self.window_seconds
-        
+
         # Очищаем старые запросы
         while self.requests[identifier] and self.requests[identifier][0] < window_start:
             self.requests[identifier].popleft()
-        
+
         # Проверяем лимит
         if len(self.requests[identifier]) >= self.max_requests:
             return False
-        
+
         # Добавляем текущий запрос
         self.requests[identifier].append(now)
         return True
 
 class SecurityMiddleware:
-    """Middleware для безопасности"""
-    
+    """Middleware для безопасности с Redis-based rate limiting"""
+
     def __init__(self):
         # Основной лимит и окно из ENV
         default_rpm = int(settings.__dict__.get("RATE_LIMIT_DEFAULT_PER_MINUTE", 60))
-        self.rate_limiter = RateLimiter(max_requests=default_rpm, window_seconds=60)
-        # Критичный лимит для денежных/старт/стоп операций
         self.critical_rpm = int(settings.__dict__.get("RATE_LIMIT_CRITICAL_PER_MINUTE", 10))
-        self.critical_rate_limiter = RateLimiter(max_requests=self.critical_rpm, window_seconds=60)
-        # Webhook лимит для защиты от DDoS на платежные уведомления
         self.webhook_rpm = int(settings.__dict__.get("RATE_LIMIT_WEBHOOK_PER_MINUTE", 30))
-        self.webhook_rate_limiter = RateLimiter(max_requests=self.webhook_rpm, window_seconds=60)
+
+        # Redis-based rate limiters (поддерживают horizontal scaling)
+        self.rate_limiter = RedisRateLimiter("default", max_requests=default_rpm, window_seconds=60)
+        self.critical_rate_limiter = RedisRateLimiter("critical", max_requests=self.critical_rpm, window_seconds=60)
+        self.webhook_rate_limiter = RedisRateLimiter("webhook", max_requests=self.webhook_rpm, window_seconds=60)
+
+        # Fallback in-memory limiters (если Redis недоступен)
+        self.fallback_rate_limiter = RateLimiter(max_requests=default_rpm, window_seconds=60)
+        self.fallback_critical_limiter = RateLimiter(max_requests=self.critical_rpm, window_seconds=60)
+        self.fallback_webhook_limiter = RateLimiter(max_requests=self.webhook_rpm, window_seconds=60)
+
         self.suspicious_ips = set()
         self.blocked_ips = set()
+        self.redis_available = True  # Флаг доступности Redis
         
         # Список подозрительных User-Agent
         self.suspicious_user_agents = [
@@ -86,7 +162,13 @@ class SecurityMiddleware:
         if is_webhook:
             # Для webhook используем IP-based rate limiting (без client_id)
             # так как это внешние запросы от платежных провайдеров
-            if not self.webhook_rate_limiter.is_allowed(client_ip):
+            try:
+                allowed = await self.webhook_rate_limiter.is_allowed(client_ip)
+            except Exception as e:
+                logger.error(f"Redis webhook rate limiter failed, using fallback: {e}")
+                allowed = self.fallback_webhook_limiter.is_allowed(client_ip)
+
+            if not allowed:
                 log_security_event("rate_limit_exceeded_webhook", source_ip=client_ip)
                 logger.warning(f"Webhook rate limit exceeded from {client_ip}")
                 return JSONResponse(
@@ -103,14 +185,27 @@ class SecurityMiddleware:
         )
 
         if is_critical:
-            if not self.critical_rate_limiter.is_allowed(identifier):
+            try:
+                allowed = await self.critical_rate_limiter.is_allowed(identifier)
+            except Exception as e:
+                logger.error(f"Redis critical rate limiter failed, using fallback: {e}")
+                allowed = self.fallback_critical_limiter.is_allowed(identifier)
+
+            if not allowed:
                 log_security_event("rate_limit_exceeded_critical", source_ip=client_ip)
                 return JSONResponse(
                     status_code=429,
                     content={"success": False, "error": "too_many_requests", "message": "Rate limit exceeded (critical)"}
                 )
 
-        if not self.rate_limiter.is_allowed(identifier):
+        # Общий rate limit для всех остальных запросов
+        try:
+            allowed = await self.rate_limiter.is_allowed(identifier)
+        except Exception as e:
+            logger.error(f"Redis default rate limiter failed, using fallback: {e}")
+            allowed = self.fallback_rate_limiter.is_allowed(identifier)
+
+        if not allowed:
             log_security_event("rate_limit_exceeded", source_ip=client_ip)
             return JSONResponse(
                 status_code=429,

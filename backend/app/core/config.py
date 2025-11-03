@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     SUPABASE_ANON_KEY: str = os.getenv("SUPABASE_ANON_KEY", "")
     SUPABASE_SERVICE_ROLE_KEY: str = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
     SUPABASE_JWKS_URL: str = os.getenv("SUPABASE_JWKS_URL", "")
-    SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "")  # JWT Secret для верификации токенов
+    # SUPABASE_JWT_SECRET удален - используется только JWKS (RS256/ES256) для безопасности
     CLIENT_FALLBACK_SECRET: str = os.getenv("CLIENT_FALLBACK_SECRET", "")
     JWT_VERIFY_ISS: str = os.getenv("JWT_VERIFY_ISS", "")  # например: https://<project>.supabase.co/auth/v1
     JWT_VERIFY_AUD: str = os.getenv("JWT_VERIFY_AUD", "authenticated")
@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     # Удалено: SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES (не используются)
     
     # App settings - правильные порты для production
+    APP_ENV: str = os.getenv("APP_ENV", "development")  # development, staging, production
     APP_HOST: str = os.getenv("APP_HOST", "0.0.0.0")
     APP_PORT: int = int(os.getenv("APP_PORT", "9210"))  # Production порт
     
@@ -92,6 +93,14 @@ class Settings(BaseSettings):
     # O!Dengi Production настройки (получить у O!Dengi при регистрации merchant)
     ODENGI_PROD_MERCHANT_ID: str = os.getenv("ODENGI_PROD_MERCHANT_ID", "")
     ODENGI_PROD_PASSWORD: str = os.getenv("ODENGI_PROD_PASSWORD", "")
+
+    # Webhook Security - IP Whitelist
+    # O!Dengi известные IP адреса серверов (обновить при получении от провайдера)
+    ODENGI_WEBHOOK_IPS: str = os.getenv("ODENGI_WEBHOOK_IPS", "")  # Comma-separated IPs
+    # OBANK известные IP адреса серверов (обновить при получении от провайдера)
+    OBANK_WEBHOOK_IPS: str = os.getenv("OBANK_WEBHOOK_IPS", "")  # Comma-separated IPs
+    # Отключить IP whitelist проверку (только для development/testing)
+    WEBHOOK_IP_WHITELIST_ENABLED: bool = os.getenv("WEBHOOK_IP_WHITELIST_ENABLED", "true").lower() == "true"
     
     # Payment Provider Selection
     # По умолчанию ODENGI (OBANK временно отключен)
@@ -174,6 +183,10 @@ class Settings(BaseSettings):
                     missing_vars.append("ODENGI_MERCHANT_ID")
                 if not self.ODENGI_PASSWORD:
                     missing_vars.append("ODENGI_PASSWORD")
+
+            # КРИТИЧНО: В production webhook должен иметь HMAC secret для проверки подписи
+            if self.is_production and not self.ODENGI_WEBHOOK_SECRET:
+                missing_vars.append("ODENGI_WEBHOOK_SECRET (required for webhook signature verification in production)")
         
         if missing_vars:
             raise ValueError(f"❌ Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}")

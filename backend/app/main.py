@@ -145,25 +145,16 @@ async def lifespan(app: FastAPI):
     """Lifecycle manager для приложения"""
     logger.info("🚀 Starting OCPP WebSocket Server...")
     
-    # 🔍 DEBUG: показываем все переменные окружения связанные с Redis
-    import os
-    logger.info(f"🔍 DEBUG - ENVIRONMENT CHECK:")
-    logger.info(f"🔍 REDIS_URL from env: {os.getenv('REDIS_URL', 'NOT SET')}")
-    logger.info(f"🔍 All Redis-related env vars:")
-    for key, value in os.environ.items():
-        if 'redis' in key.lower() or 'REDIS' in key:
-            logger.info(f"🔍 {key} = {value}")
-    
-    # 🔍 DEBUG: тестируем Redis подключение
-    logger.info("🔍 Testing Redis connection...")
+    # Проверка Redis подключения
+    logger.info("🔄 Initializing Redis connection...")
     try:
         ping_result = await redis_manager.ping()
         if ping_result:
-            logger.info("✅ Redis PING successful!")
+            logger.info("✅ Redis connection established successfully")
         else:
-            logger.error("❌ Redis PING failed!")
+            logger.error("❌ Redis connection failed")
     except Exception as e:
-        logger.error(f"❌ Redis connection test failed: {e}")
+        logger.error(f"❌ Redis connection error: {e}")
     
     logger.info("✅ Redis manager initialized")
     
@@ -290,17 +281,42 @@ payment_audit_middleware = PaymentAuditMiddleware()
 app.middleware("http")(payment_audit_middleware)
 
 # Получаем CORS origins из настроек (берется из env переменной CORS_ORIGINS)
-cors_origins = settings.CORS_ORIGINS.split(",") if settings.CORS_ORIGINS else ["*"]
-cors_origins = [origin.strip() for origin in cors_origins]  # Убираем пробелы
+cors_origins = settings.CORS_ORIGINS.split(",") if settings.CORS_ORIGINS else []
+cors_origins = [origin.strip() for origin in cors_origins if origin.strip()]  # Убираем пробелы и пустые значения
 
-logger.info(f"📋 CORS настройки загружены из env: {cors_origins}")
+# Fail-safe: если CORS origins пусты в dev, используем localhost
+if not cors_origins:
+    if settings.APP_ENV == "development":
+        cors_origins = ["http://localhost:3000", "http://localhost:9210"]
+        logger.warning("⚠️ CORS_ORIGINS not set - using development defaults")
+    else:
+        raise ValueError("CORS_ORIGINS must be explicitly set in production/staging environment")
+
+# Валидация: запрещаем wildcard в production с allow_credentials
+if "*" in cors_origins:
+    if settings.APP_ENV == "production":
+        raise ValueError("CORS wildcard (*) not allowed in production with allow_credentials=True")
+    logger.warning("⚠️ CORS wildcard (*) detected - should not be used in production")
+
+logger.info(f"📋 CORS origins configured: {len(cors_origins)} origins")
+
+# Явно задаем разрешенные заголовки (принцип наименьших привилегий)
+allowed_headers = [
+    "Authorization",
+    "Content-Type",
+    "X-Client-Id",
+    "X-Client-Timestamp",
+    "X-Client-Signature",
+    "Idempotency-Key",
+    "X-Correlation-ID"
+]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS", "PUT", "DELETE"],  # Добавил PUT и DELETE для полноты
-    allow_headers=["*"],  # Разрешаем все заголовки для гибкости
+    allow_methods=["GET", "POST", "OPTIONS"],  # Только необходимые методы
+    allow_headers=allowed_headers,  # Явный список вместо "*"
     expose_headers=["X-Correlation-ID"],
     max_age=86400  # 24 часа кэш для preflight запросов
 )
@@ -322,20 +338,15 @@ app.include_router(v1_router)
 @app.get("/health", summary="Проверка здоровья OCPP сервера")
 async def health_check():
     """Проверка состояния OCPP WebSocket сервера"""
-    import os
     try:
-        # 🔍 DEBUG для health check
-        redis_url = os.getenv('REDIS_URL', 'NOT SET')
-        logger.info(f"🔍 HEALTH CHECK - REDIS_URL: {redis_url}")
-        
         redis_status = await redis_manager.ping()
-        logger.info(f"🔍 HEALTH CHECK - Redis ping result: {redis_status}")
-        
+        logger.info(f"Health check - Redis: {'connected' if redis_status else 'disconnected'}")
+
         if not redis_status:
             raise Exception("Redis недоступен - OCPP функции не работают")
-            
+
         connected_stations = await redis_manager.get_stations()
-        logger.info(f"🔍 HEALTH CHECK - Connected stations: {len(connected_stations)}")
+        logger.info(f"Health check - Connected stations: {len(connected_stations)}")
         
         return {
             "status": "healthy",
@@ -347,11 +358,10 @@ async def health_check():
             "note": "Все системы работают"
         }
     except Exception as e:
-        logger.error(f"❌ HEALTH CHECK FAILED: {e}")
-        logger.error(f"🔍 HEALTH CHECK - Current REDIS_URL: {os.getenv('REDIS_URL', 'NOT SET')}")
+        logger.error(f"❌ Health check failed: {e}")
         return {
             "status": "unhealthy",
-            "service": "EvPower OCPP WebSocket Server", 
+            "service": "EvPower OCPP WebSocket Server",
             "version": "1.0.0",
             "error": str(e),
             "redis": "disconnected",
@@ -361,51 +371,49 @@ async def health_check():
 @app.get("/health-force", summary="Принудительная диагностика Redis")
 async def health_check_force():
     """Принудительная диагностика с пересозданием Redis подключения"""
-    import os
     from ocpp_ws_server.redis_manager import RedisOcppManager
-    
+
     try:
         # Принудительно создаем новый Redis manager
-        redis_url = os.getenv('REDIS_URL', 'redis://redis:6379/0')
-        logger.info(f"🔄 FORCE CHECK - Creating new Redis connection to: {redis_url}")
-        
+        logger.info("🔄 Force check - Creating new Redis connection")
+
         # Создаем новый экземпляр для тестирования
         test_redis = RedisOcppManager()
-        
+
         # Пытаемся подключиться
         ping_result = await test_redis.ping()
-        logger.info(f"🔄 FORCE CHECK - New Redis ping: {ping_result}")
-        
+        logger.info(f"🔄 Force check - Redis ping: {ping_result}")
+
         if ping_result:
             # Тестируем операции
             await test_redis.redis.set("health_test", "ok", ex=10)
             test_value = await test_redis.redis.get("health_test")
             await test_redis.redis.delete("health_test")
-            
-            logger.info(f"🔄 FORCE CHECK - Redis read/write test: {test_value}")
-            
+
+            logger.info(f"🔄 Force check - Read/write test: {'OK' if test_value else 'FAILED'}")
+
             return {
                 "status": "healthy",
                 "service": "EvPower OCPP WebSocket Server (FORCE CHECK)",
                 "version": "1.0.0",
                 "redis": "connected",
-                "redis_url": redis_url,
+                "redis_configured": True,
                 "ping_result": ping_result,
                 "rw_test": test_value.decode() if test_value else None,
                 "note": "Принудительная проверка прошла успешно"
             }
         else:
             raise Exception("Redis ping failed")
-            
+
     except Exception as e:
-        logger.error(f"❌ FORCE CHECK FAILED: {e}")
+        logger.error(f"❌ Force check failed: {e}")
         return {
             "status": "unhealthy",
             "service": "EvPower OCPP WebSocket Server (FORCE CHECK)",
             "version": "1.0.0",
             "error": str(e),
             "redis": "disconnected",
-            "redis_url": os.getenv('REDIS_URL', 'NOT SET'),
+            "redis_configured": bool(settings.REDIS_URL),
             "note": f"Принудительная проверка не удалась: {e}"
         }
 

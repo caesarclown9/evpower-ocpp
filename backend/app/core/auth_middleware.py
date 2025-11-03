@@ -59,57 +59,49 @@ class AuthMiddleware:
         client_id: Optional[str] = None
         auth_method: Optional[str] = None
 
-        # 1) JWT путь
+        # 1) JWT путь (только RS256/ES256 через JWKS)
         auth_header = request.headers.get("authorization", "")
         if auth_header.lower().startswith("bearer "):
             token = auth_header.split(" ", 1)[1].strip()
             try:
                 # Проверяем алгоритм токена
                 unverified_header = jwt.get_unverified_header(token)
-                alg = unverified_header.get("alg", "HS256")
+                alg = unverified_header.get("alg", "RS256")
 
-                # HS256 (legacy JWT secret) - используем shared secret
+                # БЕЗОПАСНОСТЬ: HS256 отключен из-за риска компрометации shared secret
+                # Поддерживаем только RS256/ES256 через JWKS
                 if alg == "HS256":
-                    if not settings.SUPABASE_JWT_SECRET:
-                        return await self._unauthorized(scope, receive, send, "unauthorized", "JWT secret not configured")
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"⚠️ HS256 token rejected - only RS256/ES256 supported via JWKS")
+                    return await self._unauthorized(scope, receive, send, "unauthorized",
+                        "HS256 not supported - use RS256/ES256 tokens only")
 
-                    options = {"verify_aud": bool(settings.JWT_VERIFY_AUD)}
-                    audience = settings.JWT_VERIFY_AUD or None
-                    issuer = settings.JWT_VERIFY_ISS or None
-                    payload = jwt.decode(
-                        token,
-                        settings.SUPABASE_JWT_SECRET,
-                        algorithms=["HS256"],
-                        audience=audience,
-                        options=options,
-                        issuer=issuer if issuer else None,
-                    )
-                else:
-                    # RS256/ES256 - используем JWKS для безопасности
-                    jwks = await jwks_cache.get_jwks()
-                    kid = unverified_header.get("kid")
-                    key = None
-                    for k in jwks.get("keys", []):
-                        if k.get("kid") == kid:
-                            key = k
-                            break
-                    if key is None and jwks.get("keys"):
-                        # Иногда kid может не совпадать/отсутствовать — пробуем первый ключ
-                        key = jwks["keys"][0]
-                    if not key:
-                        return await self._unauthorized(scope, receive, send, "unauthorized", "JWKS key not found")
+                # RS256/ES256 - используем JWKS для безопасности
+                jwks = await jwks_cache.get_jwks()
+                kid = unverified_header.get("kid")
+                key = None
+                for k in jwks.get("keys", []):
+                    if k.get("kid") == kid:
+                        key = k
+                        break
+                if key is None and jwks.get("keys"):
+                    # Иногда kid может не совпадать/отсутствовать — пробуем первый ключ
+                    key = jwks["keys"][0]
+                if not key:
+                    return await self._unauthorized(scope, receive, send, "unauthorized", "JWKS key not found")
 
-                    options = {"verify_aud": bool(settings.JWT_VERIFY_AUD)}
-                    audience = settings.JWT_VERIFY_AUD or None
-                    issuer = settings.JWT_VERIFY_ISS or None
-                    payload = jwt.decode(
-                        token,
-                        key,
-                        algorithms=[key.get("alg", "RS256"), "RS256", "ES256"],
-                        audience=audience,
-                        options=options,
-                        issuer=issuer if issuer else None,
-                    )
+                options = {"verify_aud": bool(settings.JWT_VERIFY_AUD)}
+                audience = settings.JWT_VERIFY_AUD or None
+                issuer = settings.JWT_VERIFY_ISS or None
+                payload = jwt.decode(
+                    token,
+                    key,
+                    algorithms=[key.get("alg", "RS256"), "RS256", "ES256"],
+                    audience=audience,
+                    options=options,
+                    issuer=issuer if issuer else None,
+                )
 
                 client_id = (
                     str(payload.get("sub"))

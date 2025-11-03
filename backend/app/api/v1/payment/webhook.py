@@ -2,14 +2,57 @@ from fastapi import APIRouter, Depends, HTTPException, Request, BackgroundTasks
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import logging
+import time
 import xml.etree.ElementTree as ET
 
+from app.core.config import settings
 from app.db.session import get_db
 from app.services.payment_provider_service import get_payment_provider_service
 from app.schemas.ocpp import PaymentWebhookData
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+def verify_webhook_ip(client_ip: str, provider: str) -> bool:
+    """
+    Проверка IP адреса webhook запроса по whitelist
+
+    Args:
+        client_ip: IP адрес клиента
+        provider: Название провайдера (OBANK/ODENGI)
+
+    Returns:
+        bool: True если IP в whitelist или проверка отключена
+    """
+    # В development можно отключить проверку
+    if not settings.WEBHOOK_IP_WHITELIST_ENABLED:
+        logger.warning(f"⚠️ Webhook IP whitelist disabled - accepting from {client_ip}")
+        return True
+
+    # Получаем whitelist для провайдера
+    if provider == "OBANK":
+        whitelist_str = settings.OBANK_WEBHOOK_IPS
+    else:  # ODENGI
+        whitelist_str = settings.ODENGI_WEBHOOK_IPS
+
+    if not whitelist_str:
+        # В production должен быть whitelist
+        if settings.is_production:
+            logger.error(f"❌ Webhook IP whitelist not configured for {provider} in production")
+            return False
+        else:
+            logger.warning(f"⚠️ Webhook IP whitelist not configured for {provider} - accepting in development")
+            return True
+
+    # Парсим whitelist
+    allowed_ips = [ip.strip() for ip in whitelist_str.split(",") if ip.strip()]
+
+    if client_ip in allowed_ips:
+        logger.info(f"✅ Webhook IP {client_ip} verified for {provider}")
+        return True
+    else:
+        logger.warning(f"⚠️ Webhook from unauthorized IP {client_ip} for {provider}. Allowed: {allowed_ips}")
+        return False
 
 async def process_balance_topup(topup_id: int, client_id: str, amount: float, invoice_id: str, provider_name: str):
     """Фоновая обработка пополнения баланса"""
@@ -73,39 +116,70 @@ async def handle_payment_webhook(
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db)
 ):
-    """🔔 Обработка webhook уведомлений от платежных провайдеров - полная реализация"""
+    """
+    🔔 Обработка webhook уведомлений от платежных провайдеров
+
+    Безопасность:
+    - IP whitelist проверка
+    - HMAC signature verification
+    - Timestamp validation (защита от replay attacks)
+    """
     try:
-        # 1. Получение сырых данных + защита от реплея
+        # 1. Получение клиентского IP
+        client_ip = request.client.host if request.client else "unknown"
+
+        # 2. Определяем провайдера
+        provider_name = get_payment_provider_service().get_provider_name()
+
+        # 3. IP Whitelist проверка (первый уровень защиты)
+        if not verify_webhook_ip(client_ip, provider_name):
+            logger.error(f"❌ Webhook rejected: IP {client_ip} not in whitelist for {provider_name}")
+            raise HTTPException(status_code=403, detail="Forbidden: IP not whitelisted")
+
+        # 4. Получение сырых данных
         payload = await request.body()
+
+        # 5. Timestamp validation - защита от replay attacks (второй уровень)
         ts_header = request.headers.get('X-Timestamp', '')
         try:
             ts = int(ts_header) if ts_header else 0
         except Exception:
             ts = 0
-        if ts and abs(int(time.time()) - ts) > 300:
-            raise HTTPException(status_code=400, detail="stale_timestamp")
-        
-        # 2. Определяем провайдера и верифицируем подпись
-        provider_name = get_payment_provider_service().get_provider_name()
 
+        if ts and abs(int(time.time()) - ts) > 300:  # 5 минут
+            logger.warning(f"⚠️ Stale webhook from {client_ip}: timestamp drift > 5 minutes")
+            raise HTTPException(status_code=400, detail="stale_timestamp")
+
+        # 6. HMAC Signature verification (третий уровень защиты)
         if provider_name == "OBANK":
             # ⚠️ OBANK временно отключен
             if not settings.OBANK_ENABLED:
-                logger.warning(f"OBANK webhook received while OBANK disabled (from {request.client.host})")
+                logger.warning(f"OBANK webhook received while OBANK disabled (from {client_ip})")
                 raise HTTPException(status_code=503, detail="OBANK temporarily disabled")
 
-            # TODO: КРИТИЧНО - Реализовать проверку OBANK webhook при включении:
-            # 1. IP whitelist для OBANK серверов
-            # 2. SSL client certificate verification (mutual TLS)
-            # 3. HMAC signature проверка (если OBANK предоставляет)
-            logger.warning("OBANK webhook authentication not implemented - accepting without verification")
+            # TODO: Когда OBANK включится - добавить SSL client certificate verification (mutual TLS)
+            logger.warning("⚠️ OBANK webhook: SSL client certificate verification not implemented")
             is_valid = True
         else:  # O!Dengi
             webhook_signature = request.headers.get('X-O-Dengi-Signature', '')
+
+            # В production HMAC signature обязателен
+            if not webhook_signature:
+                if settings.is_production:
+                    logger.error(f"❌ Webhook rejected: Missing signature in production from {client_ip}")
+                    raise HTTPException(status_code=401, detail="Missing webhook signature")
+                else:
+                    logger.warning(f"⚠️ Webhook without signature in development from {client_ip}")
+
+            # Проверяем что ODENGI_WEBHOOK_SECRET задан в production
+            if settings.is_production and not settings.ODENGI_WEBHOOK_SECRET:
+                logger.critical("❌ ODENGI_WEBHOOK_SECRET not configured in production!")
+                raise HTTPException(status_code=500, detail="Webhook verification not configured")
+
             is_valid = get_payment_provider_service().verify_webhook(payload, webhook_signature)
-        
+
         if not is_valid:
-            logger.warning(f"Invalid webhook signature from {request.client.host} for provider {provider_name}")
+            logger.error(f"❌ Invalid webhook signature from {client_ip} for {provider_name}")
             raise HTTPException(status_code=401, detail="Invalid signature")
         
         # 3. Парсинг данных в зависимости от провайдера
