@@ -67,11 +67,24 @@ class ChargingStopRequest(BaseModel):
 @router.post("/charging/start")
 async def start_charging(
     request: ChargingStartRequest, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    http_request: Request = None
 ):
     """🔌 Начать зарядку с проверкой баланса и снятием средств"""
     # Логируем запрос
     logger.info(f"Starting charging: client_id={request.client_id}, station_id={request.station_id}")
+
+    # Legacy безопасность: сверяем client_id из JWT и из тела запроса (если JWT присутствует)
+    try:
+        ctx_client_id = getattr(http_request.state, "client_id", None) if http_request else None
+    except Exception:
+        ctx_client_id = None
+    if ctx_client_id and ctx_client_id != request.client_id:
+        return {
+            "success": False,
+            "error": "unauthorized",
+            "message": "client_id mismatch"
+        }
     
     try:
         # 1. Проверяем существование клиента и его баланс
@@ -1330,7 +1343,8 @@ async def get_client_balance(
 @router.post("/balance/h2h-payment", response_model=H2HPaymentResponse)
 async def create_h2h_payment(
     request: H2HPaymentRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    http_request: Request = None
 ) -> H2HPaymentResponse:
     """💳 Host2Host платеж картой (прямой ввод данных карты)"""
     try:
@@ -1342,6 +1356,14 @@ async def create_h2h_payment(
                 error="h2h_not_supported",
                 message="H2H платежи поддерживаются только через OBANK"
             )
+
+        # Legacy безопасность: сверяем client_id из JWT и из тела (если JWT присутствует)
+        try:
+            ctx_client_id = getattr(http_request.state, "client_id", None) if http_request else None
+        except Exception:
+            ctx_client_id = None
+        if ctx_client_id and ctx_client_id != request.client_id:
+            return H2HPaymentResponse(success=False, client_id=request.client_id, error="unauthorized", message="client_id mismatch")
 
         # 1. Проверяем существование клиента
         client_check = db.execute(text("SELECT id, balance FROM clients WHERE id = :client_id"), 
@@ -1470,7 +1492,8 @@ async def create_h2h_payment(
 @router.post("/balance/token-payment", response_model=TokenPaymentResponse)
 async def create_token_payment(
     request: TokenPaymentRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    http_request: Request = None
 ) -> TokenPaymentResponse:
     """🔐 Платеж по токену сохраненной карты"""
     try:
@@ -1482,6 +1505,14 @@ async def create_token_payment(
                 error="token_payment_not_supported",
                 message="Токен-платежи поддерживаются только через OBANK"
             )
+
+        # Legacy безопасность: сверяем client_id из JWT и из тела (если JWT присутствует)
+        try:
+            ctx_client_id = getattr(http_request.state, "client_id", None) if http_request else None
+        except Exception:
+            ctx_client_id = None
+        if ctx_client_id and ctx_client_id != request.client_id:
+            return TokenPaymentResponse(success=False, client_id=request.client_id, error="unauthorized", message="client_id mismatch")
 
         # 1. Проверяем существование клиента
         client_check = db.execute(text("SELECT id, balance FROM clients WHERE id = :client_id"), 
@@ -1673,7 +1704,8 @@ async def process_balance_topup(topup_id: int, client_id: str, amount: float, in
 @router.post("/balance/topup-qr", response_model=BalanceTopupResponse)
 async def create_qr_balance_topup(
     request: BalanceTopupRequest, 
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    http_request: Request = None
 ) -> BalanceTopupResponse:
     """
     🔥 Пополнение баланса через QR код (O!Dengi)
@@ -1683,6 +1715,14 @@ async def create_qr_balance_topup(
     logger.info(f"🔥 QR Topup request: client_id={request.client_id}, amount={request.amount}")
     
     try:
+        # Legacy безопасность: сверяем client_id из JWT и из тела (если JWT присутствует)
+        try:
+            ctx_client_id = getattr(http_request.state, "client_id", None) if http_request else None
+        except Exception:
+            ctx_client_id = None
+        if ctx_client_id and ctx_client_id != request.client_id:
+            return BalanceTopupResponse(success=False, error="unauthorized", client_id=request.client_id)
+
         # 1. Проверяем существование клиента
         client_check = db.execute(text("SELECT id, balance FROM clients WHERE id = :client_id"), 
                                 {"client_id": request.client_id})
@@ -1851,7 +1891,8 @@ async def create_qr_balance_topup(
 @router.post("/balance/topup-card", response_model=H2HPaymentResponse)
 async def create_card_balance_topup(
     request: H2HPaymentRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    http_request: Request = None
 ) -> H2HPaymentResponse:
     """
     💳 Пополнение баланса банковской картой (OBANK)
@@ -1861,6 +1902,14 @@ async def create_card_balance_topup(
     logger.info(f"Card Topup request received for client: {request.client_id}")
     
     try:
+        # Legacy безопасность: сверяем client_id из JWT и из тела (если JWT присутствует)
+        try:
+            ctx_client_id = getattr(http_request.state, "client_id", None) if http_request else None
+        except Exception:
+            ctx_client_id = None
+        if ctx_client_id and ctx_client_id != request.client_id:
+            return H2HPaymentResponse(success=False, error="unauthorized", client_id=request.client_id)
+
         # 1. Проверяем существование клиента
         client_check = db.execute(text("SELECT id, balance FROM clients WHERE id = :client_id"), 
                                 {"client_id": request.client_id})

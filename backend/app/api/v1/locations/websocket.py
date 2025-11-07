@@ -7,9 +7,13 @@ import json
 import asyncio
 import logging
 from typing import Optional, Set
+from collections import deque
+import asyncio
+import time
 
 from app.db.session import get_db
 from ocpp_ws_server.redis_manager import redis_manager
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -73,6 +77,28 @@ class LocationWebSocketManager:
 # Глобальный менеджер WebSocket соединений
 ws_manager = LocationWebSocketManager()
 
+_ip_connection_counts: dict[str, int] = {}
+_user_connection_counts: dict[str, int] = {}
+_ip_count_lock = asyncio.Lock()
+_user_count_lock = asyncio.Lock()
+
+def _get_real_ip(websocket: WebSocket) -> str:
+    try:
+        xff = websocket.headers.get("x-forwarded-for")
+        if xff:
+            return xff.split(',')[0].strip()
+    except Exception:
+        pass
+    try:
+        xri = websocket.headers.get("x-real-ip")
+        if xri:
+            return xri.strip()
+    except Exception:
+        pass
+    try:
+        return websocket.client.host if websocket.client else "unknown"
+    except Exception:
+        return "unknown"
 
 @router.websocket("/ws/locations")
 async def websocket_locations(
@@ -99,17 +125,56 @@ async def websocket_locations(
         "data": {...}
     }
     """
+    # Проверка Origin по allowlist
+    try:
+        origin = websocket.headers.get("origin")
+        allowed = [o.strip() for o in (settings.CORS_ORIGINS or "").split(",") if o.strip()]
+        if allowed and origin and origin not in allowed:
+            await websocket.close(code=1008, reason="Origin not allowed")
+            return
+    except Exception:
+        # В сомнительных случаях не роняем соединение, логирование handled на уровне security middleware
+        pass
+
+    # Лимит одновременных подключений на IP (например, 20)
+    ip = _get_real_ip(websocket)
+    # Атомарное ограничение по IP
+    async with _ip_count_lock:
+        current = _ip_connection_counts.get(ip, 0)
+        if current >= 20:
+            await websocket.close(code=1013, reason="Too many connections from IP")
+            return
+        _ip_connection_counts[ip] = current + 1
+
     # Генерируем ID клиента если не передан
     if not client_id:
         import uuid
         client_id = str(uuid.uuid4())
     
+    # Вычисляем ключ пользователя: client_id или анонимный bucket
+    user_key = client_id or f"anon:{ip}"
+    # Лимит одновременных подключений на пользователя (например, 10)
+    async with _user_count_lock:
+        user_conn = _user_connection_counts.get(user_key, 0)
+        if user_conn >= 10:
+            await websocket.close(code=1013, reason="Too many connections for user")
+            # Освободим IP слот, если заняли ранее
+            async with _ip_count_lock:
+                if ip in _ip_connection_counts and _ip_connection_counts[ip] > 0:
+                    _ip_connection_counts[ip] -= 1
+                    if _ip_connection_counts[ip] == 0:
+                        del _ip_connection_counts[ip]
+            return
+        _user_connection_counts[user_key] = user_conn + 1
+
     await ws_manager.connect(websocket, client_id)
     
     # Создаем задачу для прослушивания Redis
     redis_listener_task = None
     
     try:
+        # Простейший rate limiter на входящие сообщения (не более 10/сек на клиента)
+        recent = deque()
         # Автоматически подписываем на все локации
         await ws_manager.subscribe(client_id, "location_updates:all")
         
@@ -131,6 +196,17 @@ async def websocket_locations(
             try:
                 # Ждем сообщение от клиента
                 data = await websocket.receive_text()
+                now = time.time()
+                # очистка окна 1с
+                while recent and now - recent[0] > 1.0:
+                    recent.popleft()
+                if len(recent) >= 10:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": "rate_limited"
+                    })
+                    continue
+                recent.append(now)
                 message = json.loads(data)
                 
                 action = message.get("action")
@@ -198,6 +274,18 @@ async def websocket_locations(
         
         # Отключаем клиента
         ws_manager.disconnect(client_id)
+        # Уменьшаем счетчик подключений IP
+        async with _ip_count_lock:
+            if ip in _ip_connection_counts and _ip_connection_counts[ip] > 0:
+                _ip_connection_counts[ip] -= 1
+                if _ip_connection_counts[ip] == 0:
+                    del _ip_connection_counts[ip]
+        # Уменьшаем счетчик подключений пользователя
+        async with _user_count_lock:
+            if user_key in _user_connection_counts and _user_connection_counts[user_key] > 0:
+                _user_connection_counts[user_key] -= 1
+                if _user_connection_counts[user_key] == 0:
+                    del _user_connection_counts[user_key]
 
 
 async def listen_redis_updates(client_id: str):

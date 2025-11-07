@@ -91,6 +91,7 @@ class AuthMiddleware:
                             audience=audience,
                             issuer=issuer if issuer else None,
                             options=options,
+                            leeway=60,
                         )
 
                         client_id = (
@@ -130,6 +131,7 @@ class AuthMiddleware:
                     audience=audience,
                     options=options,
                     issuer=issuer if issuer else None,
+                    leeway=60,
                 )
 
                 client_id = (

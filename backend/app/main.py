@@ -22,6 +22,7 @@ from app.api import mobile  # Импорт mobile API (будет постепе
 from app.api.v1 import router as v1_router  # Новая модульная структура
 from app.services.station_status_manager import StationStatusManager
 from app.db.session import get_db
+from app.db.session import get_session_local
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Настройка улучшенного логирования
@@ -140,6 +141,32 @@ async def payment_cleanup_task():
         # Ждем 1 час до следующей очистки
         await asyncio.sleep(3600)
 
+async def cleanup_idempotency_keys_task():
+    """Очистка устаревших ключей идемпотентности (> 7 дней)"""
+    # Ждем 10 минут перед первым запуском
+    await asyncio.sleep(600)
+    while True:
+        try:
+            logger.info("🧹 Очистка idempotency_keys старше 7 дней...")
+            SessionLocal = get_session_local()
+            db = SessionLocal()
+            try:
+                db.execute(text("""
+                    DELETE FROM idempotency_keys
+                    WHERE created_at < NOW() - INTERVAL '7 days'
+                """))
+                db.commit()
+                logger.info("✅ Очистка idempotency_keys выполнена")
+            except Exception as e:
+                logger.error(f"Ошибка очистки idempotency_keys: {e}")
+                db.rollback()
+            finally:
+                db.close()
+        except Exception as e:
+            logger.error(f"Критическая ошибка задачи очистки idempotency_keys: {e}")
+        # Запускаем раз в сутки
+        await asyncio.sleep(86400)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager для приложения"""
@@ -162,6 +189,9 @@ async def lifespan(app: FastAPI):
     payment_cleanup_task_ref = asyncio.create_task(payment_cleanup_task())
     logger.info("🧹 Payment cleanup task started (1 час между проверками)")
     logger.info("🔍 Payment status checks будут запускаться при создании платежей")
+    # Очистка идемпотентности
+    idem_cleanup_task_ref = asyncio.create_task(cleanup_idempotency_keys_task())
+    logger.info("🧹 Idempotency keys cleanup task started (ежедневно)")
     
     # Запуск scheduler для обновления статусов станций
     scheduler = AsyncIOScheduler()
@@ -250,6 +280,7 @@ async def lifespan(app: FastAPI):
     
     # Отмена background tasks при остановке
     payment_cleanup_task_ref.cancel()
+    idem_cleanup_task_ref.cancel()
     logger.info("🛑 Shutting down OCPP WebSocket Server...")
     logger.info("✅ Application shutdown complete")
 
