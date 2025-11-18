@@ -10,6 +10,9 @@ from typing import Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Import push service for notifications
+from app.services.push_service import push_service, get_station_owner_id
+
 class StationStatusManager:
     """Управление статусами станций на основе heartbeat"""
     
@@ -129,13 +132,42 @@ class StationStatusManager:
             # Логирование изменений
             if result["deactivated"]:
                 logger.warning(f"🔴 Деактивированы станции (нет heartbeat): {[s[1] for s in result['deactivated']]}")
-            
+
+                # Push notifications владельцам об offline станциях (graceful degradation)
+                for station_id, serial_number in result["deactivated"]:
+                    try:
+                        owner_id = get_station_owner_id(db, station_id)
+                        if owner_id:
+                            import asyncio
+                            # Получаем время когда станция ушла в offline
+                            offline_since_query = text("""
+                                SELECT last_heartbeat
+                                FROM ocpp_station_status
+                                WHERE station_id = :station_id
+                            """)
+                            offline_result = db.execute(offline_since_query, {"station_id": station_id}).fetchone()
+                            offline_since = offline_result[0].isoformat() if offline_result and offline_result[0] else None
+
+                            asyncio.create_task(
+                                push_service.send_to_owner(
+                                    db=db,
+                                    owner_id=owner_id,
+                                    event_type="station_offline",
+                                    station_id=station_id,
+                                    station_name=serial_number,
+                                    offline_since=offline_since
+                                )
+                            )
+                            logger.info(f"Push notification scheduled for owner {owner_id} (station {serial_number} offline)")
+                    except Exception as e:
+                        logger.warning(f"Failed to send station offline push for {station_id}: {e}")
+
             if result["activated"]:
                 logger.info(f"🟢 Активированы станции: {[s[1] for s in result['activated']]}")
-            
+
             if result["warning"]:
                 logger.warning(f"⚠️ Станции близки к деактивации: {[(s[1], f'{s[2]}мин') for s in result['warning']]}")
-            
+
             logger.info(f"📊 Статус станций - Активные: {result['total_active']}, Неактивные: {result['total_inactive']}")
             
         except Exception as e:

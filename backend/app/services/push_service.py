@@ -309,17 +309,19 @@ class PushNotificationService:
                 },
                 "require_interaction": True
             },
-            "low_balance": {
-                "title": "Низкий баланс",
-                "body": f"Ваш баланс: {params.get('balance', 0):.2f} сом. Пополните для зарядки.",
+            "low_balance_warning": {
+                "title": "⚠️ Низкий баланс",
+                "body": f"Ваш баланс: {params.get('balance', 0):.2f} сом. Пополните для продолжения зарядки.",
                 "icon": "/icons/low-balance.png",
                 "data": {
-                    "type": "low_balance",
-                    "balance": params.get("balance")
+                    "type": "low_balance_warning",
+                    "balance": params.get("balance"),
+                    "threshold": params.get("threshold", 50.0)
                 },
                 "actions": [
                     {"action": "topup", "title": "Пополнить"}
-                ]
+                ],
+                "require_interaction": True  # Важное уведомление
             },
             "payment_confirmed": {
                 "title": "Баланс пополнен",
@@ -397,6 +399,85 @@ class PushNotificationService:
 
 # Singleton instance
 push_service = PushNotificationService()
+
+
+async def check_and_send_low_balance_warning(
+    db: Session,
+    client_id: str,
+    current_balance: float,
+    threshold: float = 50.0
+) -> bool:
+    """
+    Проверить баланс и отправить предупреждение если он низкий.
+
+    Отправляет уведомление только если:
+    1. Баланс ниже threshold
+    2. Последнее уведомление было более 24 часов назад (или никогда)
+
+    Args:
+        db: Database session
+        client_id: ID клиента
+        current_balance: Текущий баланс клиента
+        threshold: Порог для предупреждения (по умолчанию 50 сом)
+
+    Returns:
+        True если уведомление отправлено, False если нет
+    """
+    from datetime import datetime, timezone, timedelta
+
+    # Проверка 1: Баланс ниже threshold?
+    if current_balance >= threshold:
+        return False
+
+    # Проверка 2: Было ли уже отправлено уведомление недавно?
+    try:
+        # Проверяем когда последний раз отправляли low_balance_warning
+        last_warning_check = db.execute(text("""
+            SELECT last_used_at
+            FROM push_subscriptions
+            WHERE user_id = :user_id
+            AND user_type = 'client'
+            ORDER BY last_used_at DESC NULLS LAST
+            LIMIT 1
+        """), {"user_id": client_id}).fetchone()
+
+        if last_warning_check and last_warning_check[0]:
+            last_warning_time = last_warning_check[0]
+            time_since_last = datetime.now(timezone.utc) - last_warning_time
+
+            # Если прошло менее 24 часов - не спамим
+            if time_since_last < timedelta(hours=24):
+                logger.debug(
+                    f"Low balance warning already sent recently for client {client_id} "
+                    f"({time_since_last.total_seconds() / 3600:.1f} hours ago)"
+                )
+                return False
+
+        # Отправить предупреждение
+        result = await push_service.send_to_client(
+            db=db,
+            client_id=client_id,
+            event_type="low_balance_warning",
+            balance=current_balance,
+            threshold=threshold
+        )
+
+        if result.get("success"):
+            logger.info(
+                f"✅ Low balance warning sent to client {client_id} "
+                f"(balance: {current_balance:.2f} сом, threshold: {threshold} сом)"
+            )
+            return True
+        else:
+            logger.warning(
+                f"Failed to send low balance warning to client {client_id}: "
+                f"{result.get('reason', 'Unknown error')}"
+            )
+            return False
+
+    except Exception as e:
+        logger.warning(f"Error checking/sending low balance warning for client {client_id}: {e}")
+        return False
 
 
 def get_station_owner_id(db: Session, station_id: str) -> Optional[str]:

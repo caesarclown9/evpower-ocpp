@@ -10,7 +10,7 @@ from ocpp_ws_server.redis_manager import redis_manager
 # Аутентификация через FlutterFlow - client_id в сессии
 from .schemas import ChargingStopRequest
 from .service import ChargingService
-from app.services.push_service import push_service, get_station_owner_id
+from app.services.push_service import push_service, get_station_owner_id, check_and_send_low_balance_warning
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -82,6 +82,19 @@ async def stop_charging(
                     logger.info(f"Push notification sent to owner {owner_id} (session completed)")
             except Exception as e:
                 logger.warning(f"Failed to send push notification to owner: {e}")
+
+        # Проверка низкого баланса после остановки зарядки (graceful degradation)
+        if result.get("success") and result.get("new_balance") is not None:
+            try:
+                new_balance = result.get("new_balance")
+                await check_and_send_low_balance_warning(
+                    db=db,
+                    client_id=client_id,
+                    current_balance=new_balance,
+                    threshold=50.0  # 50 сом - порог для предупреждения
+                )
+            except Exception as e:
+                logger.warning(f"Failed to check/send low balance warning: {e}")
 
         return result
         

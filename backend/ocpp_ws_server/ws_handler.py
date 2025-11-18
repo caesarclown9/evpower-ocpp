@@ -33,6 +33,7 @@ from app.db.models.ocpp import OCPPTransaction
 from sqlalchemy import text
 from decimal import Decimal
 from app.core.station_auth import station_auth
+from app.services.push_service import push_service
 
 logger = logging.getLogger(__name__)
 
@@ -201,9 +202,17 @@ class OCPPChargePoint(CP):
                 self.logger.warning(f"   Vendor Error Code: {vendor_error_code}")
             if vendor_id:
                 self.logger.warning(f"   Vendor ID: {vendor_id}")
-            
+
             # Автоматическая диагностика при ошибках
             asyncio.create_task(self._perform_error_diagnostics(connector_id, error_code))
+
+            # Push notification клиенту об ошибке зарядки (graceful degradation)
+            asyncio.create_task(self._send_charging_error_notification(
+                connector_id=connector_id,
+                error_code=error_code,
+                info=info,
+                vendor_error_code=vendor_error_code
+            ))
         
         # Логирование изменений статуса
         if status in ["Faulted", "Unavailable"]:
@@ -1201,9 +1210,64 @@ class OCPPChargePoint(CP):
                     self.logger.debug(f"DataTransfer не поддерживается: {e}")
             
             self.logger.info(f"✅ Диагностика завершена для коннектора {connector_id}")
-            
+
         except Exception as e:
             self.logger.error(f"❌ Ошибка в диагностике: {e}")
+
+    async def _send_charging_error_notification(
+        self,
+        connector_id: int,
+        error_code: str,
+        info: Optional[str] = None,
+        vendor_error_code: Optional[str] = None
+    ):
+        """Отправить push notification клиенту об ошибке зарядки"""
+        try:
+            with next(get_db()) as db:
+                # Найти активную сессию для этого коннектора
+                session_query = text("""
+                    SELECT cs.id, cs.client_id
+                    FROM charging_sessions cs
+                    WHERE cs.station_id = :station_id
+                      AND cs.connector_id = :connector_id
+                      AND cs.status IN ('active', 'preparing')
+                    ORDER BY cs.started_at DESC
+                    LIMIT 1
+                """)
+
+                session_result = db.execute(session_query, {
+                    "station_id": self.id,
+                    "connector_id": connector_id
+                }).fetchone()
+
+                if not session_result:
+                    self.logger.debug(f"No active session found for connector {connector_id}, skipping error notification")
+                    return
+
+                session_id, client_id = session_result
+
+                # Формируем сообщение об ошибке
+                error_message = f"Ошибка коннектора {connector_id}: {error_code}"
+                if info:
+                    error_message += f" - {info}"
+
+                # Отправляем push notification
+                result = await push_service.send_to_client(
+                    db=db,
+                    client_id=client_id,
+                    event_type="charging_error",
+                    session_id=session_id,
+                    error_code=error_code,
+                    error_message=error_message
+                )
+
+                if result.get("success"):
+                    self.logger.info(f"✅ Charging error notification sent to client {client_id} (session {session_id})")
+                else:
+                    self.logger.warning(f"Failed to send charging error notification: {result.get('reason', 'Unknown')}")
+
+        except Exception as e:
+            self.logger.warning(f"Error sending charging error notification for connector {connector_id}: {e}")
 
 
 class OCPPWebSocketHandler:

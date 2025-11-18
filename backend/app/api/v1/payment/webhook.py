@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.db.session import get_db
 from app.services.payment_provider_service import get_payment_provider_service
 from app.schemas.ocpp import PaymentWebhookData
+from app.services.push_service import push_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -103,7 +104,23 @@ async def process_balance_topup(topup_id: int, client_id: str, amount: float, in
         
         db.commit()
         logger.info(f"✅ Пополнение выполнено: {client_id}, +{amount} сом, баланс: {old_balance} → {new_balance}")
-        
+
+        # Push notification клиенту о пополнении баланса (graceful degradation)
+        try:
+            import asyncio
+            asyncio.create_task(
+                push_service.send_to_client(
+                    db=db,
+                    client_id=client_id,
+                    event_type="payment_confirmed",
+                    amount=amount,
+                    new_balance=new_balance
+                )
+            )
+            logger.info(f"Push notification scheduled for client {client_id} (payment confirmed)")
+        except Exception as e:
+            logger.warning(f"Failed to schedule push notification for payment: {e}")
+
     except Exception as e:
         db.rollback()
         logger.error(f"❌ Ошибка обработки пополнения {invoice_id}: {e}")
