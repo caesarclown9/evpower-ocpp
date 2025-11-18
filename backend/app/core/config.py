@@ -202,10 +202,16 @@ class Settings(BaseSettings):
 
         # Проверка VAPID keys для Push Notifications в production
         if self.is_production and self.PUSH_NOTIFICATIONS_ENABLED:
-            if not self.VAPID_PRIVATE_KEY:
-                missing_vars.append("VAPID_PRIVATE_KEY (required for push notifications in production)")
-            if not self.VAPID_PUBLIC_KEY:
-                missing_vars.append("VAPID_PUBLIC_KEY (required for push notifications in production)")
+            if not self.VAPID_PRIVATE_KEY or not self.VAPID_PUBLIC_KEY:
+                # Автоматически отключаем push notifications, если нет VAPID keys
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.warning(
+                    "⚠️ VAPID keys не настроены в production. "
+                    "Push notifications автоматически отключены. "
+                    "Для включения добавьте VAPID_PRIVATE_KEY и VAPID_PUBLIC_KEY в environment variables."
+                )
+                self.PUSH_NOTIFICATIONS_ENABLED = False
 
         if missing_vars:
             raise ValueError(f"❌ Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}")
