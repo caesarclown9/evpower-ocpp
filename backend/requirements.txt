@@ -33,3 +33,6 @@ psutil>=5.9.0
 
 # Фоновые задачи
 apscheduler>=3.10.0
+
+# --- Web Push Notifications ---
+pywebpush==1.14.0

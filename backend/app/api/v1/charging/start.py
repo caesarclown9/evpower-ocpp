@@ -14,6 +14,7 @@ from ocpp_ws_server.redis_manager import redis_manager
 from app.crud.ocpp_service import payment_service
 from .schemas import ChargingStartRequest
 from .service import ChargingService
+from app.services.push_service import push_service, get_station_owner_id
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -50,7 +51,44 @@ async def start_charging(
             amount_som=request.amount_som,
             redis_manager=redis_manager
         )
-        
+
+        # Если зарядка успешно начата - отправляем push notifications
+        if result.get("success"):
+            session_id = result.get("session_id")
+            station_id_val = result.get("station_id")
+            connector_id_val = result.get("connector_id")
+
+            # Push notification клиенту (graceful degradation)
+            try:
+                await push_service.send_to_client(
+                    db=db,
+                    client_id=client_id,
+                    event_type="charging_started",
+                    session_id=session_id,
+                    station_id=station_id_val,
+                    connector_id=connector_id_val
+                )
+                logger.info(f"Push notification sent to client {client_id} (charging started)")
+            except Exception as e:
+                logger.warning(f"Failed to send push notification to client: {e}")
+
+            # Push notification владельцу станции (graceful degradation)
+            try:
+                owner_id = get_station_owner_id(db, station_id_val)
+                if owner_id:
+                    await push_service.send_to_owner(
+                        db=db,
+                        owner_id=owner_id,
+                        event_type="new_session",
+                        session_id=session_id,
+                        station_id=station_id_val,
+                        station_name=station_id_val,  # TODO: получить имя станции из БД
+                        connector_id=connector_id_val
+                    )
+                    logger.info(f"Push notification sent to owner {owner_id} (new session)")
+            except Exception as e:
+                logger.warning(f"Failed to send push notification to owner: {e}")
+
         return result
         
     except ValueError as e:

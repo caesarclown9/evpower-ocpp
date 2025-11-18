@@ -7,6 +7,248 @@
 
 ---
 
+## [1.3.0] - 2025-11-18 - PUSH NOTIFICATIONS 📱
+
+### ✨ Added (Новая функциональность)
+
+#### 1. Web Push Notifications для PWA приложения
+- **Файлы:**
+  - `backend/app/services/push_service.py` - сервис для отправки push уведомлений
+  - `backend/app/api/v1/notifications/subscriptions.py` - управление подписками
+  - `backend/app/api/v1/notifications/vapid.py` - VAPID public key endpoint
+  - `backend/migrations/003_add_push_notifications.sql` - миграция БД
+- **Что сделано:**
+  - Реализована поддержка Web Push API (RFC 8030, RFC 8292)
+  - Используется VAPID для аутентификации сервера
+  - Библиотека: `pywebpush==1.14.0`
+  - Таблица `push_subscriptions` с RLS policies
+  - 3 индекса для оптимизации запросов
+  - Автоматическое удаление невалидных subscriptions (410 Gone, 404 Not Found)
+- **Результат:** PWA может получать push уведомления в реальном времени
+- **Статус:** ✅ РЕАЛИЗОВАНО
+
+#### 2. API Endpoints для Push Notifications
+- **`POST /api/v1/notifications/subscribe`**
+  - Регистрация push subscription от браузера
+  - Upsert логика (обновление если exists)
+  - Требуется JWT аутентификация
+  - Поддержка client и owner типов
+- **`POST /api/v1/notifications/unsubscribe`**
+  - Удаление push subscription
+  - Требуется JWT аутентификация
+- **`GET /api/v1/notifications/vapid-public-key`**
+  - Получение VAPID public key
+  - Публичный endpoint (без аутентификации)
+- **`POST /api/v1/notifications/test`**
+  - Отправка тестового уведомления
+  - Требуется JWT аутентификация
+- **Статус:** ✅ РЕАЛИЗОВАНО
+
+#### 3. Push уведомления для клиентов
+- **Charging Started** - зарядка началась
+  - Триггер: `POST /api/v1/charging/start` (после успешного старта)
+  - Данные: session_id, station_id, connector_id
+- **Charging Completed** - зарядка завершена
+  - Триггер: `POST /api/v1/charging/stop` (после успешной остановки)
+  - Данные: session_id, energy_kwh, amount (стоимость)
+- **Graceful degradation:** ошибки push не блокируют основной flow
+- **Файлы:**
+  - `backend/app/api/v1/charging/start.py:55-91`
+  - `backend/app/api/v1/charging/stop.py:47-85`
+- **Статус:** ✅ РЕАЛИЗОВАНО
+
+#### 4. Push уведомления для владельцев станций
+- **New Session** - новая зарядка начата на станции
+  - Триггер: `POST /api/v1/charging/start` (после успешного старта)
+  - Данные: session_id, station_id, connector_id
+- **Session Completed** - зарядка завершена на станции
+  - Триггер: `POST /api/v1/charging/stop` (после успешной остановки)
+  - Данные: session_id, station_id, energy_kwh, amount (доход)
+- **Helper функция:** `get_station_owner_id(db, station_id)` для получения owner через location JOIN
+- **Статус:** ✅ РЕАЛИЗОВАНО
+
+### 🗄️ Database (Изменения БД)
+
+#### 5. Таблица push_subscriptions
+```sql
+CREATE TABLE public.push_subscriptions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL,
+    user_type VARCHAR(10) NOT NULL CHECK (user_type IN ('client', 'owner')),
+    endpoint TEXT NOT NULL,
+    p256dh_key TEXT NOT NULL,
+    auth_key TEXT NOT NULL,
+    user_agent TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ,
+    UNIQUE(user_id, endpoint)
+);
+```
+- **Индексы:**
+  - `idx_push_subscriptions_user` - (user_id, user_type)
+  - `idx_push_subscriptions_endpoint` - (endpoint)
+  - `idx_push_subscriptions_last_used` - (last_used_at)
+- **RLS Policies:**
+  - Клиенты видят только свои подписки
+  - Владельцы видят только свои подписки
+  - Service role имеет полный доступ
+- **Триггер:** Автоматическое обновление `updated_at`
+- **Cleanup функция:** Удаление старых subscriptions (>90 дней)
+- **Статус:** ✅ РЕАЛИЗОВАНО
+
+### ⚙️ Configuration (Изменения конфигурации)
+
+#### 6. Новые environment variables
+```bash
+# VAPID Keys для Web Push
+VAPID_PRIVATE_KEY=<base64-encoded-key>
+VAPID_PUBLIC_KEY=<base64-encoded-key>
+VAPID_SUBJECT=mailto:noreply@evpower.kg
+
+# Push Notifications Settings
+PUSH_NOTIFICATIONS_ENABLED=true
+PUSH_MAX_RETRIES=3
+PUSH_TTL=86400  # 24 hours
+```
+- **Файлы:**
+  - `backend/.env.example` - документация переменных
+  - `backend/app/core/config.py:129-137` - Settings class
+- **Валидация:** В production VAPID keys обязательны если `PUSH_NOTIFICATIONS_ENABLED=true`
+- **Статус:** ✅ РЕАЛИЗОВАНО
+
+### 🔧 Changed (Обновления)
+
+#### 7. Зависимости
+- **requirements.txt:** Добавлен `pywebpush==1.14.0`
+- **Статус:** ✅ ОБНОВЛЕНО
+
+#### 8. API Router
+- **backend/app/api/v1/__init__.py**
+  - Зарегистрирован notifications router
+  - Тег: "Push Notifications"
+- **Статус:** ✅ ОБНОВЛЕНО
+
+### 🛡️ Security (Безопасность)
+
+#### 9. Graceful Degradation Pattern
+- Все push notification вызовы обернуты в `try-except`
+- Ошибки логируются как warnings (`logger.warning`)
+- Push failures не блокируют основной application flow
+- Критические операции (charging start/stop) всегда завершаются успешно
+- **Файлы:**
+  - `backend/app/services/push_service.py` - все методы
+  - `backend/app/api/v1/charging/start.py:62-90`
+  - `backend/app/api/v1/charging/stop.py:55-84`
+- **Статус:** ✅ РЕАЛИЗОВАНО
+
+#### 10. Invalid Subscription Cleanup
+- При получении 410 Gone или 404 Not Found от push service
+- Subscription автоматически удаляется из БД
+- Предотвращает накопление мёртвых subscriptions
+- **Файл:** `backend/app/services/push_service.py:108-116`
+- **Статус:** ✅ РЕАЛИЗОВАНО
+
+### 📊 Статистика изменений v1.3.0
+
+- **Дата:** 2025-11-18
+- **Новых features:** 4 (Push Notifications, API Endpoints, Client Events, Owner Events)
+- **Файлов создано:** 7
+- **Файлов изменено:** 4
+- **Строк кода добавлено:** ~850
+- **Время разработки:** ~4 часа
+- **Прогресс реализации:** 52% (14/27 задач)
+
+### 🎯 Production Impact
+
+**Новые возможности:**
+- ✅ Real-time push уведомления для PWA
+- ✅ Клиенты получают уведомления о зарядке
+- ✅ Владельцы получают уведомления о новых сессиях
+- ✅ Автоматическая очистка невалидных subscriptions
+- ✅ Graceful degradation - push не блокирует основной flow
+
+**Что НЕ реализовано (планируется в будущих версиях):**
+- ⏳ Charging Error push notifications
+- ⏳ Low Balance Warning
+- ⏳ Payment Confirmed push
+- ⏳ Station Offline detection
+
+### 📝 TODO Items
+
+**В коде:**
+- `charging/start.py:78` - TODO: получить имя станции из БД вместо station_id
+- `charging/stop.py:78` - TODO: получить имя станции из БД вместо station_id
+
+**Для следующих версий:**
+- Реализовать ЭТАП 5: Additional Events (Low Balance, Payment Confirmed, Station Offline)
+- Создать примеры API curl запросов
+- Написать BACKEND_API_REFERENCE.md секцию для Push Notifications
+
+### 🚀 Deployment Notes для v1.3.0
+
+**Обязательные действия перед деплоем:**
+
+1. Сгенерировать VAPID keys:
+   ```python
+   from cryptography.hazmat.primitives.asymmetric import ec
+   from cryptography.hazmat.primitives import serialization
+   import base64
+
+   private_key = ec.generate_private_key(ec.SECP256R1())
+   public_key = private_key.public_key()
+
+   private_bytes = private_key.private_bytes(
+       encoding=serialization.Encoding.PEM,
+       format=serialization.PrivateFormat.PKCS8,
+       encryption_algorithm=serialization.NoEncryption()
+   )
+   public_bytes = public_key.public_bytes(
+       encoding=serialization.Encoding.X962,
+       format=serialization.PublicFormat.UncompressedPoint
+   )
+
+   vapid_private_key = base64.urlsafe_b64encode(private_bytes).decode()
+   vapid_public_key = base64.urlsafe_b64encode(public_bytes).decode()
+   ```
+
+2. Применить SQL миграцию:
+   - Открыть Supabase Dashboard → SQL Editor
+   - Выполнить `backend/migrations/003_add_push_notifications.sql`
+   - Проверить: `SELECT * FROM push_subscriptions LIMIT 1;`
+
+3. Обновить environment variables:
+   ```bash
+   VAPID_PRIVATE_KEY=<generated-key>
+   VAPID_PUBLIC_KEY=<generated-key>
+   VAPID_SUBJECT=mailto:noreply@evpower.kg
+   PUSH_NOTIFICATIONS_ENABLED=true
+   PUSH_MAX_RETRIES=3
+   PUSH_TTL=86400
+   ```
+
+4. Установить зависимости:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+5. Перезапустить приложение:
+   ```bash
+   docker-compose restart backend
+   ```
+
+6. Smoke testing:
+   ```bash
+   # 1. Check VAPID key
+   curl https://ocpp.evpower.kg/api/v1/notifications/vapid-public-key
+
+   # 2. Test push (requires JWT)
+   curl -X POST https://ocpp.evpower.kg/api/v1/notifications/test \
+     -H "Authorization: Bearer YOUR_JWT_TOKEN"
+   ```
+
+---
+
 ## [1.2.4] - 2025-11-03 - AUTH FIX 🔧
 
 ### 🔥 Fixed (Критическое исправление аутентификации)
@@ -662,7 +904,7 @@
 - **MINOR** версия при добавлении функциональности с обратной совместимостью
 - **PATCH** версия при исправлении ошибок с обратной совместимостью
 
-**Текущая версия:** 1.2.3 ✅ PRODUCTION READY (SECURITY HARDENING)
+**Текущая версия:** 1.3.0 ✅ PRODUCTION READY (PUSH NOTIFICATIONS)
 
 ---
 

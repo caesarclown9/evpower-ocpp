@@ -122,9 +122,19 @@ class Settings(BaseSettings):
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
     LOG_PATH: str = os.getenv("LOG_PATH", "/var/log/evpower-ocpp")
-    
+
     # Environment
     APP_ENV: str = os.getenv("APP_ENV", "development")
+
+    # VAPID для Web Push Notifications
+    VAPID_PRIVATE_KEY: str = os.getenv("VAPID_PRIVATE_KEY", "")
+    VAPID_PUBLIC_KEY: str = os.getenv("VAPID_PUBLIC_KEY", "")
+    VAPID_SUBJECT: str = os.getenv("VAPID_SUBJECT", "mailto:noreply@evpower.kg")
+
+    # Push Notifications Settings
+    PUSH_NOTIFICATIONS_ENABLED: bool = os.getenv("PUSH_NOTIFICATIONS_ENABLED", "true").lower() == "true"
+    PUSH_MAX_RETRIES: int = int(os.getenv("PUSH_MAX_RETRIES", "3"))
+    PUSH_TTL: int = int(os.getenv("PUSH_TTL", "86400"))  # 24 hours in seconds
     
     @property
     def is_production(self) -> bool:
@@ -189,10 +199,17 @@ class Settings(BaseSettings):
             # КРИТИЧНО: В production webhook должен иметь HMAC secret для проверки подписи
             if self.is_production and not self.ODENGI_WEBHOOK_SECRET:
                 missing_vars.append("ODENGI_WEBHOOK_SECRET (required for webhook signature verification in production)")
-        
+
+        # Проверка VAPID keys для Push Notifications в production
+        if self.is_production and self.PUSH_NOTIFICATIONS_ENABLED:
+            if not self.VAPID_PRIVATE_KEY:
+                missing_vars.append("VAPID_PRIVATE_KEY (required for push notifications in production)")
+            if not self.VAPID_PUBLIC_KEY:
+                missing_vars.append("VAPID_PUBLIC_KEY (required for push notifications in production)")
+
         if missing_vars:
             raise ValueError(f"❌ Отсутствуют обязательные переменные окружения: {', '.join(missing_vars)}")
-        
+
         return self
 
     class Config:
