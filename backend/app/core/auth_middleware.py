@@ -189,6 +189,7 @@ class AuthMiddleware:
             "/",
             "/api/v1/locations",  # Список локаций для карты
             "/api/v1/station/status",  # Статус станции для карты
+            "/api/v1/notifications/vapid-public-key",  # VAPID public key для Push Notifications
         ]
 
         # Проверяем публичные endpoints (точное совпадение или начало пути)
