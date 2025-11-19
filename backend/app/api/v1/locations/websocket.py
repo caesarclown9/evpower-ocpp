@@ -107,33 +107,40 @@ async def websocket_locations(
 ):
     """
     WebSocket для получения обновлений статусов локаций в реальном времени
-    
+
     Клиент может подписаться на обновления:
     - Всех локаций: {"action": "subscribe", "channel": "all"}
     - Конкретной локации: {"action": "subscribe", "channel": "location:location_id"}
     - Станций локации: {"action": "subscribe", "channel": "location_stations:location_id"}
-    
+
     Формат входящих сообщений:
     {
         "action": "subscribe" | "unsubscribe" | "ping",
         "channel": "all" | "location:id" | "location_stations:id"
     }
-    
+
     Формат исходящих сообщений:
     {
         "type": "location_status_update" | "station_status_update" | "pong",
         "data": {...}
     }
     """
+    # DEBUG: Логируем попытку подключения
+    logger.info(f"🔌 WebSocket connection attempt - client_id: {client_id}, headers: {dict(websocket.headers)}")
+
     # Проверка Origin по allowlist
     try:
         origin = websocket.headers.get("origin")
         allowed = [o.strip() for o in (settings.CORS_ORIGINS or "").split(",") if o.strip()]
         if allowed and origin and origin not in allowed:
+            logger.warning(f"❌ WebSocket blocked - origin '{origin}' not in allowed list: {allowed}")
             await websocket.close(code=1008, reason="Origin not allowed")
             return
-    except Exception:
+        else:
+            logger.info(f"✅ WebSocket origin check passed - origin: {origin}")
+    except Exception as e:
         # В сомнительных случаях не роняем соединение, логирование handled на уровне security middleware
+        logger.warning(f"⚠️ WebSocket origin check failed with exception: {e}")
         pass
 
     # Лимит одновременных подключений на IP (например, 20)
