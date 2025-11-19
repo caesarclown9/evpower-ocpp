@@ -35,7 +35,7 @@ class PushSubscriptionData(BaseModel):
 class SubscribeRequest(BaseModel):
     """Запрос на подписку на push notifications"""
     subscription: PushSubscriptionData
-    user_type: str = Field(..., regex="^(client|owner)$", description="Тип пользователя: client или owner")
+    user_type: str = Field(..., pattern="^(client|owner)$", description="Тип пользователя: client или owner")
 
 
 class UnsubscribeRequest(BaseModel):
