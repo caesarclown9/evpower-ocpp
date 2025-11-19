@@ -90,8 +90,7 @@ class AuthMiddleware:
                             algorithms=["HS256"],
                             audience=audience,
                             issuer=issuer if issuer else None,
-                            options=options,
-                            leeway=60,
+                            options=options
                         )
 
                         client_id = (
@@ -130,8 +129,7 @@ class AuthMiddleware:
                     algorithms=[key.get("alg", "RS256"), "RS256", "ES256"],
                     audience=audience,
                     options=options,
-                    issuer=issuer if issuer else None,
-                    leeway=60,
+                    issuer=issuer if issuer else None
                 )
 
                 client_id = (
