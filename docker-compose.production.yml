@@ -35,21 +35,11 @@ services:
       - "traefik.http.routers.evpower-backend.tls=true"
       - "traefik.http.routers.evpower-backend.tls.certresolver=letsencrypt"
       - "traefik.http.services.evpower-backend.loadbalancer.server.port=9210"
-      - "traefik.http.services.evpower-backend.loadbalancer.responsetimeout=0"
       
       # WebSocket поддержка для всех путей
       - "traefik.http.middlewares.evpower-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
       - "traefik.http.middlewares.evpower-headers.headers.customrequestheaders.X-Forwarded-For="
       - "traefik.http.routers.evpower-backend.middlewares=evpower-headers"
-
-      # Отдельный WS роутер с обязательными заголовками Upgrade/Connection
-      - "traefik.http.middlewares.evpower-ws.headers.customrequestheaders.Upgrade=websocket"
-      - "traefik.http.middlewares.evpower-ws.headers.customrequestheaders.Connection=Upgrade"
-      - "traefik.http.routers.evpower-backend-ws.rule=Host(`ocpp.evpower.kg`) && (PathPrefix(`/api/v1/locations/ws`) || PathPrefix(`/api/v1/ws`))"
-      - "traefik.http.routers.evpower-backend-ws.entrypoints=websecure"
-      - "traefik.http.routers.evpower-backend-ws.tls=true"
-      - "traefik.http.routers.evpower-backend-ws.service=evpower-backend"
-      - "traefik.http.routers.evpower-backend-ws.middlewares=evpower-ws@docker"
       # Дополнительный роутер для ws:// (HTTP) без редиректа
       - "traefik.http.routers.evpower-backend-web.rule=Host(`ocpp.evpower.kg`)"
       - "traefik.http.routers.evpower-backend-web.entrypoints=web"
