@@ -178,6 +178,7 @@ async def websocket_locations(
     
     # Создаем задачу для прослушивания Redis
     redis_listener_task = None
+    heartbeat_task = None
     
     try:
         # Простейший rate limiter на входящие сообщения (не более 10/сек на клиента)
@@ -189,6 +190,19 @@ async def websocket_locations(
         redis_listener_task = asyncio.create_task(
             listen_redis_updates(client_id)
         )
+        # Запускаем серверный heartbeat, чтобы соединение не закрывалось из-за простоя
+        async def heartbeat():
+            try:
+                while True:
+                    await asyncio.sleep(20)
+                    await websocket.send_json({
+                        "type": "ping",
+                        "timestamp": asyncio.get_event_loop().time()
+                    })
+            except Exception:
+                # Ошибки отправки игнорируем - закончится в finally
+                pass
+        heartbeat_task = asyncio.create_task(heartbeat())
         
         # Отправляем приветственное сообщение
         await websocket.send_json({
@@ -286,6 +300,8 @@ async def websocket_locations(
         # Отменяем задачу прослушивания Redis
         if redis_listener_task:
             redis_listener_task.cancel()
+        if heartbeat_task:
+            heartbeat_task.cancel()
         
         # Отключаем клиента
         ws_manager.disconnect(client_id)
