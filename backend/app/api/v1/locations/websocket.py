@@ -267,7 +267,15 @@ async def websocket_locations(
                     "type": "error",
                     "message": "Неверный формат JSON"
                 })
+            except WebSocketDisconnect:
+                # Корректно выходим из цикла при отключении клиента
+                raise
             except Exception as e:
+                # Если соединение уже разорвано - прекращаем цикл, чтобы не спамить лог
+                msg = str(e).lower()
+                if "disconnect" in msg or "receive once a disconnect" in msg:
+                    logger.info(f"Клиент {client_id} отключился (runtime disconnect detected)")
+                    break
                 logger.error(f"Ошибка обработки сообщения от {client_id}: {e}")
                 
     except WebSocketDisconnect:
