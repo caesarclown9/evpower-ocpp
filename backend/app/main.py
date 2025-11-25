@@ -335,6 +335,7 @@ logger.info(f"📋 CORS origins configured: {len(cors_origins)} origins")
 allowed_headers = [
     "Authorization",
     "Content-Type",
+    "X-CSRF-Token",
     "X-Client-Id",
     "X-Client-Timestamp",
     "X-Client-Signature",
@@ -346,9 +347,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "OPTIONS"],  # Только необходимые методы
+    allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
     allow_headers=allowed_headers,  # Явный список вместо "*"
-    expose_headers=["X-Correlation-ID"],
+    expose_headers=["X-Correlation-ID", "Idempotency-Key"],
     max_age=86400  # 24 часа кэш для preflight запросов
 )
 

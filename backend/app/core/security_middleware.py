@@ -245,6 +245,20 @@ class SecurityMiddleware:
         start_time = time.time()
         
         try:
+            # Предварительный CORS preflight (на случай, если CORSMiddleware не сработает выше по стеку)
+            origin = request.headers.get("origin")
+            allowed_origins = [o.strip() for o in (settings.CORS_ORIGINS or "").split(",") if o.strip()]
+            if request.method.upper() == "OPTIONS" and origin and (not allowed_origins or origin in allowed_origins):
+                allow_methods = "GET, POST, PUT, DELETE, PATCH, OPTIONS"
+                allow_headers = "Authorization, Content-Type, X-CSRF-Token, X-Client-Id, X-Client-Timestamp, X-Client-Signature, Idempotency-Key, X-Correlation-ID"
+                preflight = Response(status_code=204)
+                preflight.headers["Access-Control-Allow-Origin"] = origin
+                preflight.headers["Access-Control-Allow-Credentials"] = "true"
+                preflight.headers["Access-Control-Allow-Methods"] = allow_methods
+                preflight.headers["Access-Control-Allow-Headers"] = allow_headers
+                preflight.headers["Vary"] = "Origin"
+                return preflight
+
             response = await call_next(request)
             
             # Логируем запрос
@@ -272,6 +286,26 @@ class SecurityMiddleware:
             csp_script = settings.CSP_SCRIPT_SRC
             response.headers["Content-Security-Policy"] = f"default-src 'self'; script-src {csp_script}; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src {csp_connect}"
             
+            # Fail-safe CORS заголовки на ответе, если их нет
+            if origin and (not allowed_origins or origin in allowed_origins):
+                headers_lower = {k.lower(): v for k, v in response.headers.items()}
+                if "access-control-allow-origin" not in headers_lower:
+                    response.headers["Access-Control-Allow-Origin"] = origin
+                    response.headers["Access-Control-Allow-Credentials"] = "true"
+                    # Экспонируемые заголовки для фронта
+                    expose = response.headers.get("Access-Control-Expose-Headers")
+                    needed = "X-Correlation-ID, Idempotency-Key"
+                    if not expose:
+                        response.headers["Access-Control-Expose-Headers"] = needed
+                    elif "X-Correlation-ID" not in expose or "Idempotency-Key" not in expose:
+                        response.headers["Access-Control-Expose-Headers"] = f"{expose}, {needed}"
+                    # Корректное кэширование по Origin
+                    vary = response.headers.get("Vary")
+                    if not vary:
+                        response.headers["Vary"] = "Origin"
+                    elif "Origin" not in vary:
+                        response.headers["Vary"] = f"{vary}, Origin"
+
             # Приватные эндпоинты не кэшируем: если есть авторизация или мутация
             auth_present = bool(request.headers.get("authorization")) or bool(request.cookies.get("evp_access"))
             is_mutation = request.method.upper() in ("POST", "PUT", "PATCH", "DELETE")
