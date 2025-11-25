@@ -11,9 +11,12 @@ from typing import Optional, Dict, Any
 from jose import jwt
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+import logging
 
 from app.core.config import settings
 from app.db.session import get_db
+
+logger = logging.getLogger("app.api.v1.auth.session")
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -133,6 +136,7 @@ async def login(request: Request, body: LoginRequest, db: Session = Depends(get_
         origin = request.headers.get("origin")
         trusted = [o.strip() for o in settings.CSRF_TRUSTED_ORIGINS.split(",") if o.strip()]
         if not origin or origin not in trusted:
+            logger.warning("CSRF origin rejected", extra={"origin": origin})
             return JSONResponse(
                 status_code=401,
                 content={"success": False, "error": "csrf_error", "message": "Untrusted origin", "status": 401},
@@ -140,6 +144,14 @@ async def login(request: Request, body: LoginRequest, db: Session = Depends(get_
         header_token = request.headers.get("X-CSRF-Token")
         cookie_token = request.cookies.get("XSRF-TOKEN")
         if not header_token or not cookie_token or header_token != cookie_token:
+            logger.warning(
+                "CSRF token mismatch",
+                extra={
+                    "has_header": bool(header_token),
+                    "has_cookie": bool(cookie_token),
+                    "origin": origin,
+                },
+            )
             return JSONResponse(
                 status_code=401,
                 content={"success": False, "error": "csrf_error", "message": "Invalid CSRF token", "status": 401},
@@ -149,7 +161,8 @@ async def login(request: Request, body: LoginRequest, db: Session = Depends(get_
         supabase_url = settings.SUPABASE_URL.rstrip("/")
         token_url = f"{supabase_url}/auth/v1/token?grant_type=password"
         headers = {"apikey": settings.SUPABASE_ANON_KEY, "Content-Type": "application/json"}
-        # Если пришёл телефон, пытаемся найти email по номеру и логиниться по email+password
+        # Если пришёл телефон, сперва пытаемся логин по phone+password (если провайдер разрешает),
+        # затем fallback: найти email по номеру и логиниться по email+password
         login_email: Optional[str] = None
         if body.is_email_flow:
             login_email = str(body.email)
@@ -162,17 +175,35 @@ async def login(request: Request, body: LoginRequest, db: Session = Depends(get_
                 if result and result[0]:
                     login_email = result[0]
             except Exception:
+                logger.exception("Failed to map phone to email via DB")
                 login_email = None
-        if not login_email:
-            return JSONResponse(
-                status_code=401,
-                content={"success": False, "error": "invalid_credentials", "message": "Неверный логин или пароль", "status": 401},
-            )
 
         async with httpx.AsyncClient(timeout=10) as client:
-            payload: dict = {"password": body.password, "email": login_email}
-            r = await client.post(token_url, headers=headers, json=payload)
+            # 1a) try phone login if phone present
+            if body.is_phone_flow and body.phone:
+                phone_payload: dict = {"password": body.password, "phone": body.phone}
+                pr = await client.post(token_url, headers=headers, json=phone_payload)
+                logger.info("Supabase phone login attempt", extra={"status": pr.status_code})
+                if pr.status_code == 200:
+                    r = pr
+                else:
+                    # 1b) fallback to email if we resolved one
+                    if login_email:
+                        payload: dict = {"password": body.password, "email": login_email}
+                        r = await client.post(token_url, headers=headers, json=payload)
+                        logger.info("Supabase email fallback attempt", extra={"status": r.status_code})
+                    else:
+                        r = pr  # keep last response
+            else:
+                payload: dict = {"password": body.password, "email": login_email}
+                r = await client.post(token_url, headers=headers, json=payload)
+                logger.info("Supabase email login attempt", extra={"status": r.status_code})
         if r.status_code != 200:
+            try:
+                err_body = r.json()
+            except Exception:
+                err_body = {"_": "non-json"}
+            logger.warning("Supabase password grant rejected", extra={"status": r.status_code, "body": err_body})
             return JSONResponse(
                 status_code=401,
                 content={"success": False, "error": "invalid_credentials", "message": "Неверный логин или пароль", "status": 401},
