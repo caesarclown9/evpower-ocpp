@@ -1,7 +1,7 @@
 """
 Cookie-based аутентификация поверх Supabase.
 """
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 from starlette.responses import JSONResponse
 import httpx
@@ -9,8 +9,11 @@ import os
 from datetime import timedelta, datetime, timezone
 from typing import Optional, Dict, Any
 from jose import jwt
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.db.session import get_db
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -96,8 +99,10 @@ def create_refresh_token(user_id: str) -> str:
 
 
 @router.get("/csrf")
-async def get_csrf():
-    token = os.urandom(16).hex()
+async def get_csrf(request: Request):
+    # Если токен уже есть в cookie, переиспользуем его, чтобы не ломать параллельные/повторные запросы
+    existing = request.cookies.get("XSRF-TOKEN")
+    token = existing if existing else os.urandom(16).hex()
     resp = JSONResponse({"success": True, "csrf_token": token})
     # Не HttpOnly, чтобы фронт мог прочитать и пробросить в X-CSRF-Token
     resp.set_cookie(
@@ -119,7 +124,7 @@ async def get_csrf_alias():
     return await get_csrf()
 
 @router.post("/login")
-async def login(request: Request, body: LoginRequest):
+async def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
     """
     Логин через Supabase (password grant) с установкой cookie evp_access/evp_refresh.
     """
@@ -144,12 +149,28 @@ async def login(request: Request, body: LoginRequest):
         supabase_url = settings.SUPABASE_URL.rstrip("/")
         token_url = f"{supabase_url}/auth/v1/token?grant_type=password"
         headers = {"apikey": settings.SUPABASE_ANON_KEY, "Content-Type": "application/json"}
+        # Если пришёл телефон, пытаемся найти email по номеру и логиниться по email+password
+        login_email: Optional[str] = None
+        if body.is_email_flow:
+            login_email = str(body.email)
+        elif body.is_phone_flow and body.phone:
+            try:
+                result = db.execute(
+                    text("select email from auth.users where phone = :phone limit 1"),
+                    {"phone": body.phone},
+                ).fetchone()
+                if result and result[0]:
+                    login_email = result[0]
+            except Exception:
+                login_email = None
+        if not login_email:
+            return JSONResponse(
+                status_code=401,
+                content={"success": False, "error": "invalid_credentials", "message": "Неверный логин или пароль", "status": 401},
+            )
+
         async with httpx.AsyncClient(timeout=10) as client:
-            payload: dict = {"password": body.password}
-            if body.is_email_flow:
-                payload["email"] = str(body.email)
-            elif body.is_phone_flow:
-                payload["phone"] = body.phone
+            payload: dict = {"password": body.password, "email": login_email}
             r = await client.post(token_url, headers=headers, json=payload)
         if r.status_code != 200:
             return JSONResponse(
