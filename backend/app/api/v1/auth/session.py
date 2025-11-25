@@ -119,9 +119,9 @@ async def get_csrf(request: Request):
 
 
 @router.get("/cierra")
-async def get_csrf_alias():
+async def get_csrf_alias(http_request: Request):
     # Alias для фронта: полностью идентично /csrf
-    return await get_csrf()
+    return await get_csrf(http_request)
 
 @router.post("/login")
 async def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
