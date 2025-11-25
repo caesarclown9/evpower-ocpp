@@ -60,8 +60,9 @@ class LoginRequest(BaseModel):
         return self
 
 
-def _cookie_params(ttl_seconds: int, strict: bool):
-    same_site = "strict" if strict else "lax"
+def _cookie_params(ttl_seconds: int, strict: bool = False, samesite: Optional[str] = None):
+    # Для кросс-доменных запросов (PWA → API) требуются cookies с SameSite=None
+    same_site = (samesite or ("strict" if strict else "none")).lower()
     return {
         "httponly": True,
         "secure": True,
@@ -113,7 +114,7 @@ async def get_csrf(request: Request):
         token,
         httponly=False,
         secure=True,
-        samesite="lax",
+        samesite="none",
         domain=os.getenv("COOKIE_DOMAIN", "ocpp.evpower.kg"),
         path="/",
         max_age=60 * 60,  # 1 час
@@ -241,8 +242,8 @@ async def login(request: Request, body: LoginRequest, db: Session = Depends(get_
 
         resp = JSONResponse({"success": True})
         # evp_access ~10 минут, evp_refresh ~7 дней
-        resp.set_cookie("evp_access", access_token, **_cookie_params(10 * 60, strict=False))
-        resp.set_cookie("evp_refresh", refresh_token, **_cookie_params(7 * 24 * 3600, strict=True))
+        resp.set_cookie("evp_access", access_token, **_cookie_params(10 * 60, samesite="none"))
+        resp.set_cookie("evp_refresh", refresh_token, **_cookie_params(7 * 24 * 3600, samesite="none"))
         return resp
     except Exception as e:
         return JSONResponse(
