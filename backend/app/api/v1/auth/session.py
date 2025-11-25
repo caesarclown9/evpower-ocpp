@@ -24,7 +24,7 @@ def _cookie_params(ttl_seconds: int, strict: bool):
         "httponly": True,
         "secure": True,
         "samesite": same_site,  # evp_access=Lax, evp_refresh=Strict
-        "domain": os.getenv("COOKIE_DOMAIN", ".evpower.kg"),
+        "domain": os.getenv("COOKIE_DOMAIN", "ocpp.evpower.kg"),
         "path": "/",
         "max_age": ttl_seconds,
         "expires": datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
@@ -42,12 +42,17 @@ async def get_csrf():
         httponly=False,
         secure=True,
         samesite="lax",
-        domain=os.getenv("COOKIE_DOMAIN", ".evpower.kg"),
+        domain=os.getenv("COOKIE_DOMAIN", "ocpp.evpower.kg"),
         path="/",
         max_age=60 * 60,  # 1 час
     )
     return resp
 
+
+@router.get("/cierra")
+async def get_csrf_alias():
+    # Alias для фронта: полностью идентично /csrf
+    return await get_csrf()
 
 @router.post("/login")
 async def login(body: LoginRequest):
@@ -140,7 +145,7 @@ async def logout():
             httponly=(name != "XSRF-TOKEN"),
             secure=True,
             samesite="lax",
-            domain=os.getenv("COOKIE_DOMAIN", ".evpower.kg"),
+            domain=os.getenv("COOKIE_DOMAIN", "ocpp.evpower.kg"),
             path="/",
             max_age=0,
         )

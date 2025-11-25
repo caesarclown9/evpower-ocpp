@@ -222,6 +222,8 @@ class AuthMiddleware:
             "/api/v1/locations",  # Список локаций для карты
             "/api/v1/station/status",  # Статус станции для карты
             "/api/v1/notifications/vapid-public-key",  # VAPID public key для Push Notifications
+            "/api/v1/auth/csrf",   # Публичный CSRF endpoint
+            "/api/v1/auth/cierra", # Публичный CSRF endpoint (alias)
         ]
 
         # Проверяем публичные endpoints (точное совпадение или начало пути)
