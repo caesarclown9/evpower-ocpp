@@ -224,6 +224,9 @@ class AuthMiddleware:
             "/api/v1/notifications/vapid-public-key",  # VAPID public key для Push Notifications
             "/api/v1/auth/csrf",   # Публичный CSRF endpoint
             "/api/v1/auth/cierra", # Публичный CSRF endpoint (alias)
+            "/api/v1/auth/login",   # Публичный логин
+            "/api/v1/auth/refresh", # Публичный refresh по cookie
+            "/api/v1/auth/logout",  # Публичный logout (идемпотентный)
         ]
 
         # Проверяем публичные endpoints (точное совпадение или начало пути)

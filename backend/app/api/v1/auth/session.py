@@ -55,11 +55,27 @@ async def get_csrf_alias():
     return await get_csrf()
 
 @router.post("/login")
-async def login(body: LoginRequest):
+async def login(request: Request, body: LoginRequest):
     """
     Логин через Supabase (password grant) с установкой cookie evp_access/evp_refresh.
     """
     try:
+        # CSRF: проверяем доверенный Origin и совпадение заголовка с cookie
+        origin = request.headers.get("origin")
+        trusted = [o.strip() for o in settings.CSRF_TRUSTED_ORIGINS.split(",") if o.strip()]
+        if not origin or origin not in trusted:
+            return JSONResponse(
+                status_code=401,
+                content={"success": False, "error": "csrf_error", "message": "Untrusted origin", "status": 401},
+            )
+        header_token = request.headers.get("X-CSRF-Token")
+        cookie_token = request.cookies.get("XSRF-TOKEN")
+        if not header_token or not cookie_token or header_token != cookie_token:
+            return JSONResponse(
+                status_code=401,
+                content={"success": False, "error": "csrf_error", "message": "Invalid CSRF token", "status": 401},
+            )
+
         supabase_url = settings.SUPABASE_URL.rstrip("/")
         token_url = f"{supabase_url}/auth/v1/token?grant_type=password"
         headers = {"apikey": settings.SUPABASE_ANON_KEY, "Content-Type": "application/json"}
