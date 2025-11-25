@@ -103,6 +103,13 @@ class IdempotencyMiddleware:
                 if message["type"] == "http.response.start":
                     captured_status = message["status"]
                     headers_list = message.get("headers", [])
+                    # Эхо заголовка Idempotency-Key в ответ
+                    try:
+                        headers_list.append((b"idempotency-key", idem_key.encode("utf-8")))
+                        message["headers"] = headers_list
+                    except Exception:
+                        # Ничего страшного, если не удалось
+                        pass
                 elif message["type"] == "http.response.body":
                     body_part = message.get("body", b"")
                     captured_body = (captured_body or b"") + body_part

@@ -366,6 +366,18 @@ app.include_router(v1_router)
 # HEALTH CHECK ENDPOINT (единственный HTTP endpoint)
 # ============================================================================
 
+@app.get("/version", summary="Версия сервиса")
+async def get_version():
+    """
+    Возвращает версию приложения и идентификатор сборки для фронта (обновление PWA).
+    """
+    try:
+        git_commit = os.getenv("GIT_COMMIT", "unknown")
+        build_time = os.getenv("BUILD_TIME", "unknown")
+        return {"success": True, "version": "1.0.0", "git_commit": git_commit, "build_time": build_time}
+    except Exception:
+        return {"success": True, "version": "1.0.0"}
+
 @app.get("/health", summary="Проверка здоровья OCPP сервера")
 async def health_check():
     """Проверка состояния OCPP WebSocket сервера"""

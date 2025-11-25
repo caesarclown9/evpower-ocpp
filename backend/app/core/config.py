@@ -43,7 +43,12 @@ class Settings(BaseSettings):
     ALLOWED_HOSTS: str = os.getenv("ALLOWED_HOSTS", "*")
     CORS_ORIGINS: str = os.getenv(
         "CORS_ORIGINS", 
-        "http://localhost:3000,http://localhost:9210,https://app.flutterflow.io,https://ocpp.evpower.kg,http://ocpp.evpower.kg,ws://ocpp.evpower.kg,wss://ocpp.evpower.kg"
+        "http://localhost:3000,http://localhost:9210,https://app.evpower.kg,https://staging.evpower.kg,https://ocpp.evpower.kg"
+    )
+    # CSRF доверенные origin'ы (через запятую)
+    CSRF_TRUSTED_ORIGINS: str = os.getenv(
+        "CSRF_TRUSTED_ORIGINS",
+        "https://app.evpower.kg,https://staging.evpower.kg,https://ocpp.evpower.kg,http://localhost:3000"
     )
 
     # Rate limiting

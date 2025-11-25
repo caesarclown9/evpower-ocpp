@@ -149,6 +149,40 @@ class AuthMiddleware:
                 # Падаем в фоллбек ниже
                 pass
 
+        # 1.1) Cookie-сессии: evp_access (HS256, SECRET_KEY)
+        try:
+            access_cookie = request.cookies.get("evp_access")
+            if access_cookie:
+                decoded = None
+                # Сначала пробуем валидировать как Supabase JWT (HS256)
+                if settings.SUPABASE_JWT_SECRET:
+                    try:
+                        decoded = jwt.decode(
+                            access_cookie,
+                            settings.SUPABASE_JWT_SECRET,
+                            algorithms=["HS256"],
+                            options={"verify_aud": False},
+                        )
+                    except Exception:
+                        decoded = None
+                # Затем пробуем как наш внутренний HS256 (SECRET_KEY)
+                if decoded is None:
+                    decoded = jwt.decode(
+                        access_cookie,
+                        settings.SECRET_KEY,
+                        algorithms=["HS256"],
+                        options={"verify_aud": False},
+                    )
+                client_id = str(decoded.get("sub") or decoded.get("client_id"))
+                if client_id:
+                    scope.setdefault("state", {})["client_id"] = client_id
+                    scope["state"]["auth_method"] = "cookie"
+                    await self.app(scope, receive, send)
+                    return
+        except Exception:
+            # Падаем в фоллбек ниже
+            pass
+
         # 2) Переходный HMAC фоллбек
         x_client_id = request.headers.get("x-client-id")
         x_ts = request.headers.get("x-client-timestamp")
@@ -217,7 +251,7 @@ class AuthMiddleware:
     async def _unauthorized(self, scope, receive, send, error: str, message: str):
         response = JSONResponse(
             status_code=401,
-            content={"success": False, "error": error, "message": message},
+            content={"success": False, "error": error, "message": message, "status": 401},
         )
         await response(scope, receive, send)
 

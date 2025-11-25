@@ -52,6 +52,18 @@ async def get_station_status(
         connected_stations = await redis_manager.get_stations()
         is_online = station_id in connected_stations
         
+        # Получаем последний heartbeat
+        last_heartbeat_row = db.execute(text("""
+            SELECT last_heartbeat
+            FROM ocpp_station_status
+            WHERE station_id = :station_id
+            ORDER BY last_heartbeat DESC
+            LIMIT 1
+        """), {"station_id": station_id}).fetchone()
+        last_heartbeat_at = (
+            last_heartbeat_row[0].isoformat() if last_heartbeat_row and last_heartbeat_row[0] else None
+        )
+        
         # Получаем статус коннекторов
         connectors_result = db.execute(text("""
             SELECT connector_number, connector_type, power_kw, status, error_code
@@ -112,6 +124,7 @@ async def get_station_status(
             "station_status": station_data[4],  # active/maintenance/inactive
             "location_status": station_data[13],  # active/maintenance/inactive
             "available_for_charging": is_online and station_data[4] == "active" and available_count > 0,
+            "last_heartbeat_at": last_heartbeat_at,
             
             # Локация
             "location_id": station_data[14],  # Добавляем location_id
@@ -137,9 +150,10 @@ async def get_station_status(
         }
         
     except Exception as e:
-        logger.error(f"Ошибка получения статуса станции {station_id}: {e}")
+        logger.error(f"Ошибка получения статуса станции {station_id}: {e}", exc_info=True)
         return {
             "success": False,
             "error": "internal_error",
-            "message": "Внутренняя ошибка сервера"
+            "message": "Внутренняя ошибка сервера",
+            "status": 500
         }

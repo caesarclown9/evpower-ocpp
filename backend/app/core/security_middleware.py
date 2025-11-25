@@ -220,6 +220,27 @@ class SecurityMiddleware:
                              user_agent=request.headers.get("user-agent"),
                              path=str(request.url.path))
         
+        # CSRF защита для cookie-режима:
+        # Применяется только к мутирующим методам И если клиент прислал наши cookies (evp_access/evp_refresh).
+        method_upper = request.method.upper()
+        if method_upper in ("POST", "PUT", "PATCH", "DELETE"):
+            has_auth_cookies = bool(request.cookies.get("evp_access") or request.cookies.get("evp_refresh"))
+            if has_auth_cookies:
+                origin = request.headers.get("origin")
+                trusted = [o.strip() for o in (settings.CSRF_TRUSTED_ORIGINS or "").split(",") if o.strip()]
+                if origin and trusted and origin not in trusted:
+                    return JSONResponse(
+                        status_code=403,
+                        content={"success": False, "error": "csrf_origin", "message": "Origin not allowed", "status": 403}
+                    )
+                header_token = request.headers.get("x-csrf-token")
+                cookie_token = request.cookies.get("XSRF-TOKEN")
+                if not header_token or not cookie_token or header_token != cookie_token:
+                    return JSONResponse(
+                        status_code=403,
+                        content={"success": False, "error": "csrf_failed", "message": "Invalid or missing CSRF token", "status": 403}
+                    )
+        
         # Добавляем security headers
         start_time = time.time()
         
@@ -250,6 +271,12 @@ class SecurityMiddleware:
             csp_connect = settings.CSP_CONNECT_SRC
             csp_script = settings.CSP_SCRIPT_SRC
             response.headers["Content-Security-Policy"] = f"default-src 'self'; script-src {csp_script}; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src {csp_connect}"
+            
+            # Приватные эндпоинты не кэшируем: если есть авторизация или мутация
+            auth_present = bool(request.headers.get("authorization")) or bool(request.cookies.get("evp_access"))
+            is_mutation = request.method.upper() in ("POST", "PUT", "PATCH", "DELETE")
+            if auth_present or is_mutation:
+                response.headers["Cache-Control"] = "no-store"
             
             return response
             
