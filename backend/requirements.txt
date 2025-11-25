@@ -11,6 +11,7 @@ pydantic-settings>=2.1.0
 python-dotenv
 httpx>=0.24.0
 python-jose[cryptography]>=3.3.0
+email-validator>=2.1.0
 
 # --- Для OCPP WebSocket сервера ---
 ocpp
@@ -19,7 +20,6 @@ redis
 psycopg2-binary
 
 # --- УДАЛЕНО: Не используются ---
-# email-validator - нет валидации email
 # passlib[bcrypt] - нет хеширования паролей  
 # pyjwt - нет JWT токенов
 # alembic - миграции делаются через SQL напрямую в Supabase
