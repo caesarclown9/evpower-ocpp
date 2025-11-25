@@ -2,7 +2,7 @@
 Cookie-based аутентификация поверх Supabase.
 """
 from fastapi import APIRouter, Request
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from starlette.responses import JSONResponse
 import httpx
 import os
@@ -14,8 +14,45 @@ router = APIRouter(prefix="/auth", tags=["Auth"])
 
 
 class LoginRequest(BaseModel):
-    email: EmailStr
+    email: EmailStr | None = None
+    phone: str | None = Field(default=None, min_length=5, max_length=32)
     password: str
+
+    @field_validator("phone")
+    @classmethod
+    def normalize_phone(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        return v.strip()
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, v: EmailStr | None) -> EmailStr | None:
+        return v
+
+    @field_validator("password")
+    @classmethod
+    def validate_password(cls, v: str) -> str:
+        if not v:
+            raise ValueError("password is required")
+        return v
+
+    @property
+    def is_email_flow(self) -> bool:
+        return self.email is not None
+
+    @property
+    def is_phone_flow(self) -> bool:
+        return self.phone is not None
+
+    @field_validator("*")
+    @classmethod
+    def ensure_email_or_phone(cls, _v, values):
+        email = values.get("email")
+        phone = values.get("phone")
+        if not email and not phone:
+            raise ValueError("either email or phone must be provided")
+        return _v
 
 
 def _cookie_params(ttl_seconds: int, strict: bool):
@@ -80,7 +117,12 @@ async def login(request: Request, body: LoginRequest):
         token_url = f"{supabase_url}/auth/v1/token?grant_type=password"
         headers = {"apikey": settings.SUPABASE_ANON_KEY, "Content-Type": "application/json"}
         async with httpx.AsyncClient(timeout=10) as client:
-            r = await client.post(token_url, headers=headers, json={"email": body.email, "password": body.password})
+            payload: dict = {"password": body.password}
+            if body.is_email_flow:
+                payload["email"] = str(body.email)
+            elif body.is_phone_flow:
+                payload["phone"] = body.phone
+            r = await client.post(token_url, headers=headers, json=payload)
         if r.status_code != 200:
             return JSONResponse(
                 status_code=401,
