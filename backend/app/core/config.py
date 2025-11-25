@@ -28,7 +28,8 @@ class Settings(BaseSettings):
     PROJECT_NAME: str = "EvPower OCPP Backend"
     
     # Security - аутентификация через FlutterFlow
-    # Удалено: SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES (не используются)
+    # SECRET_KEY требуется для наших HS256 JWT (cookie-режим)
+    SECRET_KEY: str = os.getenv("SECRET_KEY", "")
     
     # App settings - правильные порты для production
     APP_ENV: str = os.getenv("APP_ENV", "development")  # development, staging, production
@@ -170,9 +171,9 @@ class Settings(BaseSettings):
         missing_vars = []
         
         # Базовые переменные проверяем только если они критичны
-        # SECRET_KEY больше не проверяется - аутентификация через FlutterFlow
-        # if not self.SECRET_KEY:
-        #     missing_vars.append("SECRET_KEY")
+        # В production обязателен SECRET_KEY (для подписи наших JWT)
+        if self.is_production and not self.SECRET_KEY:
+            missing_vars.append("SECRET_KEY")
         
         # DATABASE_URL должен быть обязательно
         if not self.DATABASE_URL:
