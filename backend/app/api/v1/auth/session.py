@@ -357,6 +357,22 @@ async def login(request: Request, body: LoginRequest, db: Session = Depends(get_
         refresh_token = create_refresh_token(user_id)
 
         resp = JSONResponse({"success": True})
+
+        # ВАЖНО: Очищаем старые cookies с Domain=ocpp.evpower.kg (до изменения на .evpower.kg)
+        # Это нужно для совместимости после редеплоя с новым COOKIE_DOMAIN
+        for cookie_name in ("evp_access", "evp_refresh", "XSRF-TOKEN"):
+            resp.set_cookie(
+                cookie_name,
+                "",
+                httponly=(cookie_name != "XSRF-TOKEN"),
+                secure=True,
+                samesite="none",
+                domain="ocpp.evpower.kg",  # Старый domain (без точки)
+                path="/",
+                max_age=0,  # Удаляем
+            )
+
+        # Устанавливаем НОВЫЕ cookies с Domain=.evpower.kg (cross-subdomain)
         # evp_access ~10 минут, evp_refresh ~7 дней
         resp.set_cookie("evp_access", access_token, **_cookie_params(10 * 60, samesite="none", request=request))
         resp.set_cookie("evp_refresh", refresh_token, **_cookie_params(7 * 24 * 3600, samesite="none", request=request))
