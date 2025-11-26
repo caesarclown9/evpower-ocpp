@@ -63,7 +63,7 @@ async def get_client_balance(
         raise HTTPException(status_code=500, detail="Ошибка получения баланса")
 
 
-@router.get("/get", response_model=ClientBalanceInfo)
+@router.get("/balance/get", response_model=ClientBalanceInfo)
 async def get_balance_authenticated(
     request: Request,
     db: Session = Depends(get_db)
