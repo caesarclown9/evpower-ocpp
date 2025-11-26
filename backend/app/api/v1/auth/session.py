@@ -98,7 +98,7 @@ def _cookie_params(ttl_seconds: int, strict: bool = False, samesite: Optional[st
         "httponly": True,
         "secure": secure,
         "samesite": same_site,
-        "domain": os.getenv("COOKIE_DOMAIN", "ocpp.evpower.kg"),
+        "domain": os.getenv("COOKIE_DOMAIN", ".evpower.kg"),
         "path": "/",
         "max_age": ttl_seconds,
         "expires": datetime.now(timezone.utc) + timedelta(seconds=ttl_seconds),
@@ -160,7 +160,7 @@ async def get_csrf(request: Request):
         httponly=False,
         secure=False if is_localhost else True,
         samesite="lax" if is_localhost else "none",
-        domain=os.getenv("COOKIE_DOMAIN", "ocpp.evpower.kg"),
+        domain=os.getenv("COOKIE_DOMAIN", ".evpower.kg"),
         path="/",
         max_age=60 * 60,  # 1 час
     )
@@ -430,7 +430,7 @@ async def logout():
             httponly=(name != "XSRF-TOKEN"),
             secure=True,
             samesite="lax",
-            domain=os.getenv("COOKIE_DOMAIN", "ocpp.evpower.kg"),
+            domain=os.getenv("COOKIE_DOMAIN", ".evpower.kg"),
             path="/",
             max_age=0,
         )
