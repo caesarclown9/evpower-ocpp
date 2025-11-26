@@ -422,8 +422,10 @@ async def refresh(request: Request):
         access_token = create_access_token(user_id)
         new_refresh = create_refresh_token(user_id)
         resp = JSONResponse({"success": True})
-        resp.set_cookie("evp_access", access_token, **_cookie_params(10 * 60, strict=False, request=request))
-        resp.set_cookie("evp_refresh", new_refresh, **_cookie_params(7 * 24 * 3600, strict=True, request=request))
+        # ВАЖНО: используем samesite="none" для cross-subdomain cookies (app.evpower.kg → ocpp.evpower.kg)
+        # SameSite=Strict блокирует отправку cookies при cross-site запросах после перезагрузки страницы
+        resp.set_cookie("evp_access", access_token, **_cookie_params(10 * 60, samesite="none", request=request))
+        resp.set_cookie("evp_refresh", new_refresh, **_cookie_params(7 * 24 * 3600, samesite="none", request=request))
         return resp
     except Exception as e:
         return JSONResponse(
