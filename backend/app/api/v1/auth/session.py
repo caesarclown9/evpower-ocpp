@@ -263,21 +263,36 @@ async def login(request: Request, body: LoginRequest, db: Session = Depends(get_
         supabase_url = settings.SUPABASE_URL.rstrip("/")
         token_url = f"{supabase_url}/auth/v1/token?grant_type=password"
         headers = {"apikey": settings.SUPABASE_ANON_KEY, "Content-Type": "application/json"}
-        # Если пришёл телефон, сперва пытаемся логин по phone+password (если провайдер разрешает),
-        # затем fallback: найти email по номеру и логиниться по email+password
+
+        # Если пришёл телефон, находим email в public.clients для последующей аутентификации
+        # Supabase не поддерживает grant_type=password с телефоном (только email)
         login_email: Optional[str] = None
         if body.is_email_flow:
             login_email = str(body.email)
+            logger.info("Login attempt with email", extra={"email": login_email})
         elif body.is_phone_flow and body.phone:
+            # Ищем email по телефону в public.clients (там phone всегда заполнен)
             try:
                 result = db.execute(
-                    text("select email from auth.users where phone = :phone limit 1"),
+                    text("SELECT email FROM public.clients WHERE phone = :phone LIMIT 1"),
                     {"phone": body.phone},
                 ).fetchone()
                 if result and result[0]:
                     login_email = result[0]
-            except Exception:
-                logger.exception("Failed to map phone to email via DB")
+                    logger.info(
+                        "Phone lookup successful",
+                        extra={"phone": body.phone, "resolved_email": login_email}
+                    )
+                else:
+                    logger.warning(
+                        "Phone not found in database",
+                        extra={"phone": body.phone}
+                    )
+            except Exception as e:
+                logger.exception(
+                    "Failed to map phone to email via DB",
+                    extra={"phone": body.phone, "error": str(e)}
+                )
                 login_email = None
 
         async with httpx.AsyncClient(timeout=10) as client:
