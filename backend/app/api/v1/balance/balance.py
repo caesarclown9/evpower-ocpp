@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import logging
@@ -63,34 +63,3 @@ async def get_client_balance(
         raise HTTPException(status_code=500, detail="Ошибка получения баланса")
 
 
-@router.get("/balance/get", response_model=ClientBalanceInfo)
-async def get_balance_authenticated(
-    request: Request,
-    db: Session = Depends(get_db)
-) -> ClientBalanceInfo:
-    """
-    💰 Получение баланса текущего аутентифицированного пользователя
-
-    Endpoint для фронтенда, автоматически определяет client_id из токена аутентификации.
-    Не требует передачи client_id в URL.
-
-    Returns:
-        ClientBalanceInfo: Информация о балансе клиента
-
-    Raises:
-        HTTPException: 401 если пользователь не аутентифицирован
-        HTTPException: 404 если клиент не найден
-        HTTPException: 500 при ошибке получения баланса
-    """
-    # Получаем client_id из request.state (устанавливается AuthMiddleware)
-    client_id = getattr(request.state, "client_id", None)
-
-    if not client_id:
-        logger.warning("Попытка получить баланс без аутентификации")
-        raise HTTPException(
-            status_code=401,
-            detail="Требуется аутентификация"
-        )
-
-    # Переиспользуем существующую логику
-    return await get_client_balance(client_id, db)
