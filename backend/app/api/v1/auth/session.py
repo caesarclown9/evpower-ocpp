@@ -60,13 +60,44 @@ class LoginRequest(BaseModel):
         return self
 
 
-def _cookie_params(ttl_seconds: int, strict: bool = False, samesite: Optional[str] = None):
-    # Для кросс-доменных запросов (PWA → API) требуются cookies с SameSite=None
-    same_site = (samesite or ("strict" if strict else "none")).lower()
+def _cookie_params(ttl_seconds: int, strict: bool = False, samesite: Optional[str] = None, request: Optional[Request] = None):
+    """
+    Генерирует параметры для установки cookie с автоматической адаптацией для localhost.
+
+    Args:
+        ttl_seconds: Время жизни cookie в секундах
+        strict: Если True, использовать более строгий SameSite
+        samesite: Явное указание SameSite (если None - автоопределение)
+        request: Request объект для определения origin (опционально)
+
+    Returns:
+        dict: Параметры для set_cookie()
+
+    Notes:
+        - Для localhost: SameSite=Lax, Secure=False (разрешает HTTP)
+        - Для production: SameSite=None, Secure=True (только HTTPS)
+    """
+    # Определяем окружение по origin
+    is_localhost = False
+    if request:
+        origin = request.headers.get("origin", "")
+        is_localhost = "localhost" in origin or "127.0.0.1" in origin
+
+    # Адаптируем параметры под окружение
+    if is_localhost:
+        # Для localhost: SameSite=Lax работает с HTTP
+        same_site = "lax"
+        secure = False
+        logger.info("Cookie params: localhost mode (SameSite=Lax, Secure=False)")
+    else:
+        # Для production: SameSite=None требует Secure (HTTPS)
+        same_site = (samesite or ("strict" if strict else "none")).lower()
+        secure = True
+
     return {
         "httponly": True,
-        "secure": True,
-        "samesite": same_site,  # evp_access=Lax, evp_refresh=Strict
+        "secure": secure,
+        "samesite": same_site,
         "domain": os.getenv("COOKIE_DOMAIN", "ocpp.evpower.kg"),
         "path": "/",
         "max_age": ttl_seconds,
@@ -104,17 +135,31 @@ def create_refresh_token(user_id: str) -> str:
 
 @router.get("/csrf")
 async def get_csrf(request: Request):
+    """
+    Получение CSRF токена для защиты от CSRF атак.
+
+    Использует double-submit cookie pattern:
+    - Токен в cookie (XSRF-TOKEN) - автоматически отправляется браузером
+    - Токен в response body - фронтенд должен отправить в заголовке X-CSRF-Token
+
+    Cookie не HttpOnly, чтобы JavaScript мог прочитать и отправить в заголовке.
+    """
     # Если токен уже есть в cookie, переиспользуем его, чтобы не ломать параллельные/повторные запросы
     existing = request.cookies.get("XSRF-TOKEN")
     token = existing if existing else os.urandom(16).hex()
     resp = JSONResponse({"success": True, "csrf_token": token})
+
+    # Определяем параметры cookie в зависимости от окружения
+    origin = request.headers.get("origin", "")
+    is_localhost = "localhost" in origin or "127.0.0.1" in origin
+
     # Не HttpOnly, чтобы фронт мог прочитать и пробросить в X-CSRF-Token
     resp.set_cookie(
         "XSRF-TOKEN",
         token,
         httponly=False,
-        secure=True,
-        samesite="none",
+        secure=False if is_localhost else True,
+        samesite="lax" if is_localhost else "none",
         domain=os.getenv("COOKIE_DOMAIN", "ocpp.evpower.kg"),
         path="/",
         max_age=60 * 60,  # 1 час
@@ -126,6 +171,62 @@ async def get_csrf(request: Request):
 async def get_csrf_alias(http_request: Request):
     # Alias для фронта: полностью идентично /csrf
     return await get_csrf(http_request)
+
+
+@router.get("/me")
+async def get_me(request: Request, db: Session = Depends(get_db)):
+    """
+    Получение данных текущего аутентифицированного пользователя.
+
+    Стандартный REST endpoint (алиас для /api/v1/profile).
+    Автоматически определяет client_id из токена аутентификации.
+
+    Returns:
+        dict: Данные пользователя (client_id, email, phone, name, balance, status)
+
+    Raises:
+        401: Если пользователь не аутентифицирован
+        404: Если пользователь не найден в БД
+    """
+    client_id = getattr(request.state, "client_id", None)
+
+    if not client_id:
+        logger.warning("Попытка получить /auth/me без аутентификации")
+        return JSONResponse(
+            status_code=401,
+            content={"success": False, "error": "unauthorized", "message": "Not authenticated", "status": 401}
+        )
+
+    # Получаем данные пользователя из БД
+    try:
+        row = db.execute(
+            text("SELECT id, email, phone, name, balance, status FROM clients WHERE id = :id"),
+            {"id": client_id}
+        ).fetchone()
+
+        if not row:
+            logger.warning(f"Клиент {client_id} не найден в БД")
+            return JSONResponse(
+                status_code=404,
+                content={"success": False, "error": "not_found", "message": "Client not found", "status": 404}
+            )
+
+        return {
+            "success": True,
+            "client_id": row.id,
+            "email": row.email,
+            "phone": row.phone,
+            "name": row.name,
+            "balance": float(row.balance or 0),
+            "status": row.status,
+        }
+
+    except Exception as e:
+        logger.error(f"Ошибка получения данных пользователя {client_id}: {e}", exc_info=True)
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": "internal_error", "message": "Internal server error", "status": 500}
+        )
 
 @router.post("/login")
 async def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
@@ -242,8 +343,8 @@ async def login(request: Request, body: LoginRequest, db: Session = Depends(get_
 
         resp = JSONResponse({"success": True})
         # evp_access ~10 минут, evp_refresh ~7 дней
-        resp.set_cookie("evp_access", access_token, **_cookie_params(10 * 60, samesite="none"))
-        resp.set_cookie("evp_refresh", refresh_token, **_cookie_params(7 * 24 * 3600, samesite="none"))
+        resp.set_cookie("evp_access", access_token, **_cookie_params(10 * 60, samesite="none", request=request))
+        resp.set_cookie("evp_refresh", refresh_token, **_cookie_params(7 * 24 * 3600, samesite="none", request=request))
         return resp
     except Exception as e:
         return JSONResponse(
@@ -290,8 +391,8 @@ async def refresh(request: Request):
         access_token = create_access_token(user_id)
         new_refresh = create_refresh_token(user_id)
         resp = JSONResponse({"success": True})
-        resp.set_cookie("evp_access", access_token, **_cookie_params(10 * 60, strict=False))
-        resp.set_cookie("evp_refresh", new_refresh, **_cookie_params(7 * 24 * 3600, strict=True))
+        resp.set_cookie("evp_access", access_token, **_cookie_params(10 * 60, strict=False, request=request))
+        resp.set_cookie("evp_refresh", new_refresh, **_cookie_params(7 * 24 * 3600, strict=True, request=request))
         return resp
     except Exception as e:
         return JSONResponse(
