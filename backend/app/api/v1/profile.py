@@ -23,12 +23,14 @@ async def get_profile(request: Request, db: Session = Depends(get_db)):
 
     return {
         "success": True,
-        "client_id": row.id,
-        "email": row.email,
-        "phone": row.phone,
-        "name": row.name,
-        "balance": float(row.balance or 0),
-        "status": row.status,
+        "data": {
+            "id": row.id,
+            "email": row.email,
+            "phone": row.phone,
+            "name": row.name,
+            "balance": float(row.balance or 0),
+            "status": row.status,
+        }
     }
 
 
