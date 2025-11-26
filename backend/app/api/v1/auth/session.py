@@ -213,14 +213,12 @@ async def get_me(request: Request, db: Session = Depends(get_db)):
 
         return {
             "success": True,
-            "data": {
-                "id": row.id,
-                "email": row.email,
-                "phone": row.phone,
-                "name": row.name,
-                "balance": float(row.balance or 0),
-                "status": row.status,
-            }
+            "client_id": row.id,
+            "email": row.email,
+            "phone": row.phone,
+            "name": row.name,
+            "balance": float(row.balance or 0),
+            "status": row.status,
         }
 
     except Exception as e:
