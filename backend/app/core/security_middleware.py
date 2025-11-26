@@ -222,24 +222,38 @@ class SecurityMiddleware:
         
         # CSRF защита для cookie-режима:
         # Применяется только к мутирующим методам И если клиент прислал наши cookies (evp_access/evp_refresh).
+        #
+        # Исключения из CSRF проверки:
+        # - /api/v1/auth/refresh — защищён самим refresh token (HttpOnly cookie),
+        #   CSRF атака бессмысленна: злоумышленник не получит новые токены (они в HttpOnly cookies)
+        # - /api/v1/auth/logout — идемпотентный, только удаляет cookies, безопасен без CSRF
+        CSRF_EXEMPT_PATHS = (
+            "/api/v1/auth/refresh",
+            "/api/v1/auth/logout",
+        )
+
         method_upper = request.method.upper()
         if method_upper in ("POST", "PUT", "PATCH", "DELETE"):
-            has_auth_cookies = bool(request.cookies.get("evp_access") or request.cookies.get("evp_refresh"))
-            if has_auth_cookies:
-                origin = request.headers.get("origin")
-                trusted = [o.strip() for o in (settings.CSRF_TRUSTED_ORIGINS or "").split(",") if o.strip()]
-                if origin and trusted and origin not in trusted:
-                    return JSONResponse(
-                        status_code=403,
-                        content={"success": False, "error": "csrf_origin", "message": "Origin not allowed", "status": 403}
-                    )
-                header_token = request.headers.get("x-csrf-token")
-                cookie_token = request.cookies.get("XSRF-TOKEN")
-                if not header_token or not cookie_token or header_token != cookie_token:
-                    return JSONResponse(
-                        status_code=403,
-                        content={"success": False, "error": "csrf_failed", "message": "Invalid or missing CSRF token", "status": 403}
-                    )
+            # Пропускаем CSRF проверку для исключённых путей
+            if path_lower in CSRF_EXEMPT_PATHS:
+                pass  # CSRF не требуется для этих endpoints
+            else:
+                has_auth_cookies = bool(request.cookies.get("evp_access") or request.cookies.get("evp_refresh"))
+                if has_auth_cookies:
+                    origin = request.headers.get("origin")
+                    trusted = [o.strip() for o in (settings.CSRF_TRUSTED_ORIGINS or "").split(",") if o.strip()]
+                    if origin and trusted and origin not in trusted:
+                        return JSONResponse(
+                            status_code=403,
+                            content={"success": False, "error": "csrf_origin", "message": "Origin not allowed", "status": 403}
+                        )
+                    header_token = request.headers.get("x-csrf-token")
+                    cookie_token = request.cookies.get("XSRF-TOKEN")
+                    if not header_token or not cookie_token or header_token != cookie_token:
+                        return JSONResponse(
+                            status_code=403,
+                            content={"success": False, "error": "csrf_failed", "message": "Invalid or missing CSRF token", "status": 403}
+                        )
         
         # Добавляем security headers
         start_time = time.time()
