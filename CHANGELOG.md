@@ -7,6 +7,105 @@
 
 ---
 
+## [1.5.0] - 2025-11-27 - COOKIE-AUTH COMPATIBILITY: FAVORITES & HISTORY API 🔌
+
+### ✨ Added (Новая функциональность)
+
+#### 1. Favorites API - управление избранными станциями
+- **Файлы:**
+  - `backend/app/api/v1/favorites/__init__.py` - модуль favorites
+  - `backend/app/api/v1/favorites/favorites.py` - CRUD endpoints
+- **Проблема:**
+  - Frontend PWA вызывал `supabase.from('user_favorites')` напрямую
+  - В cookie-режиме Supabase сессия отсутствует → `auth.uid()` возвращает NULL
+  - RLS политики блокировали все операции с favorites → 401 Unauthorized
+- **Решение:**
+  - Создан backend API для favorites с авторизацией через cookie (request.state.client_id)
+  - Frontend переписан на использование backend API
+- **Endpoints:**
+  - `GET /api/v1/favorites` - список избранных локаций
+  - `POST /api/v1/favorites` - добавить в избранное
+  - `DELETE /api/v1/favorites/{location_id}` - удалить из избранного
+  - `GET /api/v1/favorites/{location_id}/check` - проверить статус
+  - `POST /api/v1/favorites/{location_id}/toggle` - переключить статус
+- **Статус:** ✅ РЕАЛИЗОВАНО
+
+#### 2. History API - история зарядок и транзакций
+- **Файлы:**
+  - `backend/app/api/v1/history/__init__.py` - модуль history
+  - `backend/app/api/v1/history/history.py` - endpoints для истории
+- **Проблема:**
+  - Frontend вызывал `supabase.from('charging_sessions')` и `supabase.from('balance_topups')`
+  - RLS требует `auth.uid()` → в cookie-режиме возвращает NULL → 401
+- **Решение:**
+  - Создан backend API для истории с JOIN на связанные таблицы
+  - Frontend `evpowerApi.ts` переписан на использование backend API
+- **Endpoints:**
+  - `GET /api/v1/history/charging?limit=20&offset=0` - история зарядок с пагинацией
+  - `GET /api/v1/history/transactions?limit=20&offset=0` - история пополнений с пагинацией
+  - `GET /api/v1/history/stats` - статистика зарядок (total sessions, energy, amount)
+- **Response format:**
+  ```json
+  {
+    "success": true,
+    "data": [...],
+    "total": 42,
+    "limit": 20,
+    "offset": 0
+  }
+  ```
+- **Статус:** ✅ РЕАЛИЗОВАНО
+
+### 🔧 Changed (Изменения)
+
+#### 3. Обновлен роутер API v1
+- **Файл:** `backend/app/api/v1/__init__.py`
+- **Что сделано:**
+  - Импортированы модули `favorites` и `history`
+  - Подключены роутеры: `favorites.router`, `history.router`
+- **Статус:** ✅ ОБНОВЛЕНО
+
+### 📝 Documentation
+
+#### 4. Архитектурное решение для Cookie-Auth
+- **Проблема:** В cookie-режиме (production) Supabase сессия не существует
+- **Почему:** Токены `evp_access`/`evp_refresh` хранятся в httpOnly cookies, Supabase клиент их не видит
+- **RLS Impact:** `auth.uid()` возвращает NULL → все RLS политики с `auth.uid()` блокируют доступ
+- **Решение:** Все операции с RLS-защищёнными таблицами выполняются через Backend API
+- **Backend использует:** `request.state.client_id` из AuthMiddleware (извлекается из cookie)
+
+#### 5. Затронутые таблицы с RLS
+| Таблица | Frontend до | Frontend после |
+|---------|-------------|----------------|
+| `user_favorites` | Supabase direct | `/api/v1/favorites` |
+| `charging_sessions` | Supabase direct | `/api/v1/history/charging` |
+| `balance_topups` | Supabase direct | `/api/v1/history/transactions` |
+
+### 🎯 Production Impact
+
+**До версии 1.5.0:**
+- ❌ Favorites: 401 Unauthorized при любой операции
+- ❌ История зарядок: 401 Unauthorized
+- ❌ История транзакций: 401 Unauthorized
+- ❌ Страница "История" в PWA пустая
+
+**После версии 1.5.0:**
+- ✅ Favorites работают через backend API
+- ✅ История зарядок загружается корректно
+- ✅ История транзакций загружается корректно
+- ✅ PWA полностью функционален в cookie-режиме
+
+### 📊 Статистика изменений v1.5.0
+
+- **Дата:** 2025-11-27
+- **Новых features:** 2 (Favorites API, History API)
+- **Endpoints создано:** 8
+- **Файлов создано:** 4
+- **Файлов изменено:** 1
+- **Строк кода добавлено:** ~450
+
+---
+
 ## [1.4.5] - 2025-11-26 - FIX SAMESITE COOKIE IN REFRESH ENDPOINT 🍪
 
 ### 🐛 Fixed (Исправления)
@@ -1172,7 +1271,7 @@ PUSH_TTL=86400  # 24 hours
 - **MINOR** версия при добавлении функциональности с обратной совместимостью
 - **PATCH** версия при исправлении ошибок с обратной совместимостью
 
-**Текущая версия:** 1.4.4 ✅ PRODUCTION READY (COOKIE AUTH + CSRF FIX)
+**Текущая версия:** 1.5.0 ✅ PRODUCTION READY (COOKIE AUTH + FAVORITES/HISTORY API)
 
 ---
 

@@ -5,7 +5,7 @@ from fastapi import APIRouter
 
 # Импортируем роутеры из модулей
 from .charging import start_router, stop_router, status_router
-from . import balance, payment, station, locations, notifications
+from . import balance, payment, station, locations, notifications, favorites, history
 from .auth import session as auth_session
 from . import profile as profile_module
 
@@ -23,7 +23,9 @@ router.include_router(payment.router, tags=["payment"])
 router.include_router(station.router, tags=["station"])
 router.include_router(locations.router, tags=["locations"])
 router.include_router(profile_module.router, tags=["profile"])
-router.include_router(notifications.router)  # Push Notifications 
+router.include_router(notifications.router)  # Push Notifications
+router.include_router(favorites.router)  # Favorites API
+router.include_router(history.router)  # History API (charging, transactions)
 router.include_router(auth_session.router, tags=["auth"])
 
 __all__ = ["router"]
