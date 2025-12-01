@@ -13,23 +13,63 @@ router = APIRouter()
 
 @router.get("/profile")
 async def get_profile(request: Request, db: Session = Depends(get_db)):
-    client_id = getattr(request.state, "client_id", None)
-    if not client_id:
+    """
+    Универсальный профиль для clients И users (владельцев станций).
+
+    Возвращает user_type: "client" | "owner" для определения интерфейса на фронте.
+    """
+    user_id = getattr(request.state, "client_id", None)
+    if not user_id:
         return {"success": False, "error": "unauthorized", "message": "Missing or invalid authentication"}
 
-    row = db.execute(text("SELECT id, email, phone, name, balance, status FROM clients WHERE id = :id"), {"id": client_id}).fetchone()
-    if not row:
-        return {"success": False, "error": "not_found", "message": "Client not found"}
+    # 1) Сначала проверяем в clients (большинство пользователей)
+    client_row = db.execute(
+        text("SELECT id, email, phone, name, balance, status FROM clients WHERE id = :id"),
+        {"id": user_id}
+    ).fetchone()
 
-    return {
-        "success": True,
-        "client_id": row.id,
-        "email": row.email,
-        "phone": row.phone,
-        "name": row.name,
-        "balance": float(row.balance or 0),
-        "status": row.status,
-    }
+    if client_row:
+        return {
+            "success": True,
+            "user_type": "client",
+            "client_id": client_row.id,
+            "email": client_row.email,
+            "phone": client_row.phone,
+            "name": client_row.name,
+            "balance": float(client_row.balance or 0),
+            "status": client_row.status,
+        }
+
+    # 2) Если не найден в clients — проверяем в users (владельцы станций)
+    owner_row = db.execute(
+        text("SELECT id, email, role, is_active FROM users WHERE id = :id"),
+        {"id": user_id}
+    ).fetchone()
+
+    if owner_row:
+        # Получаем количество станций и локаций для владельца
+        stats = db.execute(
+            text("""
+                SELECT
+                    (SELECT COUNT(*) FROM stations WHERE user_id = :id) as stations_count,
+                    (SELECT COUNT(*) FROM locations WHERE user_id = :id OR admin_id = :id) as locations_count
+            """),
+            {"id": user_id}
+        ).fetchone()
+
+        return {
+            "success": True,
+            "user_type": "owner",
+            "client_id": owner_row.id,  # Для совместимости с фронтом
+            "user_id": owner_row.id,
+            "email": owner_row.email,
+            "role": owner_row.role,
+            "is_active": owner_row.is_active,
+            "stations_count": stats.stations_count if stats else 0,
+            "locations_count": stats.locations_count if stats else 0,
+        }
+
+    return {"success": False, "error": "not_found", "message": "User not found"}
 
 
 @router.post("/account/delete-request")

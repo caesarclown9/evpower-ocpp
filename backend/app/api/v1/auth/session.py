@@ -178,51 +178,81 @@ async def get_me(request: Request, db: Session = Depends(get_db)):
     """
     Получение данных текущего аутентифицированного пользователя.
 
-    Стандартный REST endpoint (алиас для /api/v1/profile).
-    Автоматически определяет client_id из токена аутентификации.
+    Универсальный endpoint для clients И users (владельцев станций).
+    Возвращает user_type: "client" | "owner" для определения интерфейса на фронте.
 
     Returns:
-        dict: Данные пользователя (client_id, email, phone, name, balance, status)
+        dict: Данные пользователя с user_type
 
     Raises:
         401: Если пользователь не аутентифицирован
         404: Если пользователь не найден в БД
     """
-    client_id = getattr(request.state, "client_id", None)
+    user_id = getattr(request.state, "client_id", None)
 
-    if not client_id:
+    if not user_id:
         logger.warning("Попытка получить /auth/me без аутентификации")
         return JSONResponse(
             status_code=401,
             content={"success": False, "error": "unauthorized", "message": "Not authenticated", "status": 401}
         )
 
-    # Получаем данные пользователя из БД
     try:
-        row = db.execute(
+        # 1) Сначала проверяем в clients (большинство пользователей)
+        client_row = db.execute(
             text("SELECT id, email, phone, name, balance, status FROM clients WHERE id = :id"),
-            {"id": client_id}
+            {"id": user_id}
         ).fetchone()
 
-        if not row:
-            logger.warning(f"Клиент {client_id} не найден в БД")
-            return JSONResponse(
-                status_code=404,
-                content={"success": False, "error": "not_found", "message": "Client not found", "status": 404}
-            )
+        if client_row:
+            return {
+                "success": True,
+                "user_type": "client",
+                "client_id": client_row.id,
+                "email": client_row.email,
+                "phone": client_row.phone,
+                "name": client_row.name,
+                "balance": float(client_row.balance or 0),
+                "status": client_row.status,
+            }
 
-        return {
-            "success": True,
-            "client_id": row.id,
-            "email": row.email,
-            "phone": row.phone,
-            "name": row.name,
-            "balance": float(row.balance or 0),
-            "status": row.status,
-        }
+        # 2) Если не найден в clients — проверяем в users (владельцы станций)
+        owner_row = db.execute(
+            text("SELECT id, email, role, is_active FROM users WHERE id = :id"),
+            {"id": user_id}
+        ).fetchone()
+
+        if owner_row:
+            # Получаем количество станций и локаций для владельца
+            stats = db.execute(
+                text("""
+                    SELECT
+                        (SELECT COUNT(*) FROM stations WHERE user_id = :id) as stations_count,
+                        (SELECT COUNT(*) FROM locations WHERE user_id = :id OR admin_id = :id) as locations_count
+                """),
+                {"id": user_id}
+            ).fetchone()
+
+            return {
+                "success": True,
+                "user_type": "owner",
+                "client_id": owner_row.id,  # Для совместимости с фронтом
+                "user_id": owner_row.id,
+                "email": owner_row.email,
+                "role": owner_row.role,
+                "is_active": owner_row.is_active,
+                "stations_count": stats.stations_count if stats else 0,
+                "locations_count": stats.locations_count if stats else 0,
+            }
+
+        logger.warning(f"Пользователь {user_id} не найден ни в clients, ни в users")
+        return JSONResponse(
+            status_code=404,
+            content={"success": False, "error": "not_found", "message": "User not found", "status": 404}
+        )
 
     except Exception as e:
-        logger.error(f"Ошибка получения данных пользователя {client_id}: {e}", exc_info=True)
+        logger.error(f"Ошибка получения данных пользователя {user_id}: {e}", exc_info=True)
         return JSONResponse(
             status_code=500,
             content={"success": False, "error": "internal_error", "message": "Internal server error", "status": 500}
