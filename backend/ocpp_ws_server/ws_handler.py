@@ -1285,24 +1285,35 @@ class OCPPWebSocketHandler:
         connection_start = datetime.utcnow()
         client_info = getattr(self.websocket, 'client', None)
         client_ip = client_info.host if client_info else 'unknown'
-        
+
         self.logger.info(f"🔌 НОВОЕ ПОДКЛЮЧЕНИЕ: Station {self.station_id} от IP {client_ip}")
-        
+
         try:
-            # Проверяем только существование станции в БД (разрешаем подключение всем существующим станциям)
+            # 1. Проверяем аутентификацию станции по API ключу
+            is_authorized = await station_auth.verify_station_connection(
+                self.station_id,
+                websocket=self.websocket
+            )
+
+            if not is_authorized:
+                self.logger.warning(f"❌ Станция {self.station_id} не авторизована - отклоняем подключение")
+                await self.websocket.close(code=1008, reason="Unauthorized")
+                return
+
+            # 2. Проверяем существование станции в БД
             with next(get_db()) as db:
                 result = db.execute(text("""
-                    SELECT id, status FROM stations 
+                    SELECT id, status FROM stations
                     WHERE id = :station_id
                 """), {"station_id": self.station_id})
-                
+
                 station = result.fetchone()
                 if not station:
                     self.logger.warning(f"❌ Станция {self.station_id} не найдена в базе данных")
                     await self.websocket.close(code=1008, reason="Unknown station")
                     return
-            
-            self.logger.info(f"✅ Станция {self.station_id} найдена (статус: {station[1]})")
+
+            self.logger.info(f"✅ Станция {self.station_id} авторизована и найдена (статус: {station[1]})")
             
             # Принимаем WebSocket подключение с гибкой договоренностью субпротокола
             self.logger.debug(f"Принимаем WebSocket для {self.station_id}")

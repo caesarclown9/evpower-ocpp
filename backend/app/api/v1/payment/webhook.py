@@ -56,41 +56,65 @@ def verify_webhook_ip(client_ip: str, provider: str) -> bool:
         return False
 
 async def process_balance_topup(topup_id: int, client_id: str, amount: float, invoice_id: str, provider_name: str):
-    """Фоновая обработка пополнения баланса"""
+    """
+    Фоновая обработка пополнения баланса с защитой от race conditions.
+
+    Использует SELECT FOR UPDATE для блокировки строки клиента на время транзакции,
+    предотвращая race conditions при одновременных webhook запросах.
+    """
     from app.db.session import get_session_local
     SessionLocal = get_session_local()
     db = SessionLocal()
-    
+
     try:
+        # Начинаем транзакцию с SERIALIZABLE isolation для критических операций с балансом
+        db.execute(text("SET TRANSACTION ISOLATION LEVEL SERIALIZABLE"))
+
+        # Проверяем, не был ли платёж уже обработан (идемпотентность)
+        topup_check = db.execute(text("""
+            SELECT status FROM balance_topups WHERE id = :topup_id FOR UPDATE
+        """), {"topup_id": topup_id})
+
+        topup_row = topup_check.fetchone()
+        if not topup_row:
+            logger.error(f"Topup {topup_id} not found during processing")
+            return
+
+        if topup_row[0] == 'approved':
+            logger.info(f"⚠️ Topup {topup_id} already processed (idempotency check)")
+            return
+
         # Обновляем статус платежа
         db.execute(text("""
-            UPDATE balance_topups 
-            SET status = 'approved', paid_amount = :amount, paid_at = NOW(), 
+            UPDATE balance_topups
+            SET status = 'approved', paid_amount = :amount, paid_at = NOW(),
                 completed_at = NOW(), needs_status_check = false
-            WHERE id = :topup_id
+            WHERE id = :topup_id AND status != 'approved'
         """), {"topup_id": topup_id, "amount": amount})
-        
-        # Получаем текущий баланс клиента
+
+        # Получаем текущий баланс клиента С БЛОКИРОВКОЙ (FOR UPDATE)
+        # Это предотвращает race conditions при одновременных транзакциях
         client_result = db.execute(text("""
-            SELECT balance FROM clients WHERE id = :client_id
+            SELECT balance FROM clients WHERE id = :client_id FOR UPDATE
         """), {"client_id": client_id})
-        
+
         client = client_result.fetchone()
         if not client:
             logger.error(f"Client {client_id} not found during balance topup")
+            db.rollback()
             return
-            
+
         old_balance = float(client[0])
         new_balance = old_balance + amount
-        
+
         # Обновляем баланс клиента
         db.execute(text("""
             UPDATE clients SET balance = :new_balance WHERE id = :client_id
         """), {"new_balance": new_balance, "client_id": client_id})
-        
+
         # Создаем запись о транзакции
         db.execute(text("""
-            INSERT INTO payment_transactions_odengi 
+            INSERT INTO payment_transactions_odengi
             (client_id, transaction_type, amount, balance_before, balance_after, description, balance_topup_id)
             VALUES (:client_id, 'balance_topup', :amount, :balance_before, :balance_after, :description, :topup_id)
         """), {
@@ -101,7 +125,7 @@ async def process_balance_topup(topup_id: int, client_id: str, amount: float, in
             "description": f"Пополнение баланса через {provider_name}, invoice {invoice_id}",
             "topup_id": topup_id
         })
-        
+
         db.commit()
         logger.info(f"✅ Пополнение выполнено: {client_id}, +{amount} сом, баланс: {old_balance} → {new_balance}")
 

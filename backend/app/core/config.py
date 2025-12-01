@@ -107,8 +107,8 @@ class Settings(BaseSettings):
     ODENGI_WEBHOOK_IPS: str = os.getenv("ODENGI_WEBHOOK_IPS", "")  # Comma-separated IPs
     # OBANK известные IP адреса серверов (обновить при получении от провайдера)
     OBANK_WEBHOOK_IPS: str = os.getenv("OBANK_WEBHOOK_IPS", "")  # Comma-separated IPs
-    # Отключить IP whitelist проверку (только для development/testing)
-    WEBHOOK_IP_WHITELIST_ENABLED: bool = os.getenv("WEBHOOK_IP_WHITELIST_ENABLED", "true").lower() == "true"
+    # Включить IP whitelist проверку (опционально, HMAC подписи достаточно)
+    WEBHOOK_IP_WHITELIST_ENABLED: bool = os.getenv("WEBHOOK_IP_WHITELIST_ENABLED", "false").lower() == "true"
     
     # Payment Provider Selection
     # По умолчанию ODENGI (OBANK временно отключен)
