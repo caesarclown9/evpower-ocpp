@@ -35,4 +35,4 @@ psutil>=5.9.0
 apscheduler>=3.10.0
 
 # --- Web Push Notifications ---
-pywebpush==1.14.0
+pywebpush>=2.0.0
