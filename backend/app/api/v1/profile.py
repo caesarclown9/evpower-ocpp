@@ -16,13 +16,54 @@ async def get_profile(request: Request, db: Session = Depends(get_db)):
     """
     Универсальный профиль для clients И users (владельцев станций).
 
+    Гибридный подход: owner также может иметь клиентские данные (баланс, зарядки).
     Возвращает user_type: "client" | "owner" для определения интерфейса на фронте.
     """
     user_id = getattr(request.state, "client_id", None)
     if not user_id:
         return {"success": False, "error": "unauthorized", "message": "Missing or invalid authentication"}
 
-    # 1) Сначала проверяем в clients (большинство пользователей)
+    # 1) Проверяем в users (владельцы станций) — они имеют расширенные права
+    owner_row = db.execute(
+        text("SELECT id, email, role, is_active FROM users WHERE id = :id"),
+        {"id": user_id}
+    ).fetchone()
+
+    if owner_row:
+        # Owner найден — получаем также клиентские данные если есть
+        client_row = db.execute(
+            text("SELECT phone, name, balance, status FROM clients WHERE id = :id"),
+            {"id": user_id}
+        ).fetchone()
+
+        # Получаем количество станций и локаций для владельца
+        stats = db.execute(
+            text("""
+                SELECT
+                    (SELECT COUNT(*) FROM stations WHERE user_id = :id) as stations_count,
+                    (SELECT COUNT(*) FROM locations WHERE user_id = :id OR admin_id = :id) as locations_count
+            """),
+            {"id": user_id}
+        ).fetchone()
+
+        return {
+            "success": True,
+            "user_type": "owner",
+            "client_id": owner_row.id,
+            "user_id": owner_row.id,
+            "email": owner_row.email,
+            "role": owner_row.role,
+            "is_active": owner_row.is_active,
+            "stations_count": stats.stations_count if stats else 0,
+            "locations_count": stats.locations_count if stats else 0,
+            # Клиентские данные (если есть запись в clients)
+            "phone": client_row.phone if client_row else None,
+            "name": client_row.name if client_row else None,
+            "balance": float(client_row.balance or 0) if client_row else 0,
+            "status": client_row.status if client_row else "active",
+        }
+
+    # 2) Обычный клиент (не owner)
     client_row = db.execute(
         text("SELECT id, email, phone, name, balance, status FROM clients WHERE id = :id"),
         {"id": user_id}
@@ -38,35 +79,6 @@ async def get_profile(request: Request, db: Session = Depends(get_db)):
             "name": client_row.name,
             "balance": float(client_row.balance or 0),
             "status": client_row.status,
-        }
-
-    # 2) Если не найден в clients — проверяем в users (владельцы станций)
-    owner_row = db.execute(
-        text("SELECT id, email, role, is_active FROM users WHERE id = :id"),
-        {"id": user_id}
-    ).fetchone()
-
-    if owner_row:
-        # Получаем количество станций и локаций для владельца
-        stats = db.execute(
-            text("""
-                SELECT
-                    (SELECT COUNT(*) FROM stations WHERE user_id = :id) as stations_count,
-                    (SELECT COUNT(*) FROM locations WHERE user_id = :id OR admin_id = :id) as locations_count
-            """),
-            {"id": user_id}
-        ).fetchone()
-
-        return {
-            "success": True,
-            "user_type": "owner",
-            "client_id": owner_row.id,  # Для совместимости с фронтом
-            "user_id": owner_row.id,
-            "email": owner_row.email,
-            "role": owner_row.role,
-            "is_active": owner_row.is_active,
-            "stations_count": stats.stations_count if stats else 0,
-            "locations_count": stats.locations_count if stats else 0,
         }
 
     return {"success": False, "error": "not_found", "message": "User not found"}
