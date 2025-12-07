@@ -63,9 +63,12 @@ class LocationWebSocketManager:
             websocket = self.active_connections[client_id]
             try:
                 await websocket.send_text(message)
+                logger.info(f"📤 Сообщение отправлено клиенту {client_id}")
             except Exception as e:
                 logger.error(f"Ошибка отправки сообщения клиенту {client_id}: {e}")
                 self.disconnect(client_id)
+        else:
+            logger.warning(f"⚠️ Клиент {client_id} не найден в active_connections")
     
     async def broadcast(self, message: str, channel: str):
         """Рассылка сообщения всем подписчикам канала"""
@@ -347,6 +350,8 @@ async def listen_redis_updates(client_id: str):
             data = message["data"]
             if isinstance(data, bytes):
                 data = data.decode("utf-8")
+
+            logger.info(f"📥 Redis сообщение получено для клиента {client_id}: канал={message.get('channel')}")
 
             # Отправляем сообщение клиенту
             await ws_manager.send_personal_message(data, client_id)

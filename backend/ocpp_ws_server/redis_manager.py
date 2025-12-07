@@ -297,7 +297,8 @@ class RedisOcppManager:
 
     async def publish(self, channel: str, message: str):
         """Публикация сообщения в канал"""
-        await self.redis.publish(channel, message)
+        result = await self.redis.publish(channel, message)
+        logger.info(f"📢 Published to {channel}, subscribers: {result}")
 
     async def subscribe_and_listen(self, *channels) -> AsyncGenerator[dict, None]:
         """
@@ -316,7 +317,9 @@ class RedisOcppManager:
             logger.info(f"📡 Subscribed to channels: {channels}")
 
             async for message in pubsub.listen():
+                logger.debug(f"📨 RAW MESSAGE: {message}")
                 if message["type"] == "message":
+                    logger.info(f"📩 Pub/Sub message received on {message['channel']}")
                     yield {
                         "channel": message["channel"],
                         "data": message["data"]
