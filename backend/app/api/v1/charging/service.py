@@ -1185,6 +1185,7 @@ class ChargingService:
             actual_cost = actual_energy_consumed * float(session_data['price_per_kwh'])
         elif session_data['meter_start'] is not None and session_data['status'] == 'started':
             # Активная зарядка - получаем последние показания
+            # Метод 1: Через charging_session_id в OCPP транзакции
             latest_meter_query = text("""
                 SELECT mv.energy_active_import_register
                 FROM ocpp_meter_values mv
@@ -1195,12 +1196,29 @@ class ChargingService:
             """)
             latest_result = self.db.execute(latest_meter_query, {"session_id": session_id})
             latest_meter = latest_result.fetchone()
-            
+
+            # Метод 2: Если не нашли через charging_session_id, ищем через transaction_id
+            if not latest_meter or not latest_meter[0]:
+                transaction_id = session_data.get('transaction_id')
+                if transaction_id:
+                    logger.debug(f"📊 Поиск meter values через transaction_id: {transaction_id}")
+                    fallback_query = text("""
+                        SELECT mv.energy_active_import_register
+                        FROM ocpp_meter_values mv
+                        JOIN ocpp_transactions ot ON mv.ocpp_transaction_id = ot.id
+                        WHERE ot.transaction_id = :transaction_id
+                        AND mv.energy_active_import_register IS NOT NULL
+                        ORDER BY mv.timestamp DESC LIMIT 1
+                    """)
+                    latest_result = self.db.execute(fallback_query, {"transaction_id": int(transaction_id)})
+                    latest_meter = latest_result.fetchone()
+
             if latest_meter and latest_meter[0]:
                 current_meter = float(latest_meter[0])
                 ocpp_energy_wh = current_meter - float(session_data['meter_start'])
                 actual_energy_consumed = max(ocpp_energy_wh / 1000.0, actual_energy_consumed)
                 actual_cost = actual_energy_consumed * float(session_data['price_per_kwh'])
+                logger.debug(f"📊 Energy calculated: current={current_meter}, start={session_data['meter_start']}, consumed={actual_energy_consumed} kWh")
         
         return {
             "actual_energy_consumed": actual_energy_consumed,

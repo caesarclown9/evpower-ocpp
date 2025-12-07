@@ -1,6 +1,7 @@
 # redis_manager.py
 # Асинхронный менеджер для работы с Redis: хранение подключённых станций и Pub/Sub для команд
-import redis.asyncio as redis
+import redis.asyncio as redis_async
+import redis as redis_sync  # Синхронный клиент для OCPP handlers
 import json
 import os
 import logging
@@ -29,14 +30,18 @@ class RedisOcppManager:
         # Логируем конфигурацию без секретных данных
         logger.info(f"Redis manager: Initializing (password: {'Yes' if redis_password else 'No'})")
 
-        # Создаем соединение без принудительной аутентификации
-        self.redis = redis.from_url(redis_url, decode_responses=True)
+        # Создаем асинхронное соединение
+        self.redis = redis_async.from_url(redis_url, decode_responses=True)
+
+        # Создаем синхронное соединение для OCPP handlers (которые синхронные)
+        self.redis_sync = redis_sync.from_url(redis_url, decode_responses=True)
+        logger.info("Redis manager: Sync client initialized for OCPP handlers")
 
         # Словарь для отслеживания готовности подписок станций
         self._subscription_ready: Dict[str, asyncio.Event] = {}
 
         # Активные pubsub подписки (для корректного закрытия)
-        self._active_pubsubs: Dict[str, redis.client.PubSub] = {}
+        self._active_pubsubs: Dict[str, redis_async.client.PubSub] = {}
 
     async def ping(self) -> bool:
         """Проверка соединения с Redis"""
@@ -263,6 +268,35 @@ class RedisOcppManager:
     async def delete(self, key: str):
         """Удаление ключа из кэша"""
         await self.redis.delete(key)
+
+    # ============================================================
+    # СИНХРОННЫЕ МЕТОДЫ: для использования в OCPP handlers
+    # ============================================================
+
+    def get_sync(self, key: str) -> Optional[str]:
+        """Синхронное получение данных (для OCPP handlers)"""
+        try:
+            return self.redis_sync.get(key)
+        except Exception as e:
+            logger.error(f"Redis sync get error for {key}: {e}")
+            return None
+
+    def set_sync(self, key: str, value: str, ttl: int = None):
+        """Синхронная запись данных (для OCPP handlers)"""
+        try:
+            if ttl:
+                self.redis_sync.setex(key, ttl, value)
+            else:
+                self.redis_sync.set(key, value)
+        except Exception as e:
+            logger.error(f"Redis sync set error for {key}: {e}")
+
+    def delete_sync(self, key: str):
+        """Синхронное удаление ключа (для OCPP handlers)"""
+        try:
+            self.redis_sync.delete(key)
+        except Exception as e:
+            logger.error(f"Redis sync delete error for {key}: {e}")
 
     # ============================================================
     # ДИАГНОСТИКА

@@ -424,18 +424,16 @@ class OCPPChargePoint(CP):
                 pending_key = f"pending:{self.id}:{connector_id}"
                 try:
                     from ocpp_ws_server.redis_manager import redis_manager
-                    import asyncio
 
-                    # Получаем session_id из pending
-                    loop = asyncio.get_event_loop()
-                    pending_session = loop.run_until_complete(redis_manager.redis.get(pending_key))
+                    # Используем СИНХРОННЫЙ Redis клиент (OCPP handlers синхронные!)
+                    pending_session = redis_manager.get_sync(pending_key)
 
                     if pending_session:
                         charging_session_id = pending_session
                         self.logger.info(f"✅ НАЙДЕН pending session: {pending_key} -> {charging_session_id}")
 
                         # Удаляем pending (использован)
-                        loop.run_until_complete(redis_manager.redis.delete(pending_key))
+                        redis_manager.delete_sync(pending_key)
 
                         # Получаем client_id из сессии
                         session_query = text("""
@@ -457,8 +455,8 @@ class OCPPChargePoint(CP):
                 if not charging_session_id:
                     try:
                         idtag_key = f"idtag:{id_tag}"
-                        loop = asyncio.get_event_loop()
-                        idtag_session = loop.run_until_complete(redis_manager.redis.get(idtag_key))
+                        # Используем СИНХРОННЫЙ Redis клиент
+                        idtag_session = redis_manager.get_sync(idtag_key)
 
                         if idtag_session:
                             charging_session_id = idtag_session
