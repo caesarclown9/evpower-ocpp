@@ -121,11 +121,8 @@ class ChargingService:
             reservation['amount'],
             station_id
         )
-        
-        # 7. Создание OCPP авторизации
-        id_tag = self._setup_ocpp_authorization(client_id)
-        
-        # 8. Создание сессии
+
+        # 7. Создание сессии (сначала, чтобы получить session_id для id_tag)
         session_id = self._create_charging_session(
             client_id,
             station_id,
@@ -134,7 +131,10 @@ class ChargingService:
             energy_kwh,
             amount_som
         )
-        
+
+        # 8. Создание OCPP авторизации с session_id в id_tag (формат Voltera)
+        id_tag = self._setup_ocpp_authorization(client_id, session_id)
+
         # 9. Обновление статуса коннектора
         self._update_connector_status(station_id, connector_id, 'occupied')
         
@@ -415,28 +415,22 @@ class ChargingService:
             f"Резервирование средств для зарядки на станции {station_id}"
         )
     
-    def _setup_ocpp_authorization(self, client_id: str) -> str:
-        """Создание OCPP авторизации"""
-        # Получаем телефон клиента для id_tag
-        phone_result = self.db.execute(
-            text("SELECT phone FROM clients WHERE id = :client_id"),
-            {"client_id": client_id}
-        ).fetchone()
-        
-        id_tag = phone_result[0] if phone_result else f"CLIENT_{client_id}"
-        
-        # Проверяем существование авторизации
-        auth_exists = self.db.execute(
-            text("SELECT id_tag FROM ocpp_authorization WHERE id_tag = :id_tag"),
-            {"id_tag": id_tag}
-        ).fetchone()
-        
-        if not auth_exists:
-            self.db.execute(text("""
-                INSERT INTO ocpp_authorization (id_tag, status, parent_id_tag, client_id) 
-                VALUES (:id_tag, 'Accepted', NULL, :client_id)
-            """), {"id_tag": id_tag, "client_id": client_id})
-        
+    def _setup_ocpp_authorization(self, client_id: str, session_id: str) -> str:
+        """Создание OCPP авторизации
+
+        Формат id_tag: CLIENT_{client_id}_{session_id} (как в Voltera)
+        Это позволяет извлечь session_id напрямую из id_tag при StartTransaction
+        """
+        # Формат id_tag как в Voltera: CLIENT_{client_id}_{session_id}
+        id_tag = f"CLIENT_{client_id}_{session_id}"
+
+        # Создаём авторизацию (каждая сессия = новая авторизация)
+        self.db.execute(text("""
+            INSERT INTO ocpp_authorization (id_tag, status, parent_id_tag, client_id)
+            VALUES (:id_tag, 'Accepted', NULL, :client_id)
+            ON CONFLICT (id_tag) DO UPDATE SET status = 'Accepted', client_id = :client_id
+        """), {"id_tag": id_tag, "client_id": client_id})
+
         return id_tag
     
     def _create_charging_session(

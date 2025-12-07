@@ -415,52 +415,59 @@ class OCPPChargePoint(CP):
                         id_tag_info={"status": AuthorizationStatus.accepted}
                     )
                 
-                # 🆕 ПРАВИЛЬНОЕ СВЯЗЫВАНИЕ: Находим клиента через ocpp_authorization
+                # 🆕 ИЗВЛЕЧЕНИЕ session_id ИЗ id_tag (формат Voltera: CLIENT_{client_id}_{session_id})
                 charging_session_id = None
                 client_id = None
-                
-                # ИСПРАВЛЕНО: Поиск клиента через таблицу ocpp_authorization вместо прямого поиска по phone
-                auth_query = text("""
-                    SELECT client_id FROM ocpp_authorization 
-                    WHERE id_tag = :id_tag AND client_id IS NOT NULL
-                    LIMIT 1
-                """)
-                auth_result = db.execute(auth_query, {"id_tag": id_tag})
-                auth_row = auth_result.fetchone()
-                
-                if auth_row:
-                    client_id = auth_row[0]
-                    self.logger.info(f"🔍 НАЙДЕН КЛИЕНТ ЧЕРЕЗ АВТОРИЗАЦИЮ: id_tag={id_tag} -> client_id={client_id}")
-                    
-                    # Ищем активную мобильную сессию для клиента
-                    find_session_query = text("""
-                        SELECT id FROM charging_sessions 
-                        WHERE user_id = :client_id AND status = 'started' 
-                        ORDER BY start_time DESC LIMIT 1
-                    """)
-                    session_result = db.execute(find_session_query, {"client_id": client_id})
-                    session_row = session_result.fetchone()
-                    
-                    if session_row:
-                        charging_session_id = session_row[0]
-                        self.logger.info(f"🔗 НАЙДЕНА АКТИВНАЯ СЕССИЯ: {charging_session_id}")
-                        
-                        # Обновляем мобильную сессию с OCPP данными
+
+                # Парсим id_tag формата CLIENT_{client_id}_{session_id}
+                if id_tag and id_tag.startswith("CLIENT_"):
+                    parts = id_tag.split("_", 2)  # ["CLIENT", "{client_id}", "{session_id}"]
+                    if len(parts) >= 3:
+                        client_id = parts[1]
+                        charging_session_id = parts[2]
+                        self.logger.info(f"🔍 ИЗВЛЕЧЕНО ИЗ id_tag: client_id={client_id}, session_id={charging_session_id}")
+
+                        # Обновляем мобильную сессию с OCPP transaction_id
                         update_session_query = text("""
-                            UPDATE charging_sessions 
-                            SET transaction_id = :transaction_id 
+                            UPDATE charging_sessions
+                            SET transaction_id = :transaction_id
                             WHERE id = :session_id
                         """)
                         db.execute(update_session_query, {
                             "transaction_id": str(transaction_id),
                             "session_id": charging_session_id
                         })
-                        
                         self.logger.info(f"✅ Mobile сессия обновлена: transaction_id={transaction_id}")
                     else:
-                        self.logger.warning(f"⚠️ Активная мобильная сессия для клиента {client_id} не найдена")
+                        self.logger.warning(f"⚠️ Неверный формат id_tag: {id_tag} (ожидается CLIENT_clientId_sessionId)")
                 else:
-                    self.logger.warning(f"⚠️ Клиент не найден для id_tag: {id_tag}")
+                    # Fallback: старый формат (номер телефона) - ищем через ocpp_authorization
+                    self.logger.info(f"📱 Старый формат id_tag (телефон): {id_tag}")
+                    auth_query = text("""
+                        SELECT client_id FROM ocpp_authorization
+                        WHERE id_tag = :id_tag AND client_id IS NOT NULL
+                        LIMIT 1
+                    """)
+                    auth_result = db.execute(auth_query, {"id_tag": id_tag})
+                    auth_row = auth_result.fetchone()
+
+                    if auth_row:
+                        client_id = auth_row[0]
+                        # Ищем активную сессию для клиента
+                        find_session_query = text("""
+                            SELECT id FROM charging_sessions
+                            WHERE user_id = :client_id AND status = 'started'
+                            ORDER BY start_time DESC LIMIT 1
+                        """)
+                        session_result = db.execute(find_session_query, {"client_id": client_id})
+                        session_row = session_result.fetchone()
+                        if session_row:
+                            charging_session_id = session_row[0]
+                            db.execute(text("""
+                                UPDATE charging_sessions SET transaction_id = :tx WHERE id = :sid
+                            """), {"tx": str(transaction_id), "sid": charging_session_id})
+                    else:
+                        self.logger.warning(f"⚠️ Клиент не найден для id_tag: {id_tag}")
                 
                 # Создаем OCPP транзакцию с связкой
                 transaction = OCPPTransactionService.start_transaction(

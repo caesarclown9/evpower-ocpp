@@ -240,26 +240,7 @@ async def start_charging(
             f"Резервирование средств для зарядки на станции {request.station_id}"
         )
 
-        # 9. Создаем ocpp_sessions запись с правильным idTag
-        # 🆕 ИСПРАВЛЕНИЕ: Используем номер телефона вместо CLIENT_ префикса
-        phone_query = text("""
-            SELECT phone FROM clients WHERE id = :client_id
-        """)
-        phone_result = db.execute(phone_query, {"client_id": request.client_id}).fetchone()
-        id_tag = phone_result[0] if phone_result else f"CLIENT_{request.client_id}"
-        
-        auth_check = db.execute(text("""
-            SELECT id_tag FROM ocpp_authorization 
-            WHERE id_tag = :id_tag
-        """), {"id_tag": id_tag})
-        
-        if not auth_check.fetchone():
-            db.execute(text("""
-                INSERT INTO ocpp_authorization (id_tag, status, parent_id_tag, client_id) 
-                VALUES (:id_tag, 'Accepted', NULL, :client_id)
-            """), {"id_tag": id_tag, "client_id": request.client_id})
-
-        # 10. Создаем сессию зарядки с резервированием средств
+        # 9. Создаем сессию зарядки СНАЧАЛА (чтобы получить session_id для id_tag)
         # 🔧 ЛОГИКА ЛИМИТОВ для базы данных
         if request.energy_kwh and request.amount_som:
             # РЕЖИМ 1: Энергия + сумма
@@ -293,6 +274,14 @@ async def start_charging(
         })
         
         session_id = session_insert.fetchone()[0]
+
+        # 10. Создаем OCPP авторизацию с id_tag формата Voltera: CLIENT_{client_id}_{session_id}
+        id_tag = f"CLIENT_{request.client_id}_{session_id}"
+        db.execute(text("""
+            INSERT INTO ocpp_authorization (id_tag, status, parent_id_tag, client_id)
+            VALUES (:id_tag, 'Accepted', NULL, :client_id)
+            ON CONFLICT (id_tag) DO UPDATE SET status = 'Accepted', client_id = :client_id
+        """), {"id_tag": id_tag, "client_id": request.client_id})
 
         # 11. Логируем транзакцию резервирования
         payment_service.create_payment_transaction(
