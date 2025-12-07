@@ -84,13 +84,13 @@ class OCPPChargePoint(CP):
         """Background обработка BootNotification для избежания блокировок"""
         try:
             self.logger.info(f"🔄 Background обработка BootNotification для {self.id}")
-            
+
             with next(get_db()) as db:
                 # Сохраняем информацию о станции
                 OCPPStationService.mark_boot_notification_sent(
                     db, self.id, firmware_version
                 )
-                
+
                 # Базовая конфигурация
                 OCPPConfigurationService.set_configuration(
                     db, self.id, "HeartbeatInterval", "300", readonly=True
@@ -98,55 +98,85 @@ class OCPPChargePoint(CP):
                 OCPPConfigurationService.set_configuration(
                     db, self.id, "MeterValueSampleInterval", "60", readonly=True
                 )
-                
-                # 🆕 АВТОЗАПУСК: Проверяем pending сессии
-                pending_sessions_query = text("""
-                    SELECT id, user_id, limit_value, limit_type
-                    FROM charging_sessions 
-                    WHERE station_id = :station_id 
-                    AND status = 'started' 
+
+                # 🚫 НЕ АВТОЗАПУСК: Завершаем зависшие сессии с возвратом средств
+                # При перезагрузке станции все pending/started сессии без OCPP транзакции
+                # должны быть завершены с ошибкой и возвратом средств
+                hanging_sessions_query = text("""
+                    SELECT id, user_id, amount
+                    FROM charging_sessions
+                    WHERE station_id = :station_id
+                    AND status = 'started'
                     AND transaction_id IS NULL
                 """)
-                
-                pending_sessions = db.execute(pending_sessions_query, {"station_id": self.id}).fetchall()
-                
-                # Отправляем команды автозапуска для каждой pending сессии
-                for session in pending_sessions:
-                    session_id, user_id, limit_value, limit_type = session
-                    
-                    # 🆕 ИСПРАВЛЕНИЕ: Получаем номер телефона клиента вместо CLIENT_ префикса
-                    phone_query = text("""
-                        SELECT phone FROM clients WHERE id = :client_id
+
+                hanging_sessions = db.execute(hanging_sessions_query, {"station_id": self.id}).fetchall()
+
+                for session in hanging_sessions:
+                    session_id, user_id, reserved_amount = session
+
+                    self.logger.warning(
+                        f"⚠️ Найдена зависшая сессия {session_id} при BootNotification. "
+                        f"Станция перезагрузилась - завершаем с возвратом средств."
+                    )
+
+                    # Завершаем сессию с ошибкой
+                    update_session_query = text("""
+                        UPDATE charging_sessions
+                        SET status = 'error',
+                            stop_time = NOW(),
+                            energy = 0,
+                            amount = 0
+                        WHERE id = :session_id
                     """)
-                    phone_result = db.execute(phone_query, {"client_id": user_id}).fetchone()
-                    id_tag = phone_result[0] if phone_result else f"CLIENT_{user_id}"
-                    
-                    # Определяем коннектор из занятых коннекторов
-                    connector_query = text("""
-                        SELECT connector_number FROM connectors 
+                    db.execute(update_session_query, {"session_id": session_id})
+
+                    # Возвращаем зарезервированные средства клиенту
+                    if reserved_amount and float(reserved_amount) > 0:
+                        refund_query = text("""
+                            UPDATE clients
+                            SET balance = balance + :refund_amount
+                            WHERE id = :user_id
+                        """)
+                        db.execute(refund_query, {
+                            "refund_amount": float(reserved_amount),
+                            "user_id": user_id
+                        })
+
+                        # Создаем запись о возврате
+                        refund_transaction_query = text("""
+                            INSERT INTO payment_transactions_odengi
+                            (client_id, transaction_type, amount, description, charging_session_id)
+                            VALUES (:client_id, 'charge_refund', :amount, :description, :session_id)
+                        """)
+                        db.execute(refund_transaction_query, {
+                            "client_id": user_id,
+                            "amount": float(reserved_amount),
+                            "description": f"Возврат средств: станция перезагрузилась (сессия {session_id})",
+                            "session_id": session_id
+                        })
+
+                        self.logger.info(
+                            f"💰 Возврат {reserved_amount} сом клиенту {user_id} "
+                            f"(сессия {session_id} завершена из-за перезагрузки станции)"
+                        )
+
+                    # Освобождаем коннекторы
+                    release_connectors_query = text("""
+                        UPDATE connectors
+                        SET status = 'available', error_code = 'NoError', last_status_update = NOW()
                         WHERE station_id = :station_id AND status = 'occupied'
-                        LIMIT 1
                     """)
-                    connector_result = db.execute(connector_query, {"station_id": self.id}).fetchone()
-                    connector_id = connector_result[0] if connector_result else 1
-                    
-                    # Отправляем команду автозапуска через Redis
-                    command_data = {
-                        "action": "RemoteStartTransaction",
-                        "connector_id": connector_id,
-                        "id_tag": id_tag,
-                        "session_id": session_id,
-                        "limit_type": limit_type,
-                        "limit_value": limit_value
-                    }
-                    
-                    # Отправляем Redis команду
-                    await redis_manager.publish_command(self.id, command_data)
-                    
-                    self.logger.info(f"🚀 Автозапуск зарядки для сессии {session_id}")
-                    
+                    db.execute(release_connectors_query, {"station_id": self.id})
+
+                if hanging_sessions:
+                    self.logger.info(
+                        f"✅ Завершено {len(hanging_sessions)} зависших сессий "
+                        f"при BootNotification станции {self.id}"
+                    )
+
                 db.commit()
-                
+
         except Exception as e:
             self.logger.error(f"❌ Ошибка background обработки BootNotification: {e}")
 
@@ -154,27 +184,30 @@ class OCPPChargePoint(CP):
     def on_heartbeat(self, **kwargs):
         """Периодические сигналы жизни"""
         self.logger.debug(f"Heartbeat from {self.id}")
-        
+
         try:
+            # Продлеваем TTL станции в Redis
+            asyncio.create_task(redis_manager.refresh_station_ttl(self.id))
+
             with next(get_db()) as db:
                 OCPPStationService.update_heartbeat(db, self.id)
-                
+
                 # Инвалидируем кэш локации при heartbeat (станция стала online)
                 location_query = text("""
-                    SELECT location_id FROM stations 
+                    SELECT location_id FROM stations
                     WHERE id = :station_id
                 """)
                 location_result = db.execute(location_query, {"station_id": self.id}).fetchone()
-                
+
                 if location_result:
                     location_id = location_result[0]
                     from app.services.location_status_service import LocationStatusService
                     asyncio.create_task(LocationStatusService.invalidate_cache(location_id))
-                
+
             return call_result.Heartbeat(
                 current_time=datetime.utcnow().isoformat() + 'Z'
             )
-            
+
         except Exception as e:
             self.logger.error(f"Error in Heartbeat: {e}")
             return call_result.Heartbeat(
@@ -334,7 +367,7 @@ class OCPPChargePoint(CP):
     def on_start_transaction(self, connector_id, id_tag, meter_start, timestamp, **kwargs):
         """Начало сеанса зарядки"""
         self.logger.info(f"StartTransaction: connector={connector_id}, id_tag={id_tag}, meter_start={meter_start}")
-        
+
         try:
             with next(get_db()) as db:
                 # Проверяем авторизацию
@@ -345,9 +378,30 @@ class OCPPChargePoint(CP):
                         transaction_id=0,
                         id_tag_info=auth_result
                     )
-                
+
                 # Генерируем transaction_id
                 transaction_id = int(datetime.utcnow().timestamp())
+
+                # 🆕 ПРОВЕРКА ДУБЛИКАТА: (station_id, transaction_id) должен быть уникальным
+                duplicate_check = text("""
+                    SELECT id, charging_session_id FROM ocpp_transactions
+                    WHERE station_id = :station_id AND transaction_id = :transaction_id
+                    LIMIT 1
+                """)
+                duplicate_result = db.execute(duplicate_check, {
+                    "station_id": self.id,
+                    "transaction_id": transaction_id
+                }).fetchone()
+
+                if duplicate_result:
+                    self.logger.warning(
+                        f"⚠️ Дубликат transaction_id {transaction_id} для станции {self.id}. "
+                        f"Возвращаем существующую транзакцию."
+                    )
+                    return call_result.StartTransaction(
+                        transaction_id=transaction_id,
+                        id_tag_info={"status": AuthorizationStatus.accepted}
+                    )
                 
                 # 🆕 ПРАВИЛЬНОЕ СВЯЗЫВАНИЕ: Находим клиента через ocpp_authorization
                 charging_session_id = None
@@ -663,21 +717,57 @@ class OCPPChargePoint(CP):
                                 
                                 if limit_type == 'energy' and limit_value and energy_delivered_kwh >= limit_value:
                                     self.logger.warning(f"🛑 ЛИМИТ ПРЕВЫШЕН: {energy_delivered_kwh:.3f} >= {limit_value} кВт⋅ч. Останавливаем зарядку!")
-                                    
+
                                     # Инициируем остановку транзакции
                                     transaction_id = session.get('transaction_id')
                                     if transaction_id:
                                         try:
                                             # Отправляем команду остановки в Redis
                                             await redis_manager.publish_command(self.id, {
-                                                "action": "RemoteStopTransaction", 
+                                                "action": "RemoteStopTransaction",
                                                 "transaction_id": transaction_id,
                                                 "reason": "EnergyLimitReached"
                                             })
                                             self.logger.info(f"📤 Отправлена команда остановки для transaction_id: {transaction_id}")
                                         except Exception as stop_error:
                                             self.logger.error(f"Ошибка отправки команды остановки: {stop_error}")
-                                elif limit_type is None:
+
+                                elif limit_type == 'amount' and limit_value:
+                                    # 🆕 ПРОВЕРКА ЛИМИТА ПО СУММЕ (95% порог)
+                                    session_id = session.get('charging_session_id')
+                                    if session_id:
+                                        try:
+                                            with next(get_db()) as check_db:
+                                                # Получаем тариф для расчёта текущей стоимости
+                                                tariff_query = text("""
+                                                    SELECT price_per_kwh FROM stations WHERE id = :station_id
+                                                """)
+                                                tariff_result = check_db.execute(tariff_query, {"station_id": self.id}).fetchone()
+                                                rate_per_kwh = float(tariff_result[0]) if tariff_result and tariff_result[0] else 12.0
+
+                                                current_cost = energy_delivered_kwh * rate_per_kwh
+                                                limit_amount = float(limit_value)
+                                                stop_threshold = limit_amount * 0.95  # 95% порог
+
+                                                if current_cost >= stop_threshold:
+                                                    transaction_id = session.get('transaction_id')
+                                                    if transaction_id:
+                                                        await redis_manager.publish_command(self.id, {
+                                                            "action": "RemoteStopTransaction",
+                                                            "transaction_id": transaction_id,
+                                                            "reason": "AmountLimitReached"
+                                                        })
+                                                        self.logger.warning(
+                                                            f"🛑 ЛИМИТ ПО СУММЕ: {current_cost:.2f} >= 95% от {limit_amount} сом. ОСТАНОВКА!"
+                                                        )
+                                                elif current_cost >= limit_amount * 0.80:
+                                                    self.logger.info(
+                                                        f"⚠️ Достигнуто 80% лимита: {current_cost:.2f} из {limit_amount} сом"
+                                                    )
+                                        except Exception as amount_check_error:
+                                            self.logger.error(f"Ошибка проверки лимита по сумме: {amount_check_error}")
+
+                                elif limit_type is None or limit_type == 'none':
                                     # Неограниченная зарядка - проверяем достаточность средств
                                     session_id = session.get('charging_session_id')
                                     if session_id:
@@ -695,27 +785,34 @@ class OCPPChargePoint(CP):
                                                 if session_result:
                                                     user_id, reserved_amount, rate_per_kwh = session_result
                                                     rate_per_kwh = float(rate_per_kwh) if rate_per_kwh else 12.0
-                                                    
+
                                                     current_cost = energy_delivered_kwh * rate_per_kwh
                                                     reserved_amount_float = float(reserved_amount)
-                                                    
-                                                    # 🔒 ФИНАНСОВАЯ ЗАЩИТА: Более агрессивные лимиты
-                                                    warning_threshold = reserved_amount_float * 0.85  # 85% предупреждение
-                                                    stop_threshold = reserved_amount_float * 0.90     # 90% остановка
-                                                    
-                                                    if current_cost >= warning_threshold:
-                                                        self.logger.warning(f"⚠️ СРЕДСТВА ЗАКАНЧИВАЮТСЯ: {current_cost:.2f} из {reserved_amount_float} сом ({(current_cost/reserved_amount_float)*100:.1f}%)")
-                                                        
-                                                        # При достижении 90% резерва - ПРИНУДИТЕЛЬНАЯ остановка
-                                                        if current_cost >= stop_threshold:
-                                                            transaction_id = session.get('transaction_id')
-                                                            if transaction_id:
-                                                                await redis_manager.publish_command(self.id, {
-                                                                    "action": "RemoteStopTransaction", 
-                                                                    "transaction_id": transaction_id,
-                                                                    "reason": "InsufficientFunds"
-                                                                })
-                                                                self.logger.warning(f"🛑 СРЕДСТВА ПОЧТИ ИСЧЕРПАНЫ: {current_cost:.2f}/{reserved_amount_float} сом. ОСТАНОВКА!")
+
+                                                    # 🔒 ФИНАНСОВАЯ ЗАЩИТА: 95% порог для остановки
+                                                    # Используем 95% вместо 100% из-за:
+                                                    # 1. Задержка MeterValues (30-60 сек между обновлениями)
+                                                    # 2. Погрешность измерений счётчика энергии
+                                                    # 3. Защита от превышения резерва
+                                                    stop_threshold = reserved_amount_float * 0.95  # 95% остановка
+
+                                                    if current_cost >= stop_threshold:
+                                                        transaction_id = session.get('transaction_id')
+                                                        if transaction_id:
+                                                            await redis_manager.publish_command(self.id, {
+                                                                "action": "RemoteStopTransaction",
+                                                                "transaction_id": transaction_id,
+                                                                "reason": "AmountLimitReached"
+                                                            })
+                                                            self.logger.warning(
+                                                                f"🛑 ЛИМИТ ПО СУММЕ ДОСТИГНУТ: {current_cost:.2f} >= 95% от {reserved_amount_float} сом. ОСТАНОВКА!"
+                                                            )
+                                                    elif current_cost >= reserved_amount_float * 0.80:
+                                                        # Предупреждение при 80%
+                                                        self.logger.warning(
+                                                            f"⚠️ СРЕДСТВА ЗАКАНЧИВАЮТСЯ: {current_cost:.2f} из {reserved_amount_float} сом "
+                                                            f"({(current_cost/reserved_amount_float)*100:.1f}%)"
+                                                        )
                                         except Exception as fund_check_error:
                                             self.logger.error(f"Ошибка проверки средств: {fund_check_error}")
                                 
