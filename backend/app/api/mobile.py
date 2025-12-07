@@ -275,8 +275,15 @@ async def start_charging(
         
         session_id = session_insert.fetchone()[0]
 
-        # 10. Создаем OCPP авторизацию с id_tag формата Voltera: CLIENT_{client_id}_{session_id}
-        id_tag = f"CLIENT_{request.client_id}_{session_id}"
+        # 10. Создаем OCPP авторизацию с КОРОТКИМ id_tag (OCPP 1.6 лимит 20 символов!)
+        import hashlib
+        import time
+        session_hash = hashlib.md5(session_id.encode()).hexdigest()[:8].upper()
+        ts_hex = hex(int(time.time()))[-4:].upper()
+        id_tag = f"E{session_hash}{ts_hex}"  # 13 символов max
+
+        logger.info(f"🏷️ Создан короткий id_tag: {id_tag} для session_id: {session_id}")
+
         db.execute(text("""
             INSERT INTO ocpp_authorization (id_tag, status, parent_id_tag, client_id)
             VALUES (:id_tag, 'Accepted', NULL, :client_id)
@@ -305,6 +312,17 @@ async def start_charging(
         connected_stations = await redis_manager.get_stations()
         is_station_online = request.station_id in connected_stations
         
+        # === СОХРАНЯЕМ PENDING SESSION В REDIS (как в Voltera) ===
+        # Это позволяет ws_handler найти session_id при StartTransaction
+        pending_key = f"pending:{request.station_id}:{request.connector_id}"
+        await redis_manager.redis.setex(pending_key, 300, session_id)  # TTL 5 минут
+        logger.info(f"📝 Сохранён pending session: {pending_key} -> {session_id}")
+
+        # Также сохраняем маппинг id_tag -> session_id
+        idtag_key = f"idtag:{id_tag}"
+        await redis_manager.redis.setex(idtag_key, 86400, session_id)  # TTL 24 часа
+        logger.info(f"📝 Сохранён маппинг id_tag: {idtag_key} -> {session_id}")
+
         if is_station_online:
             # Отправляем команду через Redis
             command_data = {
@@ -313,11 +331,11 @@ async def start_charging(
                 "id_tag": id_tag,
                 "session_id": session_id
             }
-            
+
             # Добавляем лимиты в Redis команду
             command_data["limit_type"] = limit_type
             command_data["limit_value"] = limit_value
-            
+
             await redis_manager.publish_command(request.station_id, command_data)
             
             logger.info(f"✅ Зарядка запущена: сессия {session_id}, средства зарезервированы {reservation_amount} сом")

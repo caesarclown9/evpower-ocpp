@@ -418,13 +418,22 @@ class ChargingService:
     def _setup_ocpp_authorization(self, client_id: str, session_id: str) -> str:
         """Создание OCPP авторизации
 
-        Формат id_tag: CLIENT_{client_id}_{session_id} (как в Voltera)
-        Это позволяет извлечь session_id напрямую из id_tag при StartTransaction
+        OCPP 1.6 ограничивает id_tag до 20 символов!
+        Используем короткий формат: E{hash} (до 20 символов)
+        Маппинг session_id хранится в Redis (pending session)
         """
-        # Формат id_tag как в Voltera: CLIENT_{client_id}_{session_id}
-        id_tag = f"CLIENT_{client_id}_{session_id}"
+        import hashlib
+        import time
 
-        # Создаём авторизацию (каждая сессия = новая авторизация)
+        # Генерируем короткий id_tag (до 20 символов для OCPP 1.6)
+        # Формат: E{5 символов hash от session_id}{4 символа timestamp hex}
+        session_hash = hashlib.md5(session_id.encode()).hexdigest()[:8].upper()
+        ts_hex = hex(int(time.time()))[-4:].upper()
+        id_tag = f"E{session_hash}{ts_hex}"  # Итого: 1 + 8 + 4 = 13 символов
+
+        logger.info(f"🏷️ Создан короткий id_tag: {id_tag} для session_id: {session_id}")
+
+        # Создаём авторизацию
         self.db.execute(text("""
             INSERT INTO ocpp_authorization (id_tag, status, parent_id_tag, client_id)
             VALUES (:id_tag, 'Accepted', NULL, :client_id)
@@ -544,16 +553,27 @@ class ChargingService:
     ) -> bool:
         """Отправка команды запуска на станцию через Redis
 
-        Проверяет:
-        1. Онлайн-статус станции (через TTL ключ в Redis)
-        2. Готовность подписки станции на команды (subscription ready)
+        Сохраняет pending session в Redis для связывания при StartTransaction.
+        OCPP 1.6 ограничивает id_tag до 20 символов, поэтому используем
+        короткий id_tag + маппинг через pending session.
         """
         # Проверяем онлайн-статус через TTL ключ
         is_online = await redis_manager.is_station_online(station_id)
 
         if not is_online:
             logger.warning(f"⚠️ Станция {station_id} не онлайн в Redis")
-            return False
+            # Всё равно сохраняем pending - станция может подключиться
+
+        # === КЛЮЧЕВОЕ: Сохраняем pending session в Redis ===
+        # При StartTransaction ws_handler найдёт session_id по station_id:connector_id
+        pending_key = f"pending:{station_id}:{connector_id}"
+        await redis_manager.redis.setex(pending_key, 300, session_id)  # TTL 5 минут
+        logger.info(f"📝 Сохранён pending session: {pending_key} -> {session_id}")
+
+        # Также сохраняем маппинг id_tag -> session_id (для надёжности)
+        idtag_key = f"idtag:{id_tag}"
+        await redis_manager.redis.setex(idtag_key, 86400, session_id)  # TTL 24 часа
+        logger.info(f"📝 Сохранён маппинг id_tag: {idtag_key} -> {session_id}")
 
         # Проверяем готовность подписки (с таймаутом 5 сек)
         is_subscription_ready = await redis_manager.wait_for_subscription(station_id, timeout=5.0)
@@ -563,8 +583,6 @@ class ChargingService:
                 f"⚠️ Подписка станции {station_id} не готова. "
                 f"Команда может не дойти до станции."
             )
-            # Всё равно отправляем команду - станция может быть онлайн,
-            # но subscription event ещё не установлен (например, после рестарта сервиса)
 
         command_data = {
             "action": "RemoteStartTransaction",
@@ -578,7 +596,7 @@ class ChargingService:
         await redis_manager.publish_command(station_id, command_data)
         logger.info(
             f"✅ Команда запуска отправлена на станцию {station_id} "
-            f"(subscription_ready={is_subscription_ready})"
+            f"(subscription_ready={is_subscription_ready}, id_tag={id_tag})"
         )
 
         return is_online

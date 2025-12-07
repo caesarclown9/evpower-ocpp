@@ -415,34 +415,72 @@ class OCPPChargePoint(CP):
                         id_tag_info={"status": AuthorizationStatus.accepted}
                     )
                 
-                # 🆕 ИЗВЛЕЧЕНИЕ session_id ИЗ id_tag (формат Voltera: CLIENT_{client_id}_{session_id})
+                # 🆕 ПОИСК session_id ЧЕРЕЗ REDIS (подход Voltera)
+                # OCPP 1.6 ограничивает id_tag до 20 символов, поэтому используем Redis маппинг
                 charging_session_id = None
                 client_id = None
 
-                # Парсим id_tag формата CLIENT_{client_id}_{session_id}
-                if id_tag and id_tag.startswith("CLIENT_"):
-                    parts = id_tag.split("_", 2)  # ["CLIENT", "{client_id}", "{session_id}"]
-                    if len(parts) >= 3:
-                        client_id = parts[1]
-                        charging_session_id = parts[2]
-                        self.logger.info(f"🔍 ИЗВЛЕЧЕНО ИЗ id_tag: client_id={client_id}, session_id={charging_session_id}")
+                # === МЕТОД 1: Поиск через pending session в Redis (приоритет) ===
+                pending_key = f"pending:{self.id}:{connector_id}"
+                try:
+                    from ocpp_ws_server.redis_manager import redis_manager
+                    import asyncio
 
-                        # Обновляем мобильную сессию с OCPP transaction_id
-                        update_session_query = text("""
-                            UPDATE charging_sessions
-                            SET transaction_id = :transaction_id
-                            WHERE id = :session_id
+                    # Получаем session_id из pending
+                    loop = asyncio.get_event_loop()
+                    pending_session = loop.run_until_complete(redis_manager.redis.get(pending_key))
+
+                    if pending_session:
+                        charging_session_id = pending_session
+                        self.logger.info(f"✅ НАЙДЕН pending session: {pending_key} -> {charging_session_id}")
+
+                        # Удаляем pending (использован)
+                        loop.run_until_complete(redis_manager.redis.delete(pending_key))
+
+                        # Получаем client_id из сессии
+                        session_query = text("""
+                            SELECT user_id FROM charging_sessions WHERE id = :session_id
                         """)
-                        db.execute(update_session_query, {
-                            "transaction_id": str(transaction_id),
-                            "session_id": charging_session_id
-                        })
+                        session_row = db.execute(session_query, {"session_id": charging_session_id}).fetchone()
+                        if session_row:
+                            client_id = session_row[0]
+
+                        # Обновляем сессию с transaction_id
+                        db.execute(text("""
+                            UPDATE charging_sessions SET transaction_id = :tx WHERE id = :sid
+                        """), {"tx": str(transaction_id), "sid": charging_session_id})
                         self.logger.info(f"✅ Mobile сессия обновлена: transaction_id={transaction_id}")
-                    else:
-                        self.logger.warning(f"⚠️ Неверный формат id_tag: {id_tag} (ожидается CLIENT_clientId_sessionId)")
-                else:
-                    # Fallback: старый формат (номер телефона) - ищем через ocpp_authorization
-                    self.logger.info(f"📱 Старый формат id_tag (телефон): {id_tag}")
+                except Exception as redis_err:
+                    self.logger.warning(f"⚠️ Ошибка Redis pending: {redis_err}")
+
+                # === МЕТОД 2: Поиск через id_tag маппинг в Redis ===
+                if not charging_session_id:
+                    try:
+                        idtag_key = f"idtag:{id_tag}"
+                        loop = asyncio.get_event_loop()
+                        idtag_session = loop.run_until_complete(redis_manager.redis.get(idtag_key))
+
+                        if idtag_session:
+                            charging_session_id = idtag_session
+                            self.logger.info(f"✅ НАЙДЕН id_tag маппинг: {idtag_key} -> {charging_session_id}")
+
+                            # Получаем client_id
+                            session_query = text("""
+                                SELECT user_id FROM charging_sessions WHERE id = :session_id
+                            """)
+                            session_row = db.execute(session_query, {"session_id": charging_session_id}).fetchone()
+                            if session_row:
+                                client_id = session_row[0]
+
+                            db.execute(text("""
+                                UPDATE charging_sessions SET transaction_id = :tx WHERE id = :sid
+                            """), {"tx": str(transaction_id), "sid": charging_session_id})
+                    except Exception as redis_err:
+                        self.logger.warning(f"⚠️ Ошибка Redis id_tag: {redis_err}")
+
+                # === МЕТОД 3: Fallback - поиск через ocpp_authorization (старый метод) ===
+                if not charging_session_id:
+                    self.logger.info(f"📱 Fallback: ищем через ocpp_authorization для id_tag: {id_tag}")
                     auth_query = text("""
                         SELECT client_id FROM ocpp_authorization
                         WHERE id_tag = :id_tag AND client_id IS NOT NULL
@@ -466,6 +504,7 @@ class OCPPChargePoint(CP):
                             db.execute(text("""
                                 UPDATE charging_sessions SET transaction_id = :tx WHERE id = :sid
                             """), {"tx": str(transaction_id), "sid": charging_session_id})
+                            self.logger.info(f"✅ Найдена сессия через fallback: {charging_session_id}")
                     else:
                         self.logger.warning(f"⚠️ Клиент не найден для id_tag: {id_tag}")
                 
