@@ -34,6 +34,7 @@ from sqlalchemy import text
 from decimal import Decimal
 from app.core.station_auth import station_auth
 from app.services.push_service import push_service
+from app.services.realtime_service import RealtimeService
 
 logger = logging.getLogger(__name__)
 
@@ -176,6 +177,12 @@ class OCPPChargePoint(CP):
                     )
 
                 db.commit()
+
+                # Broadcast что станция online для PWA клиентов
+                asyncio.create_task(
+                    RealtimeService.broadcast_station_update(db, self.id)
+                )
+                self.logger.info(f"📡 Broadcast: станция {self.id} online")
 
         except Exception as e:
             self.logger.error(f"❌ Ошибка background обработки BootNotification: {e}")
@@ -333,12 +340,17 @@ class OCPPChargePoint(CP):
                     # Импортируем и вызываем инвалидацию кэша асинхронно
                     from app.services.location_status_service import LocationStatusService
                     asyncio.create_task(LocationStatusService.invalidate_cache(location_id))
-                    self.logger.debug(f"Инвалидирован кэш для локации {location_id}")
-                
+
+                    # Broadcast обновления через WebSocket для PWA клиентов
+                    asyncio.create_task(
+                        RealtimeService.broadcast_connector_update(db, self.id, connector_id)
+                    )
+                    self.logger.debug(f"📡 Broadcast обновления коннектора {self.id}:{connector_id}")
+
                 db.commit()
-                
+
             return call_result.StatusNotification()
-            
+
         except Exception as e:
             self.logger.error(f"Error in StatusNotification: {e}")
             return call_result.StatusNotification()
@@ -1592,14 +1604,22 @@ class OCPPWebSocketHandler:
         try:
             if self.pubsub_task:
                 self.pubsub_task.cancel()
-                
+
             await redis_manager.unregister_station(self.station_id)
-            
+
+            # Broadcast что станция offline для PWA клиентов
+            try:
+                with next(get_db()) as db:
+                    await RealtimeService.broadcast_station_update(db, self.station_id)
+                    self.logger.info(f"📡 Broadcast: станция {self.station_id} offline")
+            except Exception as broadcast_error:
+                self.logger.warning(f"Не удалось broadcast offline: {broadcast_error}")
+
             if self.station_id in active_sessions:
                 del active_sessions[self.station_id]
-                
+
             self.logger.info(f"Cleanup completed for station {self.station_id}")
-            
+
         except Exception as e:
             self.logger.error(f"Error during cleanup: {e}")
 

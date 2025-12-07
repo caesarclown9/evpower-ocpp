@@ -299,10 +299,37 @@ class RedisOcppManager:
         """Публикация сообщения в канал"""
         await self.redis.publish(channel, message)
 
-    async def get_message(self, channel: str) -> Optional[str]:
-        """Получение сообщения из канала (неблокирующее)"""
-        # Это упрощенная версия - в реальности нужен более сложный механизм
-        return None
+    async def subscribe_and_listen(self, *channels) -> AsyncGenerator[dict, None]:
+        """
+        Подписка и прослушивание нескольких каналов через Pub/Sub.
+        Используется для WebSocket клиентов (location updates).
+
+        Args:
+            *channels: Названия каналов для подписки
+
+        Yields:
+            dict: Сообщения с полями 'channel' и 'data'
+        """
+        pubsub = self.redis.pubsub()
+        try:
+            await pubsub.subscribe(*channels)
+            logger.info(f"📡 Subscribed to channels: {channels}")
+
+            async for message in pubsub.listen():
+                if message["type"] == "message":
+                    yield {
+                        "channel": message["channel"],
+                        "data": message["data"]
+                    }
+        except asyncio.CancelledError:
+            logger.info(f"🛑 Pub/Sub listener cancelled for channels: {channels}")
+            raise
+        finally:
+            try:
+                await pubsub.unsubscribe(*channels)
+                await pubsub.close()
+            except Exception as e:
+                logger.warning(f"Error cleaning up pubsub: {e}")
 
 
 # Глобальный экземпляр менеджера

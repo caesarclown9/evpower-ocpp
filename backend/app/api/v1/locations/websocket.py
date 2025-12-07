@@ -321,24 +321,36 @@ async def websocket_locations(
 
 async def listen_redis_updates(client_id: str):
     """
-    Прослушивание обновлений из Redis и отправка клиенту
+    Прослушивание обновлений из Redis Pub/Sub и отправка клиенту.
+    Использует blocking async iterator вместо polling.
     """
     try:
-        # Получаем подписки клиента
-        while client_id in ws_manager.subscriptions:
-            channels = ws_manager.subscriptions.get(client_id, set())
-            
-            for channel in channels:
-                # Проверяем наличие сообщений в канале
-                message = await redis_manager.get_message(channel)
-                
-                if message:
-                    # Отправляем сообщение клиенту
-                    await ws_manager.send_personal_message(message, client_id)
-            
-            # Небольшая задержка между проверками
-            await asyncio.sleep(0.1)
-            
+        # Базовые каналы для всех клиентов
+        channels = ["location_updates:all", "station_updates:all"]
+
+        # Добавляем персональные каналы из подписок клиента
+        client_channels = ws_manager.subscriptions.get(client_id, set())
+        for channel in client_channels:
+            if channel not in channels:
+                channels.append(channel)
+
+        logger.info(f"📡 Клиент {client_id} подписан на каналы: {channels}")
+
+        # Используем async generator для прослушивания Redis Pub/Sub
+        async for message in redis_manager.subscribe_and_listen(*channels):
+            # Проверяем что клиент всё ещё подключен
+            if client_id not in ws_manager.subscriptions:
+                logger.info(f"Клиент {client_id} отключился, останавливаем listener")
+                break
+
+            # Декодируем данные если нужно
+            data = message["data"]
+            if isinstance(data, bytes):
+                data = data.decode("utf-8")
+
+            # Отправляем сообщение клиенту
+            await ws_manager.send_personal_message(data, client_id)
+
     except asyncio.CancelledError:
         logger.debug(f"Прослушивание Redis для клиента {client_id} отменено")
     except Exception as e:

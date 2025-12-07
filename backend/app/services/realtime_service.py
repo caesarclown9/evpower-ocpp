@@ -24,45 +24,92 @@ class RealtimeService:
         Отправляет обновление статуса локации всем подписчикам
         """
         try:
-            # Получаем актуальный статус локации из материализованного представления
+            # Получаем актуальный статус локации с агрегацией
             query = text("""
-                SELECT 
-                    id,
-                    name,
-                    location_status,
-                    total_stations,
-                    available_stations,
-                    occupied_stations,
-                    offline_stations,
-                    maintenance_stations,
-                    total_connectors,
-                    available_connectors,
-                    occupied_connectors,
-                    faulted_connectors
-                FROM location_status_view
-                WHERE id = :location_id
+                WITH station_statuses AS (
+                    SELECT
+                        s.id as station_id,
+                        CASE
+                            WHEN s.status = 'maintenance' THEN 'maintenance'
+                            WHEN s.last_heartbeat_at IS NULL OR
+                                 s.last_heartbeat_at < NOW() - INTERVAL '5 minutes' THEN 'offline'
+                            WHEN EXISTS (
+                                SELECT 1 FROM connectors c
+                                WHERE c.station_id = s.id
+                                AND c.status = 'available'
+                            ) THEN 'available'
+                            WHEN EXISTS (
+                                SELECT 1 FROM connectors c
+                                WHERE c.station_id = s.id
+                                AND c.status = 'occupied'
+                            ) THEN 'occupied'
+                            ELSE 'offline'
+                        END as calculated_status
+                    FROM stations s
+                    WHERE s.location_id = :location_id AND s.status != 'inactive'
+                )
+                SELECT
+                    l.id,
+                    l.name,
+                    COUNT(DISTINCT ss.station_id) as total_stations,
+                    COUNT(DISTINCT CASE WHEN ss.calculated_status = 'available' THEN ss.station_id END) as available_stations,
+                    COUNT(DISTINCT CASE WHEN ss.calculated_status = 'occupied' THEN ss.station_id END) as occupied_stations,
+                    COUNT(DISTINCT CASE WHEN ss.calculated_status = 'offline' THEN ss.station_id END) as offline_stations,
+                    COUNT(DISTINCT CASE WHEN ss.calculated_status = 'maintenance' THEN ss.station_id END) as maintenance_stations,
+                    (SELECT COUNT(*) FROM connectors c JOIN stations s ON c.station_id = s.id WHERE s.location_id = :location_id) as total_connectors,
+                    (SELECT COUNT(*) FROM connectors c JOIN stations s ON c.station_id = s.id WHERE s.location_id = :location_id AND c.status = 'available') as available_connectors,
+                    (SELECT COUNT(*) FROM connectors c JOIN stations s ON c.station_id = s.id WHERE s.location_id = :location_id AND c.status = 'occupied') as occupied_connectors,
+                    (SELECT COUNT(*) FROM connectors c JOIN stations s ON c.station_id = s.id WHERE s.location_id = :location_id AND c.status = 'faulted') as faulted_connectors
+                FROM locations l
+                LEFT JOIN station_statuses ss ON true
+                WHERE l.id = :location_id AND l.status = 'active'
+                GROUP BY l.id, l.name
             """)
             
             result = db.execute(query, {"location_id": location_id}).fetchone()
-            
+
             if result:
+                # Индексы: 0=id, 1=name, 2=total, 3=available, 4=occupied, 5=offline, 6=maintenance,
+                #          7=total_conn, 8=available_conn, 9=occupied_conn, 10=faulted_conn
+                total_stations = result[2]
+                available_stations = result[3]
+                occupied_stations = result[4]
+                offline_stations = result[5]
+                maintenance_stations = result[6]
+
+                # Вычисляем статус локации
+                if total_stations == 0:
+                    location_status = "offline"
+                elif offline_stations > 0:
+                    location_status = "offline"
+                elif maintenance_stations > 0:
+                    location_status = "maintenance"
+                elif occupied_stations == total_stations:
+                    location_status = "occupied"
+                elif available_stations == total_stations:
+                    location_status = "available"
+                elif available_stations > 0:
+                    location_status = "partial"
+                else:
+                    location_status = "offline"
+
                 update_data = {
                     "type": "location_status_update",
                     "location_id": result[0],
                     "location_name": result[1],
-                    "status": result[2],
+                    "status": location_status,
                     "stations_summary": {
-                        "total": result[3],
-                        "available": result[4],
-                        "occupied": result[5],
-                        "offline": result[6],
-                        "maintenance": result[7]
+                        "total": total_stations,
+                        "available": available_stations,
+                        "occupied": occupied_stations,
+                        "offline": offline_stations,
+                        "maintenance": maintenance_stations
                     },
                     "connectors_summary": {
-                        "total": result[8],
-                        "available": result[9],
-                        "occupied": result[10],
-                        "faulted": result[11]
+                        "total": result[7],
+                        "available": result[8],
+                        "occupied": result[9],
+                        "faulted": result[10]
                     },
                     "timestamp": datetime.utcnow().isoformat()
                 }
