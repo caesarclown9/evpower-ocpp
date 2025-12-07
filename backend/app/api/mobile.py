@@ -672,7 +672,7 @@ async def get_charging_status(
             latest_meter_query = text("""
                 SELECT mv.energy_active_import_register
                 FROM ocpp_meter_values mv
-                JOIN ocpp_transactions ot ON mv.ocpp_transaction_id = ot.transaction_id
+                JOIN ocpp_transactions ot ON mv.ocpp_transaction_id = ot.id
                 WHERE ot.charging_session_id = :session_id
                 AND mv.energy_active_import_register IS NOT NULL
                 ORDER BY mv.timestamp DESC LIMIT 1

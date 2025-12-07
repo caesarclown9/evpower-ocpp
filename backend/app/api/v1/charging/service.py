@@ -548,23 +548,45 @@ class ChargingService:
         limit_type: str,
         limit_value: float
     ) -> bool:
-        """Отправка команды запуска на станцию через Redis"""
-        connected_stations = await redis_manager.get_stations()
-        is_online = station_id in connected_stations
-        
-        if is_online:
-            command_data = {
-                "action": "RemoteStartTransaction",
-                "connector_id": connector_id,
-                "id_tag": id_tag,
-                "session_id": session_id,
-                "limit_type": limit_type,
-                "limit_value": limit_value
-            }
-            
-            await redis_manager.publish_command(station_id, command_data)
-            logger.info(f"✅ Команда запуска отправлена на станцию {station_id}")
-        
+        """Отправка команды запуска на станцию через Redis
+
+        Проверяет:
+        1. Онлайн-статус станции (через TTL ключ в Redis)
+        2. Готовность подписки станции на команды (subscription ready)
+        """
+        # Проверяем онлайн-статус через TTL ключ
+        is_online = await redis_manager.is_station_online(station_id)
+
+        if not is_online:
+            logger.warning(f"⚠️ Станция {station_id} не онлайн в Redis")
+            return False
+
+        # Проверяем готовность подписки (с таймаутом 5 сек)
+        is_subscription_ready = await redis_manager.wait_for_subscription(station_id, timeout=5.0)
+
+        if not is_subscription_ready:
+            logger.warning(
+                f"⚠️ Подписка станции {station_id} не готова. "
+                f"Команда может не дойти до станции."
+            )
+            # Всё равно отправляем команду - станция может быть онлайн,
+            # но subscription event ещё не установлен (например, после рестарта сервиса)
+
+        command_data = {
+            "action": "RemoteStartTransaction",
+            "connector_id": connector_id,
+            "id_tag": id_tag,
+            "session_id": session_id,
+            "limit_type": limit_type,
+            "limit_value": limit_value
+        }
+
+        await redis_manager.publish_command(station_id, command_data)
+        logger.info(
+            f"✅ Команда запуска отправлена на станцию {station_id} "
+            f"(subscription_ready={is_subscription_ready})"
+        )
+
         return is_online
     
     async def stop_charging_session(
@@ -852,7 +874,7 @@ class ChargingService:
                     cs.id, cs.user_id, cs.station_id, cs.start_time, cs.stop_time,
                     cs.energy, cs.amount, cs.status, cs.transaction_id,
                     cs.limit_type, cs.limit_value,
-                    ot.transaction_id as ocpp_transaction_id,
+                    ot.id as ocpp_transaction_id,
                     ot.meter_start, ot.meter_stop, ot.status as ocpp_status,
                     s.price_per_kwh
                 FROM charging_sessions cs
@@ -1154,7 +1176,7 @@ class ChargingService:
             latest_meter_query = text("""
                 SELECT mv.energy_active_import_register
                 FROM ocpp_meter_values mv
-                JOIN ocpp_transactions ot ON mv.ocpp_transaction_id = ot.transaction_id
+                JOIN ocpp_transactions ot ON mv.ocpp_transaction_id = ot.id
                 WHERE ot.charging_session_id = :session_id
                 AND mv.energy_active_import_register IS NOT NULL
                 ORDER BY mv.timestamp DESC LIMIT 1
