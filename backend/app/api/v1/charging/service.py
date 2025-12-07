@@ -325,15 +325,15 @@ class ChargingService:
             
         elif energy_kwh:
             # Режим 3: Лимит только по энергии
-            reservation_amount = (energy_kwh * rate_per_kwh) + session_fee
-            if rate_per_minute > 0:
-                reservation_amount += estimated_duration * rate_per_minute
+            reservation_amount = (energy_kwh * float(pricing_result.rate_per_kwh)) + float(pricing_result.session_fee)
+            if pricing_result.rate_per_minute > 0:
+                reservation_amount += estimated_duration * float(pricing_result.rate_per_minute)
             limit_type = 'energy'
             limit_value = energy_kwh
-            
+
         else:
             # Режим 4: Безлимитная зарядка
-            max_reservation = 200.0 + session_fee
+            max_reservation = 200.0 + float(pricing_result.session_fee)
             reservation_amount = min(float(balance), max_reservation)
             
             if balance <= 0:
