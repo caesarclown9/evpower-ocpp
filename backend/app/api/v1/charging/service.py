@@ -952,9 +952,10 @@ class ChargingService:
                     mv.soc as ev_battery_soc,
                     mv.timestamp as meter_timestamp,
 
-                    -- Вычисленная энергия: приоритет cs.energy (обновляется в ws_handler), fallback на meter_values
+                    -- Вычисленная энергия: приоритет cs.energy (если > 0), fallback на meter_values
+                    -- NULLIF превращает 0 в NULL, чтобы COALESCE перешёл к следующему значению
                     COALESCE(
-                        cs.energy,
+                        NULLIF(cs.energy, 0),
                         (mv.energy_active_import_register - ot.meter_start) / 1000.0,
                         0
                     ) as energy_kwh
