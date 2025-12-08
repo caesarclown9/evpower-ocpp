@@ -732,19 +732,44 @@ class ChargingService:
         }
     
     def _get_actual_energy_consumed(self, session_id: str, session_energy: Optional[float]) -> float:
-        """Получение фактически потребленной энергии"""
-        if session_energy:
+        """Получение фактически потребленной энергии
+
+        Приоритет источников данных:
+        1. charging_sessions.energy (если > 0)
+        2. ocpp_meter_values.energy_active_import_register - meter_start (последние показания)
+        3. ocpp_transactions.meter_stop - meter_start (если станция прислала StopTransaction)
+        4. 0.0 (fallback)
+        """
+        # 1. Если в сессии уже есть энергия > 0, используем её
+        if session_energy and float(session_energy) > 0:
             return float(session_energy)
-        
-        # Пытаемся получить из OCPP транзакций
+
+        # 2. Получаем энергию из последних meter_values (приоритет) или из транзакции
         result = self.db.execute(text("""
-            SELECT COALESCE(ot.meter_stop - ot.meter_start, 0) as consumed_energy
+            SELECT COALESCE(
+                -- Приоритет 1: последние показания счётчика из meter_values
+                (mv.energy_active_import_register - ot.meter_start) / 1000.0,
+                -- Приоритет 2: данные из завершённой транзакции
+                (ot.meter_stop - ot.meter_start) / 1000.0,
+                -- Fallback
+                0
+            ) as energy_kwh
             FROM ocpp_transactions ot
+            LEFT JOIN LATERAL (
+                SELECT energy_active_import_register
+                FROM ocpp_meter_values
+                WHERE ocpp_transaction_id = ot.id
+                ORDER BY timestamp DESC
+                LIMIT 1
+            ) mv ON true
             WHERE ot.charging_session_id = :session_id
-            ORDER BY ot.created_at DESC LIMIT 1
+            ORDER BY ot.created_at DESC
+            LIMIT 1
         """), {"session_id": session_id}).fetchone()
-        
-        return float(result[0]) if result and result[0] else 0.0
+
+        energy = float(result[0]) if result and result[0] else 0.0
+        logger.info(f"📊 Фактическое потребление для сессии {session_id}: {energy:.3f} кВт⋅ч")
+        return energy
     
     def _get_session_rate(self, session_info: Dict[str, Any]) -> float:
         """Получение тарифа для сессии"""
