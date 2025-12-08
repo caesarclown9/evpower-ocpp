@@ -875,67 +875,151 @@ class ChargingService:
         return is_online
     
     async def get_charging_status(self, session_id: str) -> Dict[str, Any]:
-        """Получить полный статус сессии зарядки с OCPP данными"""
-        
+        """Получить полный статус сессии зарядки с OCPP данными (по подходу Voltera)"""
+
         logger.info(f"📊 Запрос статуса зарядки для сессии: {session_id}")
-        
+
         try:
-            # Расширенный запрос с JOIN к OCPP транзакциям
+            # SQL запрос по подходу Voltera с LATERAL JOIN для получения последних meter_values
             session_query = text("""
-                SELECT 
-                    cs.id, cs.user_id, cs.station_id, cs.start_time, cs.stop_time,
-                    cs.energy, cs.amount, cs.status, cs.transaction_id,
-                    cs.limit_type, cs.limit_value,
+                SELECT
+                    cs.id as session_id,
+                    cs.user_id,
+                    cs.station_id,
+                    cs.start_time,
+                    cs.stop_time,
+                    cs.energy as session_energy,
+                    cs.amount,
+                    cs.status,
+                    cs.transaction_id,
+                    cs.limit_type,
+                    cs.limit_value,
+                    s.price_per_kwh,
+
+                    -- Данные транзакции
                     ot.id as ocpp_transaction_id,
-                    ot.meter_start, ot.meter_stop, ot.status as ocpp_status,
-                    s.price_per_kwh
+                    ot.transaction_id as ocpp_tx_id,
+                    ot.meter_start,
+                    ot.meter_stop,
+                    ot.status as ocpp_status,
+
+                    -- Последние meter values через LATERAL
+                    mv.energy_active_import_register as current_meter,
+                    mv.power_active_import as power_w,
+                    mv.current_import,
+                    mv.voltage,
+                    mv.soc as ev_battery_soc,
+                    mv.timestamp as meter_timestamp,
+
+                    -- Вычисленная энергия: приоритет meter_values, fallback на session.energy
+                    COALESCE(
+                        (mv.energy_active_import_register - ot.meter_start) / 1000.0,
+                        cs.energy,
+                        0
+                    ) as energy_kwh
+
                 FROM charging_sessions cs
-                LEFT JOIN ocpp_transactions ot ON cs.id = ot.charging_session_id 
-                    OR cs.transaction_id = CAST(ot.transaction_id AS TEXT)
                 LEFT JOIN stations s ON cs.station_id = s.id
+                LEFT JOIN ocpp_transactions ot ON cs.id = ot.charging_session_id
+                LEFT JOIN LATERAL (
+                    SELECT * FROM ocpp_meter_values
+                    WHERE ocpp_transaction_id = ot.id
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                ) mv ON true
                 WHERE cs.id = :session_id
             """)
-            
-            logger.debug(f"Выполняем SQL запрос для сессии {session_id}")
+
             session_result = self.db.execute(session_query, {"session_id": session_id})
-            session = session_result.fetchone()
-            
-            if not session:
+            row = session_result.fetchone()
+
+            if not row:
                 logger.warning(f"Сессия {session_id} не найдена в БД")
                 return {
                     "success": False,
                     "error": "session_not_found",
                     "message": "Сессия зарядки не найдена"
                 }
-            
-            logger.debug(f"Найдена сессия: status={session[7]}, station={session[2]}")
-            
-            # Парсинг данных сессии
-            session_data = self._parse_session_data(session)
-            
-            # Расчет реальных данных из OCPP
-            energy_data = self._calculate_energy_from_ocpp(session_data, session_id)
-            
-            # Расчет прогресса
-            progress = self._calculate_progress(session_data, energy_data)
-            
-            # Получение расширенных meter данных
-            meter_data = self._get_extended_meter_data(session_data.get('ocpp_transaction_id'))
-            
+
+            # Распаковываем результат
+            (
+                session_id_db, user_id, station_id, start_time, stop_time,
+                session_energy, amount, status, transaction_id,
+                limit_type, limit_value, price_per_kwh,
+                ocpp_transaction_id, ocpp_tx_id, meter_start, meter_stop, ocpp_status,
+                current_meter, power_w, current_import, voltage, ev_battery_soc, meter_timestamp,
+                energy_kwh
+            ) = row
+
+            # Безопасные преобразования
+            energy_kwh = float(energy_kwh) if energy_kwh else 0.0
+            price_per_kwh = float(price_per_kwh) if price_per_kwh else 13.5
+            limit_value = float(limit_value) if limit_value else 0.0
+            power_kw = float(power_w) / 1000.0 if power_w else 0.0
+
+            # Вычисляем стоимость
+            current_amount = energy_kwh * price_per_kwh
+
+            # Вычисляем прогресс
+            progress_percent = 0.0
+            if limit_type == "energy" and limit_value > 0:
+                progress_percent = min(100, (energy_kwh / limit_value) * 100)
+            elif limit_type == "amount" and limit_value > 0:
+                progress_percent = min(100, (current_amount / limit_value) * 100)
+
+            # Вычисляем длительность
+            duration_seconds = 0
+            if start_time:
+                end_time = stop_time or datetime.now(timezone.utc)
+                duration_seconds = int((end_time - start_time).total_seconds())
+
             # Проверка статуса станции онлайн
-            station_online = await self._check_station_online(session_data['station_id'])
-            
-            logger.info(f"✅ Статус получен: energy={energy_data.get('energy_consumed_kwh', 0)} кВт⋅ч, online={station_online}")
-            
-            return self._build_status_response(session_data, energy_data, progress, meter_data, station_online)
-            
-        except ValueError as e:
-            logger.error(f"Ошибка валидации данных: {e}")
+            station_online = await self._check_station_online(station_id)
+
+            logger.info(f"✅ Статус получен: energy={energy_kwh:.3f} кВт⋅ч, power={power_kw:.1f} кВт, online={station_online}")
+
             return {
-                "success": False,
-                "error": "data_error",
-                "message": str(e)
+                "success": True,
+                "session": {
+                    "id": session_id_db,
+                    "session_id": session_id_db,
+                    "status": status or "preparing",
+                    "station_id": station_id,
+                    "ocpp_transaction_id": ocpp_transaction_id,
+
+                    # Энергетические данные
+                    "energy_consumed": round(energy_kwh, 3),
+                    "energy_kwh": round(energy_kwh, 3),
+                    "current_cost": round(current_amount, 2),
+                    "current_amount": round(current_amount, 2),
+                    "power_kw": round(power_kw, 2),
+
+                    # Длительность
+                    "charging_duration_minutes": duration_seconds // 60,
+                    "duration_seconds": duration_seconds,
+
+                    # Лимиты и прогресс
+                    "limit_type": limit_type or "none",
+                    "limit_value": round(limit_value, 2),
+                    "limit_percentage": round(progress_percent, 1),
+                    "progress_percent": round(progress_percent, 1),
+
+                    # Показания счётчика
+                    "meter_start": float(meter_start) if meter_start else 0,
+                    "meter_current": float(current_meter) if current_meter else 0,
+
+                    # Данные EV (если есть)
+                    "ev_battery_soc": int(ev_battery_soc) if ev_battery_soc else None,
+
+                    # Статус станции
+                    "station_online": station_online,
+
+                    # Timestamps
+                    "start_time": start_time.isoformat() if start_time else None,
+                    "stop_time": stop_time.isoformat() if stop_time else None,
+                }
             }
+
         except Exception as e:
             logger.error(f"Критическая ошибка при получении статуса зарядки: {e}", exc_info=True)
             return {
