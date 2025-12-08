@@ -472,6 +472,49 @@ async def ready_check():
     except Exception as e:
         return {"status": "not_ready", "error": str(e)}
 
+# Диагностика Redis Pub/Sub (по рекомендации Voltera)
+@app.get("/debug/redis-pubsub", summary="Диагностика Redis Pub/Sub")
+async def debug_redis_pubsub(station_id: str = "EVP-001-01"):
+    """
+    Диагностический endpoint для отладки проблемы с 0 подписчиков.
+    Показывает реальное состояние Redis pub/sub vs Python словарь.
+    """
+    import os
+
+    results = {
+        "pid": os.getpid(),
+        "station_id": station_id,
+    }
+
+    try:
+        # 1. Проверяем подключение
+        results["ping"] = await redis_manager.ping()
+
+        # 2. Получаем ВСЕ активные каналы pub/sub в Redis
+        channels = await redis_manager.redis.pubsub_channels("ocpp:cmd:*")
+        results["redis_pubsub_channels"] = [ch.decode() if isinstance(ch, bytes) else ch for ch in channels]
+
+        # 3. Получаем количество подписчиков на конкретный канал
+        channel_name = f"ocpp:cmd:{station_id}"
+        numsub = await redis_manager.redis.pubsub_numsub(channel_name)
+        results["numsub"] = dict(numsub) if numsub else {}
+
+        # 4. Проверяем Python словарь (память процесса)
+        results["python_active_pubsubs"] = list(getattr(redis_manager, '_active_pubsubs', {}).keys())
+
+        # 5. Проверяем зарегистрированные станции (TTL ключи)
+        results["registered_stations"] = list(await redis_manager.get_stations())
+
+        # 6. Проверяем is_station_online
+        results["is_station_online"] = await redis_manager.is_station_online(station_id)
+
+    except Exception as e:
+        results["error"] = str(e)
+        import traceback
+        results["traceback"] = traceback.format_exc()
+
+    return results
+
 # ============================================================================
 # OCPP WEBSOCKET ENDPOINT (основная функциональность)
 # ============================================================================

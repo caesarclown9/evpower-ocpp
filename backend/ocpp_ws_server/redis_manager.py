@@ -168,25 +168,41 @@ class RedisOcppManager:
 
     async def listen_commands(self, station_id: str) -> AsyncGenerator[dict, None]:
         """
-        Подписка на команды для станции (упрощённая версия как Voltera).
+        Подписка на команды для станции.
 
-        Используется простой sleep(0.1) вместо Event-механизма для синхронизации.
+        ВАЖНО (Вариант B от Voltera): Явное ожидание подтверждения подписки от Redis
+        перед добавлением в _active_pubsubs. Это решает race condition когда
+        publish() видит 0 подписчиков.
         """
         channel = f"ocpp:cmd:{station_id}"
 
         pubsub = self.redis.pubsub()
-        self._active_pubsubs[station_id] = pubsub
+        # НЕ добавляем в _active_pubsubs здесь - ждём подтверждения от Redis!
 
         try:
             await pubsub.subscribe(channel)
             logger.info(f"📡 Subscribed to commands channel: {channel}")
 
+            # ВАРИАНТ B: Ждём подтверждения подписки от Redis перед продолжением
+            while True:
+                message = await pubsub.get_message(ignore_subscribe_messages=False, timeout=1.0)
+                if message and message.get('type') == 'subscribe':
+                    logger.info(f"✅ Subscription CONFIRMED by Redis for {channel}")
+                    break
+                elif message is None:
+                    # Timeout - продолжаем ждать
+                    logger.debug(f"⏳ Waiting for subscription confirmation for {channel}...")
+
+            # Теперь подписка ТОЧНО активна в Redis - можно добавлять в словарь
+            self._active_pubsubs[station_id] = pubsub
+            logger.info(f"📊 Added to active pubsubs: {station_id}, total: {list(self._active_pubsubs.keys())}")
+
+            # Теперь слушаем команды
             async for message in pubsub.listen():
                 msg_type = message.get("type")
 
-                # Подтверждение подписки от Redis - просто логируем
+                # Пропускаем служебные сообщения
                 if msg_type == "subscribe":
-                    logger.info(f"✅ Subscription CONFIRMED for {station_id}, listener is now active")
                     continue
 
                 if msg_type == "message":
