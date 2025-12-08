@@ -783,8 +783,9 @@ class OCPPChargePoint(CP):
                                 limit_type = session.get('limit_type')
                                 limit_value = session.get('limit_value')
                                 
-                                if limit_type == 'energy' and limit_value and energy_delivered_kwh >= limit_value:
-                                    self.logger.warning(f"🛑 ЛИМИТ ПРЕВЫШЕН: {energy_delivered_kwh:.3f} >= {limit_value} кВт⋅ч. Останавливаем зарядку!")
+                                # 🔒 ПОРОГИ ПО VOLTERA: energy=95%, amount=95%, none=90%
+                                if limit_type == 'energy' and limit_value and energy_delivered_kwh >= limit_value * 0.95:
+                                    self.logger.warning(f"🛑 ЛИМИТ ЭНЕРГИИ (95%): {energy_delivered_kwh:.3f} >= {limit_value * 0.95:.3f} кВт⋅ч. Останавливаем зарядку!")
 
                                     # Инициируем остановку транзакции
                                     transaction_id = session.get('transaction_id')
@@ -857,12 +858,13 @@ class OCPPChargePoint(CP):
                                                     current_cost = energy_delivered_kwh * rate_per_kwh
                                                     reserved_amount_float = float(reserved_amount)
 
-                                                    # 🔒 ФИНАНСОВАЯ ЗАЩИТА: 95% порог для остановки
-                                                    # Используем 95% вместо 100% из-за:
-                                                    # 1. Задержка MeterValues (30-60 сек между обновлениями)
-                                                    # 2. Погрешность измерений счётчика энергии
-                                                    # 3. Защита от превышения резерва
-                                                    stop_threshold = reserved_amount_float * 0.95  # 95% остановка
+                                                    # 🔒 ФИНАНСОВАЯ ЗАЩИТА: 90% порог для безлимитной зарядки (по Voltera)
+                                                    # Используем 90% вместо 95% из-за:
+                                                    # 1. Больший запас для безлимитных сессий (неизвестная продолжительность)
+                                                    # 2. Задержка MeterValues (30-60 сек между обновлениями)
+                                                    # 3. Погрешность измерений счётчика энергии
+                                                    # 4. Защита от превышения резерва
+                                                    stop_threshold = reserved_amount_float * 0.90  # 90% остановка для none
 
                                                     if current_cost >= stop_threshold:
                                                         transaction_id = session.get('transaction_id')
@@ -873,7 +875,7 @@ class OCPPChargePoint(CP):
                                                                 "reason": "AmountLimitReached"
                                                             })
                                                             self.logger.warning(
-                                                                f"🛑 ЛИМИТ ПО СУММЕ ДОСТИГНУТ: {current_cost:.2f} >= 95% от {reserved_amount_float} сом. ОСТАНОВКА!"
+                                                                f"🛑 БЕЗЛИМИТ (90%): {current_cost:.2f} >= 90% от {reserved_amount_float} сом. ОСТАНОВКА!"
                                                             )
                                                     elif current_cost >= reserved_amount_float * 0.80:
                                                         # Предупреждение при 80%
