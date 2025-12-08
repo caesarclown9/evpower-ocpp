@@ -415,8 +415,11 @@ class OCPPChargePoint(CP):
                         id_tag_info={"status": AuthorizationStatus.accepted}
                     )
                 
-                # 🆕 ПОИСК session_id ЧЕРЕЗ REDIS (подход Voltera)
-                # OCPP 1.6 ограничивает id_tag до 20 символов, поэтому используем Redis маппинг
+                # === ПОИСК session_id (архитектура как Voltera) ===
+                # Приоритеты:
+                # 1. Pending session в Redis (по station_id:connector_id)
+                # 2. По телефону через БД (id_tag = телефон клиента)
+                # 3. Fallback через ocpp_authorization
                 charging_session_id = None
                 client_id = None
 
@@ -451,32 +454,38 @@ class OCPPChargePoint(CP):
                 except Exception as redis_err:
                     self.logger.warning(f"⚠️ Ошибка Redis pending: {redis_err}")
 
-                # === МЕТОД 2: Поиск через id_tag маппинг в Redis ===
+                # === МЕТОД 2: Поиск по телефону через БД (как Voltera) ===
+                # id_tag теперь = телефон клиента (постоянный идентификатор)
                 if not charging_session_id:
-                    try:
-                        idtag_key = f"idtag:{id_tag}"
-                        # Используем СИНХРОННЫЙ Redis клиент
-                        idtag_session = redis_manager.get_sync(idtag_key)
+                    self.logger.info(f"📱 Поиск сессии по телефону (id_tag): {id_tag}")
 
-                        if idtag_session:
-                            charging_session_id = idtag_session
-                            self.logger.info(f"✅ НАЙДЕН id_tag маппинг: {idtag_key} -> {charging_session_id}")
+                    # Ищем клиента по телефону (id_tag = телефон без +)
+                    phone_query = text("""
+                        SELECT c.id as client_id, cs.id as session_id
+                        FROM clients c
+                        JOIN charging_sessions cs ON cs.user_id = c.id
+                        WHERE REPLACE(REPLACE(c.phone, '+', ''), ' ', '') = :id_tag
+                        AND cs.status = 'started'
+                        AND cs.station_id = :station_id
+                        ORDER BY cs.start_time DESC
+                        LIMIT 1
+                    """)
+                    phone_result = db.execute(phone_query, {
+                        "id_tag": id_tag,
+                        "station_id": self.id
+                    }).fetchone()
 
-                            # Получаем client_id
-                            session_query = text("""
-                                SELECT user_id FROM charging_sessions WHERE id = :session_id
-                            """)
-                            session_row = db.execute(session_query, {"session_id": charging_session_id}).fetchone()
-                            if session_row:
-                                client_id = session_row[0]
+                    if phone_result:
+                        client_id = phone_result[0]
+                        charging_session_id = phone_result[1]
+                        self.logger.info(f"✅ НАЙДЕНА сессия по телефону: client={client_id}, session={charging_session_id}")
 
-                            db.execute(text("""
-                                UPDATE charging_sessions SET transaction_id = :tx WHERE id = :sid
-                            """), {"tx": str(transaction_id), "sid": charging_session_id})
-                    except Exception as redis_err:
-                        self.logger.warning(f"⚠️ Ошибка Redis id_tag: {redis_err}")
+                        # Обновляем сессию с transaction_id
+                        db.execute(text("""
+                            UPDATE charging_sessions SET transaction_id = :tx WHERE id = :sid
+                        """), {"tx": str(transaction_id), "sid": charging_session_id})
 
-                # === МЕТОД 3: Fallback - поиск через ocpp_authorization (старый метод) ===
+                # === МЕТОД 3: Fallback через ocpp_authorization ===
                 if not charging_session_id:
                     self.logger.info(f"📱 Fallback: ищем через ocpp_authorization для id_tag: {id_tag}")
                     auth_query = text("""
@@ -489,13 +498,16 @@ class OCPPChargePoint(CP):
 
                     if auth_row:
                         client_id = auth_row[0]
-                        # Ищем активную сессию для клиента
+                        # Ищем активную сессию для клиента на этой станции
                         find_session_query = text("""
                             SELECT id FROM charging_sessions
-                            WHERE user_id = :client_id AND status = 'started'
+                            WHERE user_id = :client_id AND status = 'started' AND station_id = :station_id
                             ORDER BY start_time DESC LIMIT 1
                         """)
-                        session_result = db.execute(find_session_query, {"client_id": client_id})
+                        session_result = db.execute(find_session_query, {
+                            "client_id": client_id,
+                            "station_id": self.id
+                        })
                         session_row = session_result.fetchone()
                         if session_row:
                             charging_session_id = session_row[0]
@@ -1496,30 +1508,16 @@ class OCPPWebSocketHandler:
             await redis_manager.register_station(self.station_id)
             self.logger.debug(f"Станция {self.station_id} зарегистрирована в Redis")
 
-            # КРИТИЧНО: Создаём Event ДО запуска task, чтобы wait_for_subscription мог его найти
-            await redis_manager.prepare_subscription(self.station_id)
-
             # Запускаем обработчик команд из Redis
             self.pubsub_task = asyncio.create_task(
                 self._handle_redis_commands()
             )
             self.logger.debug(f"Redis pub/sub task создан для {self.station_id}")
 
-            # Даём task шанс запуститься
-            await asyncio.sleep(0)
-
-            # Ждём пока pubsub реально начнёт слушать
-            try:
-                subscription_ready = await redis_manager.wait_for_subscription(
-                    self.station_id,
-                    timeout=5.0
-                )
-                if subscription_ready:
-                    self.logger.info(f"✅ Pub/sub подписка активна для {self.station_id}")
-                else:
-                    self.logger.warning(f"⚠️ Таймаут ожидания pub/sub для {self.station_id}")
-            except Exception as e:
-                self.logger.error(f"❌ Ошибка ожидания pub/sub для {self.station_id}: {e}")
+            # Простая задержка для инициализации pubsub (как Voltera)
+            # Event-механизм убран - он создавал race condition при переподключениях
+            await asyncio.sleep(0.1)
+            self.logger.info(f"✅ Pub/sub инициализирован для {self.station_id}")
 
             # Запускаем OCPP charge point
             self.logger.info(f"🚀 Запуск OCPP ChargePoint для {self.station_id}")

@@ -416,24 +416,34 @@ class ChargingService:
         )
     
     def _setup_ocpp_authorization(self, client_id: str, session_id: str) -> str:
-        """Создание OCPP авторизации
+        """Создание OCPP авторизации (как Voltera - телефон клиента).
 
         OCPP 1.6 ограничивает id_tag до 20 символов!
-        Используем короткий формат: E{hash} (до 20 символов)
-        Маппинг session_id хранится в Redis (pending session)
+        Voltera использует телефон клиента как id_tag - это ПОСТОЯННЫЙ идентификатор.
+        Преимущество: легко найти сессию по id_tag через client -> phone.
+
+        Формат: телефон без + (например: 996555123456) - до 15 символов
         """
-        import hashlib
-        import time
+        # Получаем телефон клиента из БД
+        phone_result = self.db.execute(text("""
+            SELECT phone FROM clients WHERE id = :client_id
+        """), {"client_id": client_id}).fetchone()
 
-        # Генерируем короткий id_tag (до 20 символов для OCPP 1.6)
-        # Формат: E{5 символов hash от session_id}{4 символа timestamp hex}
-        session_hash = hashlib.md5(session_id.encode()).hexdigest()[:8].upper()
-        ts_hex = hex(int(time.time()))[-4:].upper()
-        id_tag = f"E{session_hash}{ts_hex}"  # Итого: 1 + 8 + 4 = 13 символов
+        if phone_result and phone_result[0]:
+            # Убираем + и пробелы, оставляем только цифры (до 20 символов)
+            phone = ''.join(filter(str.isdigit, phone_result[0]))[:20]
+            id_tag = phone
+            logger.info(f"🏷️ id_tag = телефон клиента: {id_tag} (как Voltera)")
+        else:
+            # Fallback: если телефона нет, используем hash от session_id
+            import hashlib
+            import time
+            session_hash = hashlib.md5(session_id.encode()).hexdigest()[:8].upper()
+            ts_hex = hex(int(time.time()))[-4:].upper()
+            id_tag = f"E{session_hash}{ts_hex}"
+            logger.warning(f"⚠️ Телефон не найден для {client_id}, fallback id_tag: {id_tag}")
 
-        logger.info(f"🏷️ Создан короткий id_tag: {id_tag} для session_id: {session_id}")
-
-        # Создаём авторизацию
+        # Создаём/обновляем авторизацию
         self.db.execute(text("""
             INSERT INTO ocpp_authorization (id_tag, status, parent_id_tag, client_id)
             VALUES (:id_tag, 'Accepted', NULL, :client_id)
@@ -551,20 +561,16 @@ class ChargingService:
         limit_type: str,
         limit_value: float
     ) -> bool:
-        """Отправка команды запуска на станцию через Redis
+        """Отправка команды запуска на станцию через Redis (как Voltera).
 
+        ВАЖНО: Команда публикуется ТОЛЬКО если станция онлайн!
         Сохраняет pending session в Redis для связывания при StartTransaction.
-        OCPP 1.6 ограничивает id_tag до 20 символов, поэтому используем
-        короткий id_tag + маппинг через pending session.
+        OCPP 1.6 ограничивает id_tag до 20 символов.
         """
-        # Проверяем онлайн-статус через TTL ключ
+        # === ШАГА 1: Проверяем онлайн-статус через TTL ключ ===
         is_online = await redis_manager.is_station_online(station_id)
 
-        if not is_online:
-            logger.warning(f"⚠️ Станция {station_id} не онлайн в Redis")
-            # Всё равно сохраняем pending - станция может подключиться
-
-        # === КЛЮЧЕВОЕ: Сохраняем pending session в Redis ===
+        # === ШАГ 2: Сохраняем pending session в Redis (всегда) ===
         # При StartTransaction ws_handler найдёт session_id по station_id:connector_id
         pending_key = f"pending:{station_id}:{connector_id}"
         await redis_manager.redis.setex(pending_key, 300, session_id)  # TTL 5 минут
@@ -575,36 +581,35 @@ class ChargingService:
         await redis_manager.redis.setex(idtag_key, 86400, session_id)  # TTL 24 часа
         logger.info(f"📝 Сохранён маппинг id_tag: {idtag_key} -> {session_id}")
 
-        # Проверяем готовность подписки (с таймаутом 5 сек)
-        is_subscription_ready = await redis_manager.wait_for_subscription(station_id, timeout=5.0)
+        # === ШАГ 3: Публикуем команду ТОЛЬКО если станция онлайн (как Voltera) ===
+        if is_online:
+            command_data = {
+                "action": "RemoteStartTransaction",
+                "connector_id": connector_id,
+                "id_tag": id_tag,
+                "session_id": session_id,
+                "limit_type": limit_type,
+                "limit_value": limit_value
+            }
 
-        if not is_subscription_ready:
-            logger.warning(
-                f"⚠️ Подписка станции {station_id} не готова. "
-                f"Команда может не дойти до станции."
-            )
+            # Публикуем без retry (как Voltera)
+            subscribers = await redis_manager.publish_command(station_id, command_data)
 
-        command_data = {
-            "action": "RemoteStartTransaction",
-            "connector_id": connector_id,
-            "id_tag": id_tag,
-            "session_id": session_id,
-            "limit_type": limit_type,
-            "limit_value": limit_value
-        }
-
-        # Публикуем с retry и проверкой подписчиков
-        subscribers = await redis_manager.publish_command(station_id, command_data)
-
-        if subscribers > 0:
-            logger.info(
-                f"✅ Команда запуска ДОСТАВЛЕНА на станцию {station_id} "
-                f"(subscribers={subscribers}, id_tag={id_tag})"
-            )
+            if subscribers > 0:
+                logger.info(
+                    f"✅ Команда запуска ДОСТАВЛЕНА на станцию {station_id} "
+                    f"(subscribers={subscribers}, id_tag={id_tag})"
+                )
+            else:
+                logger.error(
+                    f"❌ 0 ПОДПИСЧИКОВ для {station_id}! "
+                    f"Станция онлайн по TTL, но pubsub не готов. "
+                    f"Сессия создана, команда будет отправлена при переподключении."
+                )
         else:
-            logger.error(
-                f"❌ Команда запуска НЕ ДОСТАВЛЕНА на станцию {station_id}! "
-                f"Нет активных подписчиков. Станция может быть офлайн или pub/sub не готов."
+            logger.warning(
+                f"⚠️ Станция {station_id} ОФЛАЙН - команда НЕ публикуется (как Voltera). "
+                f"Pending session сохранён, зарядка начнётся при подключении станции."
             )
 
         return is_online

@@ -11,8 +11,8 @@ from typing import Optional, Set, Dict, AsyncGenerator
 logger = logging.getLogger(__name__)
 
 # Константы
-STATION_TTL_SECONDS = 300  # 5 минут TTL для онлайн-статуса станции
-SUBSCRIPTION_TIMEOUT_SECONDS = 5.0  # Таймаут ожидания подписки
+STATION_TTL_SECONDS = 600  # 10 минут TTL для онлайн-статуса станции (как Voltera)
+# Heartbeat каждые 5 минут, TTL 10 минут = 2 пропущенных heartbeat до offline
 
 
 class RedisOcppManager:
@@ -37,10 +37,7 @@ class RedisOcppManager:
         self.redis_sync = redis_sync.from_url(redis_url, decode_responses=True)
         logger.info("Redis manager: Sync client initialized for OCPP handlers")
 
-        # Словарь для отслеживания готовности подписок станций
-        self._subscription_ready: Dict[str, asyncio.Event] = {}
-
-        # Активные pubsub подписки (для корректного закрытия)
+        # Активные pubsub подписки (для диагностики и корректного закрытия)
         self._active_pubsubs: Dict[str, redis_async.client.PubSub] = {}
 
     async def ping(self) -> bool:
@@ -87,10 +84,6 @@ class RedisOcppManager:
         key = f"ocpp:station:{station_id}"
         await self.redis.delete(key)
 
-        # Очищаем подписку
-        if station_id in self._subscription_ready:
-            del self._subscription_ready[station_id]
-
         # Закрываем pubsub если есть
         if station_id in self._active_pubsubs:
             try:
@@ -127,124 +120,59 @@ class RedisOcppManager:
         return stations
 
     # ============================================================
-    # SUBSCRIPTION READY: механизм ожидания готовности подписки
-    # ============================================================
-
-    async def wait_for_subscription(self, station_id: str, timeout: float = SUBSCRIPTION_TIMEOUT_SECONDS) -> bool:
-        """
-        Ожидание готовности подписки станции на команды.
-
-        Args:
-            station_id: ID станции
-            timeout: Таймаут ожидания в секундах
-
-        Returns:
-            True если подписка готова, False если таймаут
-        """
-        event = self._subscription_ready.get(station_id)
-        if event is None:
-            logger.warning(f"⚠️ No subscription event found for {station_id}")
-            return False
-
-        if event.is_set():
-            return True
-
-        try:
-            await asyncio.wait_for(event.wait(), timeout=timeout)
-            logger.debug(f"✅ Subscription ready for {station_id}")
-            return True
-        except asyncio.TimeoutError:
-            logger.warning(f"⏰ Subscription timeout for {station_id} ({timeout}s)")
-            return False
-
-    async def is_subscription_ready(self, station_id: str) -> bool:
-        """
-        Проверка готовности подписки (без ожидания).
-        """
-        event = self._subscription_ready.get(station_id)
-        return event is not None and event.is_set()
-
-    def _mark_subscription_ready(self, station_id: str):
-        """
-        Отметить подписку как готовую (вызывается из listen_commands).
-        """
-        if station_id not in self._subscription_ready:
-            self._subscription_ready[station_id] = asyncio.Event()
-        self._subscription_ready[station_id].set()
-        logger.info(f"✅ Subscription ready event set for {station_id}")
-
-    async def prepare_subscription(self, station_id: str):
-        """
-        Подготовить Event для подписки ДО запуска listen_commands.
-        Это предотвращает race condition когда wait_for_subscription
-        вызывается до того как listen_commands успел создать Event.
-        """
-        if station_id not in self._subscription_ready:
-            self._subscription_ready[station_id] = asyncio.Event()
-            logger.debug(f"📋 Subscription event prepared for {station_id}")
-        else:
-            # Сбрасываем если был установлен (переподключение)
-            self._subscription_ready[station_id].clear()
-            logger.debug(f"📋 Subscription event reset for {station_id}")
-
-    # ============================================================
     # PUB/SUB: команды для станций
     # ============================================================
 
-    async def publish_command(self, station_id: str, command: dict, retry_count: int = 3, retry_delay: float = 0.5) -> int:
+    async def publish_command(self, station_id: str, command: dict) -> int:
         """
-        Публикация команды для станции с проверкой доставки.
+        Публикация команды для станции (без retry, как Voltera).
+
+        ВАЖНО: Перед вызовом проверять is_station_online()!
+        Команда публикуется один раз. Если 0 подписчиков - логируется ошибка.
 
         Args:
             station_id: ID станции
             command: Команда для отправки
-            retry_count: Количество попыток если нет подписчиков
-            retry_delay: Задержка между попытками
 
         Returns:
             Количество подписчиков, получивших сообщение
         """
+        import time
         channel = f"ocpp:cmd:{station_id}"
         message = json.dumps(command)
         action = command.get('action', 'unknown')
 
-        for attempt in range(1, retry_count + 1):
-            subscribers = await self.redis.publish(channel, message)
+        # Диагностика активных подписок (как Voltera)
+        active_pubsubs = getattr(self, '_active_pubsubs', {})
+        has_local_pubsub = station_id in active_pubsubs
 
-            if subscribers > 0:
-                logger.info(f"📤 Command published to {station_id}: {action} (subscribers: {subscribers})")
-                return subscribers
+        logger.info(f"📊 PUBLISH ДИАГНОСТИКА:")
+        logger.info(f"   - station_id запроса: '{station_id}' (тип: {type(station_id).__name__})")
+        logger.info(f"   - канал: {channel}")
+        logger.info(f"   - активные подписки: {list(active_pubsubs.keys())}")
+        logger.info(f"   - station_id в активных: {has_local_pubsub}")
 
-            if attempt < retry_count:
-                logger.warning(
-                    f"⚠️ No subscribers for {station_id}, attempt {attempt}/{retry_count}. "
-                    f"Retrying in {retry_delay}s..."
-                )
-                await asyncio.sleep(retry_delay)
-            else:
-                logger.error(
-                    f"❌ Command {action} for {station_id} has NO SUBSCRIBERS after {retry_count} attempts! "
-                    f"Command may be lost."
-                )
+        subscribers = await self.redis.publish(channel, message)
+        logger.info(f"📤 Опубликовано в {channel}: {action} (подписчиков: {subscribers})")
 
-        return 0
+        if subscribers == 0:
+            # Детальная диагностика при 0 подписчиков
+            logger.error(f"❌ 0 ПОДПИСЧИКОВ для {station_id}! Проверка:")
+            for sub_station_id in active_pubsubs.keys():
+                logger.error(f"   - Подписка '{sub_station_id}' (тип: {type(sub_station_id).__name__})")
+                logger.error(f"   - Совпадает с '{station_id}': {sub_station_id == station_id}")
+                logger.error(f"   - repr подписки: {repr(sub_station_id)}")
+                logger.error(f"   - repr запроса: {repr(station_id)}")
+
+        return subscribers
 
     async def listen_commands(self, station_id: str) -> AsyncGenerator[dict, None]:
         """
-        Подписка на команды для станции.
-        Отмечает подписку как готовую ПОСЛЕ получения подтверждения от Redis.
+        Подписка на команды для станции (упрощённая версия как Voltera).
 
-        ВАЖНО: Event должен быть создан заранее через prepare_subscription().
-        Event устанавливается только после того, как pubsub.listen()
-        получит первое сообщение (подтверждение подписки типа 'subscribe').
+        Используется простой sleep(0.1) вместо Event-механизма для синхронизации.
         """
         channel = f"ocpp:cmd:{station_id}"
-
-        # Event должен быть уже создан через prepare_subscription()
-        # Если нет - создаём (fallback для совместимости)
-        if station_id not in self._subscription_ready:
-            logger.warning(f"⚠️ Event not prepared for {station_id}, creating now")
-            self._subscription_ready[station_id] = asyncio.Event()
 
         pubsub = self.redis.pubsub()
         self._active_pubsubs[station_id] = pubsub
@@ -253,15 +181,12 @@ class RedisOcppManager:
             await pubsub.subscribe(channel)
             logger.info(f"📡 Subscribed to commands channel: {channel}")
 
-            # НЕ устанавливаем ready здесь! Ждём подтверждения от Redis.
-
             async for message in pubsub.listen():
                 msg_type = message.get("type")
 
-                # Подтверждение подписки от Redis - теперь мы РЕАЛЬНО слушаем
+                # Подтверждение подписки от Redis - просто логируем
                 if msg_type == "subscribe":
                     logger.info(f"✅ Subscription CONFIRMED for {station_id}, listener is now active")
-                    self._mark_subscription_ready(station_id)
                     continue
 
                 if msg_type == "message":
@@ -364,18 +289,14 @@ class RedisOcppManager:
         """
         try:
             stations = await self.get_stations()
-            ready_subscriptions = [
-                sid for sid, event in self._subscription_ready.items()
-                if event.is_set()
-            ]
+            active_pubsubs = list(self._active_pubsubs.keys())
 
             return {
                 "redis_connected": await self.ping(),
                 "online_stations": list(stations),
                 "online_stations_count": len(stations),
-                "ready_subscriptions": ready_subscriptions,
-                "ready_subscriptions_count": len(ready_subscriptions),
-                "active_pubsubs": list(self._active_pubsubs.keys())
+                "active_pubsubs": active_pubsubs,
+                "active_pubsubs_count": len(active_pubsubs)
             }
         except Exception as e:
             logger.error(f"Error getting diagnostics: {e}")
