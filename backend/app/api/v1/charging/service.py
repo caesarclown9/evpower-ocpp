@@ -1200,38 +1200,7 @@ class ChargingService:
             )
         """)
         self.db.execute(connector_update, {"session_id": session_id})
-    
-    async def _send_stop_command(self, redis_manager: Any, session_data: Dict[str, Any], session_id: str) -> bool:
-        """Отправка команды остановки через Redis"""
-        try:
-            connected_stations = await redis_manager.get_stations()
-            is_station_online = session_data['station_id'] in connected_stations
-            
-            if is_station_online:
-                # Получаем OCPP transaction_id
-                ocpp_transaction_query = text("""
-                    SELECT transaction_id FROM ocpp_transactions 
-                    WHERE charging_session_id = :session_id 
-                    AND status = 'Started'
-                    ORDER BY created_at DESC LIMIT 1
-                """)
-                
-                ocpp_result = self.db.execute(ocpp_transaction_query, {"session_id": session_id})
-                ocpp_transaction = ocpp_result.fetchone()
-                
-                if ocpp_transaction:
-                    command_data = {
-                        "action": "RemoteStopTransaction",
-                        "transaction_id": ocpp_transaction[0]
-                    }
-                    
-                    await redis_manager.publish_command(session_data['station_id'], command_data)
-            
-            return is_station_online
-        except Exception as e:
-            logger.warning(f"Ошибка отправки команды остановки: {e}")
-            return False
-    
+
     def _parse_session_data(self, session: tuple) -> Dict[str, Any]:
         """Парсинг данных сессии из результата запроса"""
         try:
