@@ -67,42 +67,60 @@ class ChargingStopResponse(BaseModel):
     error: Optional[str] = None
     message: Optional[str] = None
 
-class ChargingStatusResponse(BaseModel):
-    """📊 Ответ о статусе зарядки"""
-    success: bool
-    session_id: Optional[str] = None
-    status: Optional[str] = None
-    station_id: Optional[str] = None
-    client_id: Optional[str] = None
+class ChargingSessionData(BaseModel):
+    """📊 Данные сессии зарядки (вложенный объект)"""
+    id: str
+    session_id: Optional[str] = None  # дублирует id для совместимости
+    status: str
+    station_id: str
     connector_id: Optional[int] = None
     start_time: Optional[str] = None
     stop_time: Optional[str] = None
-    duration_minutes: Optional[int] = None
-    energy_consumed: Optional[float] = None
-    energy_consumed_kwh: Optional[float] = None
-    cost: Optional[float] = None
-    final_amount_som: Optional[float] = None
-    amount_charged_som: Optional[float] = None
-    limit_value: Optional[float] = None
-    progress_percent: Optional[float] = None
-    charging_power: Optional[float] = None
-    station_current: Optional[float] = None
-    station_voltage: Optional[float] = None
+
+    # Энергетические данные
+    energy_consumed: Optional[float] = 0
+    energy_kwh: Optional[float] = 0  # дублирует energy_consumed
+    current_cost: Optional[float] = 0
+    current_amount: Optional[float] = 0  # дублирует current_cost
+    power_kw: Optional[float] = 0
+
+    # Длительность
+    charging_duration_minutes: Optional[int] = 0
+    duration_seconds: Optional[int] = 0
+
+    # Резерв и тарифы
+    reserved_amount: Optional[float] = 0
+    rate_per_kwh: Optional[float] = 0
+    session_fee: Optional[float] = 0
+
+    # Лимиты и прогресс
+    limit_type: Optional[str] = "none"
+    limit_value: Optional[float] = 0
+    limit_reached: Optional[bool] = False
+    limit_percentage: Optional[float] = 0
+    progress_percent: Optional[float] = 0  # дублирует limit_percentage
+
+    # OCPP данные
+    ocpp_transaction_id: Optional[int] = None
+    meter_start: Optional[float] = 0
+    meter_current: Optional[float] = 0
+
+    # Данные EV
     ev_battery_soc: Optional[int] = None
-    ev_current: Optional[float] = None
-    ev_voltage: Optional[float] = None
-    temperatures: Optional[dict] = None
-    meter_start: Optional[int] = None
-    meter_current: Optional[int] = None
-    station_online: Optional[bool] = None
-    last_update: Optional[str] = None
-    current_energy: Optional[float] = None
-    current_amount: Optional[float] = None
-    limit_type: Optional[str] = None
-    transaction_id: Optional[str] = None
-    ocpp_transaction_id: Optional[str] = None
-    rate_per_kwh: Optional[float] = None
-    ocpp_status: Optional[str] = None
-    has_meter_data: Optional[bool] = None
+
+    # Статус станции
+    station_online: Optional[bool] = True
+
+    class Config:
+        extra = "allow"  # Разрешаем дополнительные поля для совместимости
+
+
+class ChargingStatusResponse(BaseModel):
+    """📊 Ответ о статусе зарядки (формат Voltera с вложенным session)"""
+    success: bool
+    session: Optional[ChargingSessionData] = None
     error: Optional[str] = None
     message: Optional[str] = None
+
+    class Config:
+        extra = "allow"  # Разрешаем дополнительные поля для совместимости
