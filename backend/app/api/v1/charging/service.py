@@ -593,11 +593,19 @@ class ChargingService:
             "limit_value": limit_value
         }
 
-        await redis_manager.publish_command(station_id, command_data)
-        logger.info(
-            f"✅ Команда запуска отправлена на станцию {station_id} "
-            f"(subscription_ready={is_subscription_ready}, id_tag={id_tag})"
-        )
+        # Публикуем с retry и проверкой подписчиков
+        subscribers = await redis_manager.publish_command(station_id, command_data)
+
+        if subscribers > 0:
+            logger.info(
+                f"✅ Команда запуска ДОСТАВЛЕНА на станцию {station_id} "
+                f"(subscribers={subscribers}, id_tag={id_tag})"
+            )
+        else:
+            logger.error(
+                f"❌ Команда запуска НЕ ДОСТАВЛЕНА на станцию {station_id}! "
+                f"Нет активных подписчиков. Станция может быть офлайн или pub/sub не готов."
+            )
 
         return is_online
     
@@ -894,9 +902,12 @@ class ChargingService:
                     "action": "RemoteStopTransaction",
                     "transaction_id": result[0]
                 }
-                await redis_manager.publish_command(station_id, command_data)
-                logger.info(f"✅ Команда остановки отправлена на станцию {station_id}")
-        
+                subscribers = await redis_manager.publish_command(station_id, command_data)
+                if subscribers > 0:
+                    logger.info(f"✅ Команда остановки ДОСТАВЛЕНА на станцию {station_id} (subscribers={subscribers})")
+                else:
+                    logger.error(f"❌ Команда остановки НЕ ДОСТАВЛЕНА на станцию {station_id}! Нет подписчиков.")
+
         return is_online
     
     async def get_charging_status(self, session_id: str) -> Dict[str, Any]:

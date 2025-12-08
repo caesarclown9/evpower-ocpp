@@ -1495,13 +1495,27 @@ class OCPPWebSocketHandler:
             # Регистрируем станцию в Redis
             await redis_manager.register_station(self.station_id)
             self.logger.debug(f"Станция {self.station_id} зарегистрирована в Redis")
-            
+
             # Запускаем обработчик команд из Redis
             self.pubsub_task = asyncio.create_task(
                 self._handle_redis_commands()
             )
-            self.logger.debug(f"Redis pub/sub task запущен для {self.station_id}")
-            
+            self.logger.debug(f"Redis pub/sub task создан для {self.station_id}")
+
+            # КРИТИЧНО: Ждём пока pubsub реально начнёт слушать!
+            # Без этого команды могут потеряться из-за race condition
+            try:
+                subscription_ready = await redis_manager.wait_for_subscription(
+                    self.station_id,
+                    timeout=5.0
+                )
+                if subscription_ready:
+                    self.logger.info(f"✅ Pub/sub подписка активна для {self.station_id}")
+                else:
+                    self.logger.warning(f"⚠️ Таймаут ожидания pub/sub для {self.station_id}")
+            except Exception as e:
+                self.logger.error(f"❌ Ошибка ожидания pub/sub для {self.station_id}: {e}")
+
             # Запускаем OCPP charge point
             self.logger.info(f"🚀 Запуск OCPP ChargePoint для {self.station_id}")
             await self.charge_point.start()

@@ -177,25 +177,62 @@ class RedisOcppManager:
     # PUB/SUB: команды для станций
     # ============================================================
 
-    async def publish_command(self, station_id: str, command: dict):
+    async def publish_command(self, station_id: str, command: dict, retry_count: int = 3, retry_delay: float = 0.5) -> int:
         """
-        Публикация команды для станции.
+        Публикация команды для станции с проверкой доставки.
+
+        Args:
+            station_id: ID станции
+            command: Команда для отправки
+            retry_count: Количество попыток если нет подписчиков
+            retry_delay: Задержка между попытками
+
+        Returns:
+            Количество подписчиков, получивших сообщение
         """
         channel = f"ocpp:cmd:{station_id}"
         message = json.dumps(command)
-        await self.redis.publish(channel, message)
-        logger.info(f"📤 Command published to {station_id}: {command.get('action', 'unknown')}")
+        action = command.get('action', 'unknown')
+
+        for attempt in range(1, retry_count + 1):
+            subscribers = await self.redis.publish(channel, message)
+
+            if subscribers > 0:
+                logger.info(f"📤 Command published to {station_id}: {action} (subscribers: {subscribers})")
+                return subscribers
+
+            if attempt < retry_count:
+                logger.warning(
+                    f"⚠️ No subscribers for {station_id}, attempt {attempt}/{retry_count}. "
+                    f"Retrying in {retry_delay}s..."
+                )
+                await asyncio.sleep(retry_delay)
+            else:
+                logger.error(
+                    f"❌ Command {action} for {station_id} has NO SUBSCRIBERS after {retry_count} attempts! "
+                    f"Command may be lost."
+                )
+
+        return 0
 
     async def listen_commands(self, station_id: str) -> AsyncGenerator[dict, None]:
         """
         Подписка на команды для станции.
-        Отмечает подписку как готовую после успешной подписки.
+        Отмечает подписку как готовую ПОСЛЕ получения подтверждения от Redis.
+
+        ВАЖНО: Event устанавливается только после того, как pubsub.listen()
+        получит первое сообщение (подтверждение подписки типа 'subscribe').
+        Это предотвращает race condition когда команда публикуется до того,
+        как listener реально начал слушать.
         """
         channel = f"ocpp:cmd:{station_id}"
 
         # Создаём Event для отслеживания готовности
         if station_id not in self._subscription_ready:
             self._subscription_ready[station_id] = asyncio.Event()
+        else:
+            # Сбрасываем event если был установлен ранее (переподключение)
+            self._subscription_ready[station_id].clear()
 
         pubsub = self.redis.pubsub()
         self._active_pubsubs[station_id] = pubsub
@@ -204,14 +241,21 @@ class RedisOcppManager:
             await pubsub.subscribe(channel)
             logger.info(f"📡 Subscribed to commands channel: {channel}")
 
-            # Отмечаем подписку как готовую
-            self._mark_subscription_ready(station_id)
+            # НЕ устанавливаем ready здесь! Ждём подтверждения от Redis.
 
             async for message in pubsub.listen():
-                if message["type"] == "message":
+                msg_type = message.get("type")
+
+                # Подтверждение подписки от Redis - теперь мы РЕАЛЬНО слушаем
+                if msg_type == "subscribe":
+                    logger.info(f"✅ Subscription CONFIRMED for {station_id}, listener is now active")
+                    self._mark_subscription_ready(station_id)
+                    continue
+
+                if msg_type == "message":
                     try:
                         command = json.loads(message["data"])
-                        logger.debug(f"📥 Received command for {station_id}: {command.get('action', 'unknown')}")
+                        logger.info(f"📥 Received command for {station_id}: {command.get('action', 'unknown')}")
                         yield command
                     except json.JSONDecodeError as e:
                         logger.error(f"Invalid JSON in command: {e}")
