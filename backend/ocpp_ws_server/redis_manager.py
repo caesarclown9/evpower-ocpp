@@ -173,6 +173,20 @@ class RedisOcppManager:
         self._subscription_ready[station_id].set()
         logger.info(f"✅ Subscription ready event set for {station_id}")
 
+    async def prepare_subscription(self, station_id: str):
+        """
+        Подготовить Event для подписки ДО запуска listen_commands.
+        Это предотвращает race condition когда wait_for_subscription
+        вызывается до того как listen_commands успел создать Event.
+        """
+        if station_id not in self._subscription_ready:
+            self._subscription_ready[station_id] = asyncio.Event()
+            logger.debug(f"📋 Subscription event prepared for {station_id}")
+        else:
+            # Сбрасываем если был установлен (переподключение)
+            self._subscription_ready[station_id].clear()
+            logger.debug(f"📋 Subscription event reset for {station_id}")
+
     # ============================================================
     # PUB/SUB: команды для станций
     # ============================================================
@@ -220,19 +234,17 @@ class RedisOcppManager:
         Подписка на команды для станции.
         Отмечает подписку как готовую ПОСЛЕ получения подтверждения от Redis.
 
-        ВАЖНО: Event устанавливается только после того, как pubsub.listen()
+        ВАЖНО: Event должен быть создан заранее через prepare_subscription().
+        Event устанавливается только после того, как pubsub.listen()
         получит первое сообщение (подтверждение подписки типа 'subscribe').
-        Это предотвращает race condition когда команда публикуется до того,
-        как listener реально начал слушать.
         """
         channel = f"ocpp:cmd:{station_id}"
 
-        # Создаём Event для отслеживания готовности
+        # Event должен быть уже создан через prepare_subscription()
+        # Если нет - создаём (fallback для совместимости)
         if station_id not in self._subscription_ready:
+            logger.warning(f"⚠️ Event not prepared for {station_id}, creating now")
             self._subscription_ready[station_id] = asyncio.Event()
-        else:
-            # Сбрасываем event если был установлен ранее (переподключение)
-            self._subscription_ready[station_id].clear()
 
         pubsub = self.redis.pubsub()
         self._active_pubsubs[station_id] = pubsub

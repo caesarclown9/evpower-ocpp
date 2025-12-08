@@ -1496,14 +1496,19 @@ class OCPPWebSocketHandler:
             await redis_manager.register_station(self.station_id)
             self.logger.debug(f"Станция {self.station_id} зарегистрирована в Redis")
 
+            # КРИТИЧНО: Создаём Event ДО запуска task, чтобы wait_for_subscription мог его найти
+            await redis_manager.prepare_subscription(self.station_id)
+
             # Запускаем обработчик команд из Redis
             self.pubsub_task = asyncio.create_task(
                 self._handle_redis_commands()
             )
             self.logger.debug(f"Redis pub/sub task создан для {self.station_id}")
 
-            # КРИТИЧНО: Ждём пока pubsub реально начнёт слушать!
-            # Без этого команды могут потеряться из-за race condition
+            # Даём task шанс запуститься
+            await asyncio.sleep(0)
+
+            # Ждём пока pubsub реально начнёт слушать
             try:
                 subscription_ready = await redis_manager.wait_for_subscription(
                     self.station_id,
