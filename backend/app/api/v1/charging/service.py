@@ -952,10 +952,10 @@ class ChargingService:
                     mv.soc as ev_battery_soc,
                     mv.timestamp as meter_timestamp,
 
-                    -- Вычисленная энергия: приоритет meter_values, fallback на session.energy
+                    -- Вычисленная энергия: приоритет cs.energy (обновляется в ws_handler), fallback на meter_values
                     COALESCE(
-                        (mv.energy_active_import_register - ot.meter_start) / 1000.0,
                         cs.energy,
+                        (mv.energy_active_import_register - ot.meter_start) / 1000.0,
                         0
                     ) as energy_kwh
 
