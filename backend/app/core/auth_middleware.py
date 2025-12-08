@@ -244,6 +244,13 @@ class AuthMiddleware:
         if path.startswith("/api/v1/station/status/") and method == "GET":
             is_public = True
 
+        # Дополнительно: разрешаем GET для /api/v1/charging/status/{session_id}
+        # Логика: session_id сам по себе является "токеном" доступа к данным сессии,
+        # пользователь авторизовался при старте зарядки, polling должен работать
+        # даже если cookie истекла (зарядка может длиться дольше 10 минут)
+        if path.startswith("/api/v1/charging/status/") and method == "GET":
+            is_public = True
+
         # Если не публичный endpoint, требуем аутентификацию
         if not is_public:
             # Требуем auth для ВСЕХ /api/v1/* (кроме публичных выше)
