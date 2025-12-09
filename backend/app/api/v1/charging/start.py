@@ -94,10 +94,11 @@ async def start_charging(
     except ValueError as e:
         db.rollback()
         logger.error(f"Ошибка баланса при запуске зарядки: {e}")
+        # Возвращаем безопасное сообщение без деталей внутренней ошибки
         return {
             "success": False,
             "error": "balance_error",
-            "message": str(e)
+            "message": "Недостаточно средств на балансе"
         }
     except Exception as e:
         db.rollback()

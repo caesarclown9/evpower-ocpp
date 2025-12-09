@@ -621,76 +621,103 @@ class OCPPChargePoint(CP):
                         actual_cost = energy_consumed * rate_per_kwh
                         
                         # Получаем данные сессии для возврата средств
+                        # ВАЖНО: Читаем reserved_amount (не amount!) и payment_processed
                         session_query = text("""
-                            SELECT user_id, amount FROM charging_sessions 
+                            SELECT user_id, reserved_amount, payment_processed, status
+                            FROM charging_sessions
                             WHERE id = :session_id
                         """)
                         session_result = db.execute(session_query, {"session_id": session_id}).fetchone()
-                        
+
                         if session_result:
                             user_id = session_result[0]
                             reserved_amount = float(session_result[1]) if session_result[1] else 0
-                            
-                            # 💳 ДОПОЛНИТЕЛЬНОЕ СПИСАНИЕ: Если actual_cost превышает резерв - списываем дополнительно
-                            if actual_cost > reserved_amount:
-                                additional_charge = actual_cost - reserved_amount
-                                self.logger.warning(f"⚠️ ПРЕВЫШЕНИЕ РЕЗЕРВА: actual_cost={actual_cost} > reserved={reserved_amount}. Дополнительное списание: {additional_charge} сом")
-                                
-                                # Списываем дополнительную сумму с баланса клиента
-                                additional_charge_query = text("""
-                                    UPDATE clients 
-                                    SET balance = balance - :additional_charge 
-                                    WHERE id = :user_id
-                                """)
-                                db.execute(additional_charge_query, {
-                                    "additional_charge": additional_charge,
-                                    "user_id": user_id
-                                })
-                                
-                                # Создаем запись о дополнительной транзакции
-                                additional_transaction_query = text("""
-                                    INSERT INTO payment_transactions_odengi (client_id, transaction_type, amount, description)
-                                    VALUES (:client_id, 'balance_topup', :amount, :description)
-                                """)
-                                db.execute(additional_transaction_query, {
-                                    "client_id": user_id,
-                                    "amount": f"-{additional_charge:.2f}",
-                                    "description": f"Дополнительное списание для сессии {session_id} (превышение резерва)"
-                                })
-                                
-                                self.logger.info(f"💳 Дополнительно списано {additional_charge} сом с клиента {user_id}")
-                                refund_amount = 0  # Возврата нет, так как все потрачено
+                            payment_processed = session_result[2] or False
+                            session_status = session_result[3]
+
+                            # 🛡️ ЗАЩИТА ОТ ДВОЙНОЙ ОБРАБОТКИ ПЛАТЕЖА
+                            if payment_processed:
+                                self.logger.info(
+                                    f"⏭️ Сессия {session_id} уже обработана (payment_processed=True), "
+                                    f"пропускаем финансовые операции"
+                                )
+                                # Только обновляем данные сессии если нужно
+                                if session_status != 'stopped':
+                                    update_session_query = text("""
+                                        UPDATE charging_sessions
+                                        SET stop_time = NOW(), status = 'stopped',
+                                            energy = :energy_consumed, amount = :actual_cost
+                                        WHERE id = :session_id
+                                    """)
+                                    db.execute(update_session_query, {
+                                        "energy_consumed": energy_consumed,
+                                        "actual_cost": actual_cost,
+                                        "session_id": session_id
+                                    })
                             else:
-                                refund_amount = reserved_amount - actual_cost
-                            
-                            # Обновляем сессию с фактическими данными
-                            update_session_query = text("""
-                                UPDATE charging_sessions 
-                                SET stop_time = NOW(), status = 'stopped', 
-                                    energy = :energy_consumed, amount = :actual_cost
-                                WHERE id = :session_id
-                            """)
-                            db.execute(update_session_query, {
-                                "energy_consumed": energy_consumed,
-                                "actual_cost": actual_cost,
-                                "session_id": session_id
-                            })
-                            
-                            # Возврат неиспользованных средств
-                            if refund_amount > 0:
-                                refund_query = text("""
-                                    UPDATE clients 
-                                    SET balance = balance + :refund_amount 
-                                    WHERE id = :user_id
+                                # Платёж ещё не обработан — выполняем финансовые операции
+
+                                # 💳 ДОПОЛНИТЕЛЬНОЕ СПИСАНИЕ: Если actual_cost превышает резерв
+                                if actual_cost > reserved_amount:
+                                    additional_charge = actual_cost - reserved_amount
+                                    self.logger.warning(f"⚠️ ПРЕВЫШЕНИЕ РЕЗЕРВА: actual_cost={actual_cost} > reserved={reserved_amount}. Дополнительное списание: {additional_charge} сом")
+
+                                    # Списываем дополнительную сумму с баланса клиента
+                                    additional_charge_query = text("""
+                                        UPDATE clients
+                                        SET balance = balance - :additional_charge
+                                        WHERE id = :user_id
+                                    """)
+                                    db.execute(additional_charge_query, {
+                                        "additional_charge": additional_charge,
+                                        "user_id": user_id
+                                    })
+
+                                    # Создаем запись о дополнительной транзакции
+                                    additional_transaction_query = text("""
+                                        INSERT INTO payment_transactions_odengi (client_id, transaction_type, amount, description)
+                                        VALUES (:client_id, 'balance_topup', :amount, :description)
+                                    """)
+                                    db.execute(additional_transaction_query, {
+                                        "client_id": user_id,
+                                        "amount": f"-{additional_charge:.2f}",
+                                        "description": f"Дополнительное списание для сессии {session_id} (превышение резерва)"
+                                    })
+
+                                    self.logger.info(f"💳 Дополнительно списано {additional_charge} сом с клиента {user_id}")
+                                    refund_amount = 0  # Возврата нет, так как все потрачено
+                                else:
+                                    refund_amount = reserved_amount - actual_cost
+
+                                # Возврат неиспользованных средств
+                                if refund_amount > 0:
+                                    refund_query = text("""
+                                        UPDATE clients
+                                        SET balance = balance + :refund_amount
+                                        WHERE id = :user_id
+                                    """)
+                                    db.execute(refund_query, {
+                                        "refund_amount": refund_amount,
+                                        "user_id": user_id
+                                    })
+
+                                    self.logger.info(f"💰 Возврат {refund_amount} сом клиенту {user_id}")
+
+                                # Обновляем сессию с фактическими данными и ставим payment_processed=TRUE
+                                update_session_query = text("""
+                                    UPDATE charging_sessions
+                                    SET stop_time = NOW(), status = 'stopped',
+                                        energy = :energy_consumed, amount = :actual_cost,
+                                        payment_processed = TRUE
+                                    WHERE id = :session_id
                                 """)
-                                db.execute(refund_query, {
-                                    "refund_amount": refund_amount,
-                                    "user_id": user_id
+                                db.execute(update_session_query, {
+                                    "energy_consumed": energy_consumed,
+                                    "actual_cost": actual_cost,
+                                    "session_id": session_id
                                 })
-                                
-                                self.logger.info(f"💰 Возврат {refund_amount} сом клиенту {user_id}")
-                            
-                            self.logger.info(f"✅ Mobile сессия {session_id} завершена: {energy_consumed} кВт⋅ч, {actual_cost} сом")
+
+                                self.logger.info(f"✅ Mobile сессия {session_id} завершена: {energy_consumed} кВт⋅ч, {actual_cost} сом")
                         
                     except Exception as e:
                         self.logger.error(f"Ошибка автозавершения мобильной сессии {session_id}: {e}")

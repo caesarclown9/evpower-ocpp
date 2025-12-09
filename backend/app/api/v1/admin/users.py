@@ -416,7 +416,8 @@ async def create_user(
     except Exception as e:
         db.rollback()
         logger.error(f"Error creating user: {e}")
-        raise HTTPException(status_code=500, detail=f"Ошибка при создании пользователя: {str(e)}")
+        logger.exception(f"Ошибка при создании пользователя {data.email}")
+        raise HTTPException(status_code=500, detail="Внутренняя ошибка сервера")
 
 
 @router.put("/{user_id}", response_model=UserDetailResponse)

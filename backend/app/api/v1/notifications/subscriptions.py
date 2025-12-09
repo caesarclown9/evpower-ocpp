@@ -150,7 +150,7 @@ async def subscribe_to_push(
         logger.error(f"Error subscribing to push notifications: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to register push subscription: {str(e)}"
+            detail="Ошибка при регистрации push-уведомлений"
         )
 
 
@@ -214,7 +214,7 @@ async def unsubscribe_from_push(
         logger.error(f"Error unsubscribing from push notifications: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to remove push subscription: {str(e)}"
+            detail="Ошибка при удалении push-подписки"
         )
 
 
@@ -282,5 +282,5 @@ async def test_push_notification(
         logger.error(f"Error sending test push notification: {e}", exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Failed to send test notification: {str(e)}"
+            detail="Ошибка при отправке тестового уведомления"
         )

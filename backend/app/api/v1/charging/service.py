@@ -80,8 +80,8 @@ class ChargingService:
                 "message": "Номер коннектора должен быть от 1 до 10"
             }
 
-        # 1. Проверка клиента и баланса
-        client = self._validate_client(client_id)
+        # 1. Проверка клиента и баланса (с FOR UPDATE для предотвращения race conditions)
+        client = self._validate_client(client_id, for_update=True)
         if not client['success']:
             return client
         
@@ -167,10 +167,20 @@ class ChargingService:
             "station_online": station_online
         }
     
-    def _validate_client(self, client_id: str) -> Dict[str, Any]:
-        """Проверка существования клиента и его баланса"""
+    def _validate_client(self, client_id: str, for_update: bool = False) -> Dict[str, Any]:
+        """Проверка существования клиента и его баланса.
+
+        Args:
+            client_id: UUID клиента
+            for_update: Если True, блокирует строку для предотвращения race conditions
+        """
+        # FOR UPDATE блокирует строку до конца транзакции, предотвращая race conditions
+        query = "SELECT id, balance, status FROM clients WHERE id = :client_id"
+        if for_update:
+            query += " FOR UPDATE"
+
         result = self.db.execute(
-            text("SELECT id, balance, status FROM clients WHERE id = :client_id"),
+            text(query),
             {"client_id": client_id}
         ).fetchone()
 
@@ -400,12 +410,17 @@ class ChargingService:
         return {"success": True}
     
     def _has_active_session(self, client_id: str) -> bool:
-        """Проверка наличия активной сессии"""
+        """Проверка наличия активной сессии с блокировкой для предотвращения race conditions.
+
+        FOR UPDATE SKIP LOCKED позволяет обнаружить активную сессию даже если другой
+        запрос пытается создать сессию одновременно.
+        """
         result = self.db.execute(text("""
-            SELECT id FROM charging_sessions 
+            SELECT id FROM charging_sessions
             WHERE user_id = :client_id AND status = 'started'
+            FOR UPDATE SKIP LOCKED
         """), {"client_id": client_id}).fetchone()
-        
+
         return result is not None
     
     def _reserve_funds(self, client_id: str, amount: float, station_id: str) -> Decimal:
@@ -496,12 +511,12 @@ class ChargingService:
                 logger.warning(f"Не удалось сохранить историю тарифа: {e}")
         
         # Сохраняем сессию с ссылкой на историю тарифа
-        result = self.db.execute(text("""
-            INSERT INTO charging_sessions 
-            (user_id, station_id, start_time, status, limit_type, limit_value, 
-             amount, pricing_history_id, base_amount, final_amount)
+        insert_result = self.db.execute(text("""
+            INSERT INTO charging_sessions
+            (user_id, station_id, start_time, status, limit_type, limit_value,
+             amount, pricing_history_id, base_amount, final_amount, reserved_amount, payment_processed)
             VALUES (:user_id, :station_id, :start_time, 'started', :limit_type, :limit_value,
-                    :amount, :pricing_history_id, :base_amount, :final_amount)
+                    :amount, :pricing_history_id, :base_amount, :final_amount, :reserved_amount, FALSE)
             RETURNING id
         """), {
             "user_id": client_id,
@@ -512,8 +527,14 @@ class ChargingService:
             "amount": reservation['amount'],
             "pricing_history_id": pricing_history_id,
             "base_amount": reservation.get('base_amount', reservation['amount']),
-            "final_amount": reservation['amount']
-        }).fetchone()[0]
+            "final_amount": reservation['amount'],
+            "reserved_amount": reservation['amount']
+        }).fetchone()
+
+        if not insert_result:
+            raise ValueError("Не удалось создать сессию зарядки")
+
+        result = insert_result[0]
         
         # Обновляем ссылку на сессию в истории тарифа
         if pricing_history_id:
@@ -716,21 +737,31 @@ class ChargingService:
             "station_online": station_online
         }
     
-    def _get_session_info(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Получение информации о сессии"""
-        result = self.db.execute(text("""
+    def _get_session_info(self, session_id: str, for_update: bool = True) -> Optional[Dict[str, Any]]:
+        """Получение информации о сессии.
+
+        Args:
+            session_id: ID сессии
+            for_update: Если True (по умолчанию), блокирует сессию для предотвращения
+                       race conditions при параллельных запросах на остановку
+        """
+        # FOR UPDATE блокирует строку сессии до конца транзакции
+        lock_clause = "FOR UPDATE" if for_update else ""
+
+        result = self.db.execute(text(f"""
             SELECT cs.id, cs.user_id, cs.station_id, cs.start_time, cs.status,
-                   cs.limit_value, cs.amount, cs.energy, s.price_per_kwh,
-                   tp.id as tariff_plan_id
+                   cs.limit_value, cs.reserved_amount, cs.energy, s.price_per_kwh,
+                   tp.id as tariff_plan_id, cs.payment_processed
             FROM charging_sessions cs
             LEFT JOIN stations s ON cs.station_id = s.id
             LEFT JOIN tariff_plans tp ON s.tariff_plan_id = tp.id
             WHERE cs.id = :session_id AND cs.status = 'started'
+            {lock_clause}
         """), {"session_id": session_id}).fetchone()
-        
+
         if not result:
             return None
-        
+
         return {
             'id': result[0],
             'client_id': result[1],
@@ -741,7 +772,8 @@ class ChargingService:
             'reserved_amount': result[6] or 0,
             'energy': result[7],
             'price_per_kwh': result[8],
-            'tariff_plan_id': result[9]
+            'tariff_plan_id': result[9],
+            'payment_processed': result[10] or False
         }
     
     def _get_actual_energy_consumed(self, session_id: str, session_energy: Optional[float]) -> float:
@@ -875,7 +907,8 @@ class ChargingService:
         self.db.execute(text("""
             UPDATE charging_sessions
             SET stop_time = NOW(), status = 'stopped',
-                energy = :actual_energy, amount = :actual_cost
+                energy = :actual_energy, amount = :actual_cost,
+                payment_processed = TRUE
             WHERE id = :session_id
         """), {
             "actual_energy": actual_energy,
@@ -931,11 +964,13 @@ class ChargingService:
                     cs.stop_time,
                     cs.energy as session_energy,
                     cs.amount,
+                    cs.reserved_amount,
                     cs.status,
                     cs.transaction_id,
                     cs.limit_type,
                     cs.limit_value,
                     s.price_per_kwh,
+                    s.session_fee,
 
                     -- Данные транзакции
                     ot.id as ocpp_transaction_id,
@@ -986,8 +1021,8 @@ class ChargingService:
             # Распаковываем результат
             (
                 session_id_db, user_id, station_id, start_time, stop_time,
-                session_energy, amount, status, transaction_id,
-                limit_type, limit_value, price_per_kwh,
+                session_energy, amount, reserved_amount, status, transaction_id,
+                limit_type, limit_value, price_per_kwh, session_fee,
                 ocpp_transaction_id, ocpp_tx_id, meter_start, meter_stop, ocpp_status,
                 current_meter, power_w, current_import, voltage, ev_battery_soc, meter_timestamp,
                 energy_kwh
@@ -996,6 +1031,8 @@ class ChargingService:
             # Безопасные преобразования
             energy_kwh = float(energy_kwh) if energy_kwh else 0.0
             price_per_kwh = float(price_per_kwh) if price_per_kwh else 13.5
+            session_fee = float(session_fee) if session_fee else 0.0
+            reserved_amount = float(reserved_amount) if reserved_amount else 0.0
             limit_value = float(limit_value) if limit_value else 0.0
             power_kw = float(power_w) / 1000.0 if power_w else 0.0
 
@@ -1027,6 +1064,7 @@ class ChargingService:
                     "session_id": session_id_db,
                     "status": status or "preparing",
                     "station_id": station_id,
+                    "connector_id": 1,  # TODO: получить из транзакции
                     "ocpp_transaction_id": ocpp_transaction_id,
 
                     # Энергетические данные
@@ -1036,6 +1074,11 @@ class ChargingService:
                     "current_amount": round(current_amount, 2),
                     "power_kw": round(power_kw, 2),
 
+                    # Резерв и тарифы
+                    "reserved_amount": round(reserved_amount, 2),
+                    "rate_per_kwh": round(price_per_kwh, 2),
+                    "session_fee": round(session_fee, 2),
+
                     # Длительность
                     "charging_duration_minutes": duration_seconds // 60,
                     "duration_seconds": duration_seconds,
@@ -1043,6 +1086,7 @@ class ChargingService:
                     # Лимиты и прогресс
                     "limit_type": limit_type or "none",
                     "limit_value": round(limit_value, 2),
+                    "limit_reached": progress_percent >= 100,
                     "limit_percentage": round(progress_percent, 1),
                     "progress_percent": round(progress_percent, 1),
 

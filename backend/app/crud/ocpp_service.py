@@ -727,36 +727,62 @@ class PaymentService:
     
     @staticmethod
     def update_client_balance(
-        db: Session, 
-        client_id: str, 
-        amount: Decimal, 
+        db: Session,
+        client_id: str,
+        amount: Decimal,
         operation: str = "add",
         description: str = ""
     ) -> Decimal:
-        """Обновление баланса клиента с логированием"""
-        
-        # Получаем текущий баланс
-        current_balance = PaymentService.get_client_balance(db, client_id)
-        
-        # Вычисляем новый баланс
+        """Атомарное обновление баланса клиента с защитой от race conditions.
+
+        ВАЖНО: Используется атомарный UPDATE с проверкой в WHERE для subtract,
+        что предотвращает race conditions при параллельных запросах.
+        """
+
         if operation == "add":
-            new_balance = current_balance + amount
+            # Атомарное пополнение баланса
+            result = db.execute(text("""
+                UPDATE clients
+                SET balance = balance + :amount, updated_at = NOW()
+                WHERE id = :client_id
+                RETURNING balance, balance - :amount as old_balance
+            """), {"amount": amount, "client_id": client_id}).fetchone()
+
+            if not result:
+                raise ValueError(f"Клиент {client_id} не найден")
+
+            new_balance = Decimal(str(result[0]))
+            old_balance = Decimal(str(result[1]))
+
         elif operation == "subtract":
-            new_balance = current_balance - amount
-            if new_balance < 0:
-                raise ValueError("Недостаточно средств на балансе")
+            # Атомарное списание с проверкой достаточности средств в SQL
+            # WHERE balance >= amount предотвращает отрицательный баланс при race condition
+            result = db.execute(text("""
+                UPDATE clients
+                SET balance = balance - :amount, updated_at = NOW()
+                WHERE id = :client_id AND balance >= :amount
+                RETURNING balance, balance + :amount as old_balance
+            """), {"amount": amount, "client_id": client_id}).fetchone()
+
+            if not result:
+                # Проверяем причину: клиент не найден или недостаточно средств
+                check = db.execute(text("""
+                    SELECT balance FROM clients WHERE id = :client_id
+                """), {"client_id": client_id}).fetchone()
+
+                if not check:
+                    raise ValueError(f"Клиент {client_id} не найден")
+                else:
+                    current = Decimal(str(check[0]))
+                    raise ValueError(f"Недостаточно средств на балансе: {current} < {amount}")
+
+            new_balance = Decimal(str(result[0]))
+            old_balance = Decimal(str(result[1]))
         else:
             raise ValueError("Неподдерживаемая операция")
-        
-        # Обновляем баланс
-        db.execute(text("""
-            UPDATE clients 
-            SET balance = :new_balance, updated_at = NOW() 
-            WHERE id = :client_id
-        """), {"new_balance": new_balance, "client_id": client_id})
-        
-        logger.info(f"Баланс клиента {client_id}: {current_balance} -> {new_balance} ({operation} {amount})")
-        
+
+        logger.info(f"Баланс клиента {client_id}: {old_balance} -> {new_balance} ({operation} {amount})")
+
         return new_balance
     
     @staticmethod
@@ -784,17 +810,20 @@ class PaymentService:
         }
         
         result = db.execute(text("""
-            INSERT INTO payment_transactions_odengi 
-            (client_id, transaction_type, amount, balance_before, balance_after, 
+            INSERT INTO payment_transactions_odengi
+            (client_id, transaction_type, amount, balance_before, balance_after,
              description, balance_topup_id, charging_session_id)
             VALUES (:client_id, :transaction_type, :amount, :balance_before, :balance_after,
                     :description, :balance_topup_id, :charging_session_id)
             RETURNING id
-        """), insert_data)
-        
-        transaction_id = result.fetchone()[0]
+        """), insert_data).fetchone()
+
+        if not result:
+            raise ValueError("Не удалось создать запись транзакции")
+
+        transaction_id = result[0]
         logger.info(f"Создана транзакция {transaction_id}: {description}")
-        
+
         return transaction_id
     
     @staticmethod

@@ -46,8 +46,9 @@ async def get_client_balance(
             WHERE client_id = :client_id AND transaction_type IN ('charge_reserve', 'charge_refund', 'charge_payment')
         """), {"client_id": client_id})
         
-        spent_amount = total_spent.fetchone()[0]
-        
+        spent_row = total_spent.fetchone()
+        spent_amount = spent_row[0] if spent_row else 0
+
         return ClientBalanceInfo(
             client_id=client_id,
             balance=float(client[1]),

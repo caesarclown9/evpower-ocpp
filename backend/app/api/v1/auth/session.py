@@ -408,9 +408,10 @@ async def login(request: Request, body: LoginRequest, db: Session = Depends(get_
         resp.set_cookie("evp_refresh", refresh_token, **_cookie_params(7 * 24 * 3600, samesite="none", request=request))
         return resp
     except Exception as e:
+        logger.exception("Ошибка при обработке callback")
         return JSONResponse(
             status_code=500,
-            content={"success": False, "error": "internal_error", "message": str(e), "status": 500},
+            content={"success": False, "error": "internal_error", "message": "Внутренняя ошибка сервера", "status": 500},
         )
 
 
@@ -458,9 +459,10 @@ async def refresh(request: Request):
         resp.set_cookie("evp_refresh", new_refresh, **_cookie_params(7 * 24 * 3600, samesite="none", request=request))
         return resp
     except Exception as e:
+        logger.exception("Ошибка при обновлении токена")
         return JSONResponse(
             status_code=500,
-            content={"success": False, "error": "internal_error", "message": str(e), "status": 500},
+            content={"success": False, "error": "internal_error", "message": "Внутренняя ошибка сервера", "status": 500},
         )
 
 

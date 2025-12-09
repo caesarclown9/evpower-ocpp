@@ -156,5 +156,6 @@ async def logout_all_devices(request: Request):
                 return {"success": True, "message": "Все сессии завершены"}
             return {"success": False, "error": "supabase_error", "status_code": resp.status_code}
     except Exception as e:
-        return {"success": False, "error": "internal_error", "message": str(e)}
+        logger.exception("Ошибка при выходе из всех сессий")
+        return {"success": False, "error": "internal_error", "message": "Внутренняя ошибка сервера"}
 
