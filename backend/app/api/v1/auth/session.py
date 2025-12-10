@@ -218,7 +218,7 @@ async def get_me(request: Request, db: Session = Depends(get_db)):
 
         # 2) Если не найден в clients — проверяем в users (владельцы станций)
         owner_row = db.execute(
-            text("SELECT id, email, role, is_active FROM users WHERE id = :id"),
+            text("SELECT id, email, phone, role, is_active FROM users WHERE id = :id"),
             {"id": user_id}
         ).fetchone()
 
@@ -239,6 +239,7 @@ async def get_me(request: Request, db: Session = Depends(get_db)):
                 "client_id": owner_row.id,  # Для совместимости с фронтом
                 "user_id": owner_row.id,
                 "email": owner_row.email,
+                "phone": owner_row.phone,  # Добавлено для phone-only auth
                 "role": owner_row.role,
                 "is_active": owner_row.is_active,
                 "stations_count": stats.stations_count if stats else 0,
@@ -258,10 +259,16 @@ async def get_me(request: Request, db: Session = Depends(get_db)):
             content={"success": False, "error": "internal_error", "message": "Internal server error", "status": 500}
         )
 
-@router.post("/login")
+@router.post("/login", deprecated=True)
 async def login(request: Request, body: LoginRequest, db: Session = Depends(get_db)):
     """
-    Логин через Supabase (password grant) с установкой cookie evp_access/evp_refresh.
+    [DEPRECATED] Логин через Supabase (password grant).
+
+    Используйте новые endpoints:
+    - POST /auth/otp/send - отправка OTP кода в WhatsApp
+    - POST /auth/otp/verify - проверка кода и авторизация
+
+    Этот endpoint оставлен для обратной совместимости и будет удален в будущих версиях.
     """
     try:
         # CSRF: проверяем доверенный Origin и совпадение заголовка с cookie

@@ -137,6 +137,17 @@ class Settings(BaseSettings):
     VAPID_PUBLIC_KEY: str = os.getenv("VAPID_PUBLIC_KEY", "")
     VAPID_SUBJECT: str = os.getenv("VAPID_SUBJECT", "mailto:noreply@evpower.kg")
 
+    # Wappi.pro - WhatsApp OTP API
+    WAPPI_API_TOKEN: str = os.getenv("WAPPI_API_TOKEN", "")
+    WAPPI_PROFILE_ID: str = os.getenv("WAPPI_PROFILE_ID", "")
+    WAPPI_API_URL: str = os.getenv("WAPPI_API_URL", "https://wappi.pro/api/sync/message/send")
+
+    # OTP Settings
+    OTP_CODE_LENGTH: int = int(os.getenv("OTP_CODE_LENGTH", "6"))
+    OTP_TTL_SECONDS: int = int(os.getenv("OTP_TTL_SECONDS", "300"))  # 5 minutes
+    OTP_MAX_ATTEMPTS: int = int(os.getenv("OTP_MAX_ATTEMPTS", "3"))
+    OTP_RATE_LIMIT_SECONDS: int = int(os.getenv("OTP_RATE_LIMIT_SECONDS", "60"))  # 1 code per minute
+
     # Push Notifications Settings
     PUSH_NOTIFICATIONS_ENABLED: bool = os.getenv("PUSH_NOTIFICATIONS_ENABLED", "true").lower() == "true"
     PUSH_MAX_RETRIES: int = int(os.getenv("PUSH_MAX_RETRIES", "3"))

@@ -7,6 +7,7 @@ from fastapi import APIRouter
 from .charging import start_router, stop_router, status_router
 from . import balance, payment, station, locations, notifications
 from .auth import session as auth_session
+from .auth import otp as auth_otp
 from . import profile as profile_module
 from . import history as history_module
 from . import favorites as favorites_module
@@ -28,6 +29,7 @@ router.include_router(locations.router, tags=["locations"])
 router.include_router(profile_module.router, tags=["profile"])
 router.include_router(notifications.router)  # Push Notifications
 router.include_router(auth_session.router, tags=["auth"])
+router.include_router(auth_otp.router, tags=["auth-otp"])  # Phone OTP Auth
 router.include_router(history_module.router, tags=["history"])
 router.include_router(favorites_module.router, tags=["favorites"])
 router.include_router(admin_module.router)  # Admin endpoints (superadmin only)
