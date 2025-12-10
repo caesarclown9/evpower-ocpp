@@ -227,6 +227,9 @@ class AuthMiddleware:
             "/api/v1/auth/login",   # Публичный логин
             "/api/v1/auth/refresh", # Публичный refresh по cookie
             "/api/v1/auth/logout",  # Публичный logout (идемпотентный)
+            "/api/v1/auth/otp/send",   # OTP: отправка кода (публичный - пользователь ещё не авторизован)
+            "/api/v1/auth/otp/verify", # OTP: верификация кода (публичный - точка входа в авторизацию)
+            "/api/v1/auth/otp/status", # OTP: статус кода (публичный - только can_send/wait_seconds)
         ]
 
         # Проверяем публичные endpoints (точное совпадение или начало пути)
