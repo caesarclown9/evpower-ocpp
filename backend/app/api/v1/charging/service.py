@@ -922,29 +922,33 @@ class ChargingService:
         station_id: str,
         session_id: str
     ) -> bool:
-        """Отправка команды остановки на станцию"""
+        """Отправка команды остановки на станцию (по подходу Voltera)"""
         connected_stations = await redis_manager.get_stations()
         is_online = station_id in connected_stations
-        
-        if is_online:
-            # Получаем OCPP transaction_id
-            result = self.db.execute(text("""
-                SELECT transaction_id FROM ocpp_transactions
-                WHERE charging_session_id = :session_id
-                AND status = 'Started'
-                ORDER BY created_at DESC LIMIT 1
-            """), {"session_id": session_id}).fetchone()
-            
-            if result:
-                command_data = {
-                    "action": "RemoteStopTransaction",
-                    "transaction_id": result[0]
-                }
-                subscribers = await redis_manager.publish_command(station_id, command_data)
-                if subscribers > 0:
-                    logger.info(f"✅ Команда остановки ДОСТАВЛЕНА на станцию {station_id} (subscribers={subscribers})")
-                else:
-                    logger.error(f"❌ Команда остановки НЕ ДОСТАВЛЕНА на станцию {station_id}! Нет подписчиков.")
+
+        if not is_online:
+            logger.warning(f"⚠️ Станция {station_id} offline - RemoteStopTransaction не отправлен")
+            return False
+
+        # Получаем OCPP transaction_id (БЕЗ фильтра по status, как в Voltera)
+        result = self.db.execute(text("""
+            SELECT transaction_id FROM ocpp_transactions
+            WHERE charging_session_id = :session_id
+            ORDER BY created_at DESC LIMIT 1
+        """), {"session_id": session_id}).fetchone()
+
+        if result and result[0]:
+            command_data = {
+                "action": "RemoteStopTransaction",
+                "transaction_id": result[0]
+            }
+            subscribers = await redis_manager.publish_command(station_id, command_data)
+            if subscribers > 0:
+                logger.info(f"✅ RemoteStopTransaction отправлен: station={station_id}, transaction_id={result[0]}, subscribers={subscribers}")
+            else:
+                logger.error(f"❌ RemoteStopTransaction НЕ ДОСТАВЛЕН на станцию {station_id}! 0 подписчиков в Redis")
+        else:
+            logger.warning(f"⚠️ OCPP транзакция не найдена для сессии {session_id} - RemoteStopTransaction не отправлен")
 
         return is_online
     

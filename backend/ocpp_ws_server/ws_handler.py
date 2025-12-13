@@ -1418,14 +1418,15 @@ class OCPPChargePoint(CP):
         """Отправить push notification клиенту об ошибке зарядки"""
         try:
             with next(get_db()) as db:
-                # Найти активную сессию для этого коннектора
+                # Найти активную сессию для этого коннектора через JOIN с ocpp_transactions
                 session_query = text("""
-                    SELECT cs.id, cs.client_id
+                    SELECT cs.id, cs.user_id
                     FROM charging_sessions cs
+                    JOIN ocpp_transactions ot ON cs.id = ot.charging_session_id
                     WHERE cs.station_id = :station_id
-                      AND cs.connector_id = :connector_id
-                      AND cs.status IN ('active', 'preparing')
-                    ORDER BY cs.started_at DESC
+                      AND ot.connector_id = :connector_id
+                      AND cs.status = 'started'
+                    ORDER BY cs.start_time DESC
                     LIMIT 1
                 """)
 
