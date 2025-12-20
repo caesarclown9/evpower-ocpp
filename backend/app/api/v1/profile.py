@@ -25,7 +25,7 @@ async def get_profile(request: Request, db: Session = Depends(get_db)):
 
     # 1) Проверяем в users (владельцы станций) — они имеют расширенные права
     owner_row = db.execute(
-        text("SELECT id, email, role, is_active FROM users WHERE id = :id"),
+        text("SELECT id, email, role, is_active, admin_id FROM users WHERE id = :id"),
         {"id": user_id}
     ).fetchone()
 
@@ -54,6 +54,7 @@ async def get_profile(request: Request, db: Session = Depends(get_db)):
             "email": owner_row.email,
             "role": owner_row.role,
             "is_active": owner_row.is_active,
+            "admin_id": str(owner_row.admin_id) if owner_row.admin_id else None,
             "stations_count": stats.stations_count if stats else 0,
             "locations_count": stats.locations_count if stats else 0,
             # Клиентские данные (если есть запись в clients)

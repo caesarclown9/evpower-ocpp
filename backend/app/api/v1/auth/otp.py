@@ -212,7 +212,7 @@ async def verify_otp(
 
         # 1) Проверяем в users (владельцы станций) по phone
         owner_result = await db.execute(
-            text("SELECT id, email, role, is_active FROM users WHERE phone = :phone LIMIT 1"),
+            text("SELECT id, email, role, is_active, admin_id FROM users WHERE phone = :phone LIMIT 1"),
             {"phone": body.phone},
         )
         owner_row = owner_result.fetchone()
@@ -220,7 +220,26 @@ async def verify_otp(
         if owner_row:
             user_id = owner_row.id
             user_type = "owner"
-            logger.info(f"[OTP] Owner login: {body.phone} -> {user_id}")
+            owner_role = owner_row.role
+            owner_admin_id = str(owner_row.admin_id) if owner_row.admin_id else None
+
+            # Авто-создание client записи для гибридного функционала
+            client_check = await db.execute(
+                text("SELECT id FROM clients WHERE id = :id"),
+                {"id": user_id},
+            )
+            if not client_check.fetchone():
+                await db.execute(
+                    text("""
+                        INSERT INTO clients (id, phone, name, balance, status, created_at, updated_at)
+                        VALUES (:id, :phone, :name, 0, 'active', NOW(), NOW())
+                    """),
+                    {"id": user_id, "phone": body.phone, "name": owner_row.email or ""},
+                )
+                await db.commit()
+                logger.info(f"[OTP] Created client record for owner: {body.phone}")
+
+            logger.info(f"[OTP] Owner login: {body.phone} -> {user_id}, role={owner_role}")
         else:
             # 2) Проверяем в clients по phone
             client_result = await db.execute(
@@ -253,14 +272,18 @@ async def verify_otp(
         refresh_token = create_refresh_token(user_id)
 
         # Формируем ответ
-        resp = JSONResponse(
-            content={
-                "success": True,
-                "message": "Авторизация успешна",
-                "user_type": user_type,
-                "user_id": user_id,
-            }
-        )
+        resp_content = {
+            "success": True,
+            "message": "Авторизация успешна",
+            "user_type": user_type,
+            "user_id": user_id,
+        }
+        # Добавляем owner-специфичные поля
+        if user_type == "owner":
+            resp_content["role"] = owner_role
+            resp_content["admin_id"] = owner_admin_id
+
+        resp = JSONResponse(content=resp_content)
 
         # Очищаем старые cookies с Domain=ocpp.evpower.kg
         for cookie_name in ("evp_access", "evp_refresh", "XSRF-TOKEN"):
